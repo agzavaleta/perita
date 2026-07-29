@@ -428,7 +428,7 @@ const AccountsPage = ({state, setState, notify}) => {
     adjustModal[1](true);
   };
 
-  const total = accounts.reduce((s,a)=>s+a.balance,0);
+  const total = PeritaCore.totalAccountBalance(accounts);
 
   return (
     <div>
@@ -616,7 +616,7 @@ const Wallets = ({state, setState, notify}) => {
     <div>
       {ConfirmNode}
       <div className="flex justify-between items-center mb-6">
-        <div className="card-sm" style={{padding:'10px 16px'}}><span className="text-gray text-sm">Total ahorrado: </span><span className="font-bold text-green">{fmt(state.wallets.reduce((a,w)=>a+w.balance,0))}</span></div>
+        <div className="card-sm" style={{padding:'10px 16px'}}><span className="text-gray text-sm">Total ahorrado: </span><span className="font-bold text-green">{fmt(PeritaCore.totalWalletBalance(state.wallets))}</span></div>
         <button className="btn btn-primary" onClick={openNew}><Icon name="plus" size={14}/> Nuevo ahorro</button>
       </div>
 
@@ -730,7 +730,11 @@ const Budget = ({state, setState, notify}) => {
 
   const totalBudget = budget.reduce((a,b)=>a+b.amount,0);
   const totalSavings = wallets.reduce((a,w)=>a+w.monthly,0);
-  const remaining = settings.salary - totalBudget - totalSavings;
+  // "Disponible" is the same concept as Dashboard's "Sobrante Mensual" — always
+  // computed from PeritaCore.dashboardTotals so both views agree (single source
+  // of truth: actual income/expenses/debt-payments/savings this month, not the
+  // planned budget figures above, which are informational only).
+  const { remaining } = PeritaCore.dashboardTotals(state);
 
   const addItem = () => {
     if(!form.name||!form.amount) return;
@@ -898,7 +902,7 @@ const IngresosPanel = ({state, setState, notify}) => {
             </div>
             <div className="form-group">
               <label className="form-label">Descripción</label>
-              <input className="form-input" placeholder="Sueldo, freelance…" value={incomeForm.description} onChange={e=>setIncomeForm(f=>({...f,description:e.target.value}))} />
+              <input className="form-input" placeholder="Freelance, bono, venta…" value={incomeForm.description} onChange={e=>setIncomeForm(f=>({...f,description:e.target.value}))} />
             </div>
             <div className="form-group">
               <label className="form-label">Monto</label>
@@ -919,6 +923,13 @@ const IngresosPanel = ({state, setState, notify}) => {
         </div>
       )}
 
+      {state.settings.salary > 0 && (
+        <div className="card-sm mb-4" style={{padding:'10px 16px'}}>
+          <span className="text-gray text-sm">Sueldo configurado (informativo): </span>
+          <span className="font-bold text-green">{fmt(state.settings.salary)}</span>
+          <span className="text-gray text-sm"> — se suma automáticamente al ingreso total del mes. Aquí solo registras ingresos adicionales; el sueldo se administra en Ajustes.</span>
+        </div>
+      )}
       <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
         <button className="btn btn-primary" style={{width:'100%'}} onClick={()=>{setEditingId(null); setIncomeForm(emptyForm); setShowForm(true);}}><Icon name="plus" size={13}/> Agregar ingreso</button>
         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
@@ -929,7 +940,7 @@ const IngresosPanel = ({state, setState, notify}) => {
       <div className="flex justify-between items-center mb-4">
         <span className="text-sm text-gray">{incomeList.length} {incomeList.length===1?'ingreso':'ingresos'}</span>
         <div className="flex items-center gap-2">
-          <span className="text-sm text-gray">Total:</span>
+          <span className="text-sm text-gray">Total ingresos adicionales:</span>
           <span className="font-bold amount-positive">{fmt(totalIncome)}</span>
         </div>
       </div>
@@ -1153,7 +1164,7 @@ const DebtTracker = ({state, setState, notify}) => {
   const closeModal = () => guardClose(() => setModal(null));
 
   const activeDebts = debts.filter(d=>d.status!=='pagada');
-  const totalDebt = activeDebts.reduce((a,d)=>a+(d.total-d.paid),0);
+  const totalDebt = PeritaCore.totalActiveDebt(debts);
   const totalMonthly = activeDebts.reduce((a,d)=>a+d.monthly,0);
 
   const openNew = () => { const f=emptyDebt(); setForm(f); setInitForm(f); setModal('new'); };
@@ -1343,17 +1354,14 @@ const HistorialMensual = ({state}) => {
   const history = (state.monthlyHistory || []).slice().reverse(); // newest first
   const [detail, setDetail] = useState(null);
 
-  const summary = (m) => ({
-    ingresos:  (m.expenses||[]).filter(e=>e.type==='income').reduce((a,e)=>a+e.amount,0),
-    variables: (m.expenses||[]).filter(e=>e.type==='expense').reduce((a,e)=>a+e.amount,0),
-    fijos:     (m.gastosFijosPagados||[]).reduce((a,g)=>a+g.amount,0),
-    deudas:    (m.pagosDeuda||[]).reduce((a,p)=>a+p.amount,0),
-    ahorros:   (m.aportesAhorro||[]).reduce((a,a2)=>a+a2.amount,0),
-  });
+  // Reuse PeritaCore.monthTotals — the same function the live month-close
+  // summary and Dashboard use — instead of re-deriving totals here, so this
+  // view can never drift out of sync with the canonical calculation.
+  const summary = (m) => PeritaCore.monthTotals(m);
 
   if (detail) {
     const s = summary(detail);
-    const sobrante = s.ingresos - s.fijos - s.variables - s.ahorros;
+    const sobrante = s.sobrante;
     return (
       <div>
         <button className="btn btn-ghost btn-sm mb-4" onClick={()=>setDetail(null)}>← Volver</button>
@@ -1361,7 +1369,9 @@ const HistorialMensual = ({state}) => {
           <div className="section-title mb-1">Detalle — {detail.month}</div>
           <div className="text-xs text-gray mb-4">Archivado {detail.closedAt ? new Date(detail.closedAt).toLocaleDateString('es-CL') : ''}</div>
           {[
-            {label:'Ingresos', value:s.ingresos, color:'amount-positive'},
+            {label:'Sueldo', value:s.salary, color:'text-gray'},
+            {label:'Ingresos adicionales', value:s.additionalIncome, color:'amount-positive'},
+            {label:'Ingresos totales', value:s.ingresos, color:'amount-positive'},
             {label:'Gastos fijos pagados', value:s.fijos, color:'amount-negative'},
             {label:'Gastos variables', value:s.variables, color:'amount-negative'},
             {label:'Pagos de deuda', value:s.deudas, color:'amount-negative'},
@@ -1376,6 +1386,9 @@ const HistorialMensual = ({state}) => {
             <span className="font-bold">Sobrante final</span>
             <span className={`font-bold ${sobrante>=0?'amount-positive':'amount-negative'}`}>{fmt(sobrante)}</span>
           </div>
+          {detail.salary == null && (
+            <p className="text-xs text-gray mt-2">Este mes se archivó antes de que Perita guardara el sueldo por separado — "Sueldo" se muestra en $0 y "Ingresos adicionales" corresponde a los ingresos registrados en ese momento.</p>
+          )}
         </div>
         {/* Ingresos detail */}
         {(detail.expenses||[]).filter(e=>e.type==='income').length > 0 && (
@@ -1450,7 +1463,7 @@ const HistorialMensual = ({state}) => {
       <div className="grid-2">
         {history.map((m, i) => {
           const s = summary(m);
-          const sobrante = s.ingresos - s.fijos - s.variables - s.ahorros;
+          const sobrante = s.sobrante;
           return (
             <div key={i} className="card">
               <div className="flex justify-between items-start mb-3">
@@ -1504,14 +1517,25 @@ const Settings = ({state, setState, notify}) => {
   const monthExpenses = activeMonth.expenses || [];
   const curMonth = activeMonth.month;
 
-  const {ingresos: monthIngresos, variables: monthVariables, fijos: monthFijos, ahorros: monthAhorros, deudas: monthDeudas, sobrante: monthSobrante} = PeritaCore.monthTotals(activeMonth);
+  // Live month always uses the CURRENT configured salary (confirmed rule) —
+  // passed explicitly; monthTotals adds it to additionalIncome exactly once.
+  const {salary: monthSalary, additionalIncome: monthAdditionalIncome, ingresos: monthIngresos, variables: monthVariables, fijos: monthFijos, ahorros: monthAhorros, deudas: monthDeudas, sobrante: monthSobrante} = PeritaCore.monthTotals(activeMonth, settings.salary);
+  const [closing, setClosing] = useState(false);
 
   const closeMes = async () => {
+    if (closing) return; // guards a double-click/double-submit from closing the same month twice
+    setClosing(true);
     setShowMonthSummary(false);
-    setState(s => PeritaCore.closeMonth(s));
+    // curMonth was captured from the freshest render before the click. Passing
+    // it as expectedMonth makes a second, stray invocation (e.g. two rapid
+    // clicks both queued before the UI updates) a safe no-op in PeritaCore —
+    // it only closes if the active month is still the one shown in the
+    // summary the user just confirmed.
+    setState(s => PeritaCore.closeMonth(s, undefined, curMonth));
     const msgNextMonthDate = new Date(curMonth + '-01');
     msgNextMonthDate.setMonth(msgNextMonthDate.getMonth() + 1);
     notify(`Mes ${curMonth} archivado. Nuevo mes: ${msgNextMonthDate.toISOString().slice(0,7)}`, 'success');
+    setClosing(false);
   };
 
   return (
@@ -1525,7 +1549,9 @@ const Settings = ({state, setState, notify}) => {
             <div className="modal-title">Resumen del mes — {curMonth}</div>
             <div className="text-sm text-gray mb-4">Revisa el resumen antes de cerrar el mes.</div>
             {[
-              {label:'Ingresos',        value:monthIngresos,  color:'amount-positive'},
+              {label:'Sueldo configurado', value:monthSalary, color:'text-gray'},
+              {label:'Ingresos adicionales', value:monthAdditionalIncome, color:'amount-positive'},
+              {label:'Ingresos totales',value:monthIngresos,  color:'amount-positive'},
               {label:'Gastos fijos',    value:monthFijos,     color:'amount-negative'},
               {label:'Gastos variables',value:monthVariables, color:'amount-negative'},
               {label:'Pagos de deuda',  value:monthDeudas,    color:'amount-negative'},
@@ -1540,11 +1566,12 @@ const Settings = ({state, setState, notify}) => {
               <span className="font-bold">Sobrante final</span>
               <span className={`font-bold ${monthSobrante>=0?'amount-positive':'amount-negative'}`}>{fmt(monthSobrante)}</span>
             </div>
+            <p className="text-xs text-gray mt-2">"Ingresos totales" = sueldo configurado + ingresos adicionales registrados en Ingresos. El sueldo se aplica una sola vez y automáticamente — no lo registres también como ingreso.</p>
             <div className="divider" />
-            <p className="text-sm text-gray mb-4">Al confirmar, los ingresos y gastos variables del mes actual se archivarán. Los datos permanentes (cuentas, ahorros, deudas, fijos) no se modificarán.</p>
+            <p className="text-sm text-gray mb-4">Al confirmar, se guardará el sueldo configurado actual ({fmt(settings.salary)}) como parte del archivo de {curMonth}, y se archivarán los ingresos adicionales, gastos variables, pagos de deuda y aportes de ahorro registrados en {curMonth}; el estado de "gastos fijos pagados" de este mes se reiniciará para el mes nuevo. Nada de esto se pierde — queda disponible en Historial Mensual, y un cambio futuro al sueldo configurado no alterará este mes ya archivado. Las cuentas, los montos configurados de gastos fijos, las metas de ahorro y las deudas (con su saldo pagado acumulado) no se modifican — solo se reinicia el registro de {curMonth}.</p>
             <div className="flex gap-3 justify-between">
-              <button className="btn btn-ghost" onClick={()=>setShowMonthSummary(false)}>Cancelar</button>
-              <button className="btn btn-primary" onClick={closeMes}>Cerrar mes e iniciar nuevo</button>
+              <button className="btn btn-ghost" onClick={()=>setShowMonthSummary(false)} disabled={closing}>Cancelar</button>
+              <button className="btn btn-primary" onClick={closeMes} disabled={closing}>Confirmar</button>
             </div>
           </div>
         </div>

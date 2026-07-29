@@ -208,9 +208,21 @@
   // the freshest state, e.g. inside a setState updater) and resets both the
   // canonical activeMonth and the compatibility alias. Permanent entities
   // (accounts, debts, wallets, budget, settings, nextId) are untouched.
-  function closeMonth(state, closedAt) {
+  //
+  // expectedMonth (optional): the 'YYYY-MM' the caller intended to close,
+  // captured when the close-confirmation UI was opened. If the state's
+  // activeMonth has already moved on (e.g. a second click/submit fired after
+  // the first one already closed it), this is a safe no-op — same reference
+  // returned, no duplicate archive entry, no second calendar advance. This is
+  // the guard against double-close from a double-click or a repeated confirm.
+  function closeMonth(state, closedAt, expectedMonth) {
     const am = state.activeMonth || makeDefault().activeMonth;
-    const snapshot = { ...am, closedAt: closedAt || new Date().toISOString() };
+    if (expectedMonth != null && am.month !== expectedMonth) return state;
+    // Store the exact configured salary used for this month in the snapshot
+    // itself (Session 9) — archived months must never re-read the LIVE
+    // settings.salary, or editing salary later would silently rewrite history.
+    const salaryAtClose = (state.settings && state.settings.salary) || 0;
+    const snapshot = { ...am, salary: salaryAtClose, closedAt: closedAt || new Date().toISOString() };
     const nextMonthDate = new Date(am.month + '-01');
     nextMonthDate.setMonth(nextMonthDate.getMonth() + 1);
     const nextMonth = nextMonthDate.toISOString().slice(0, 7);
@@ -223,17 +235,44 @@
   }
 
   // ── Calculations ─────────────────────────────────────────────────────────
-  // Totals for a single month object (activeMonth or an archived monthlyHistory entry).
-  function monthTotals(am) {
+  // Totals for a single month object (activeMonth or an archived monthlyHistory
+  // entry). `salary` (Session 9): the configured salary that applies to this
+  // month — ALWAYS added into `ingresos` exactly once, per the confirmed rule
+  // "Total income = configured salary + additional income" (income
+  // transactions represent additional income only, never the salary itself).
+  //
+  // Resolution order: an explicit `salary` argument wins (the live/active
+  // month has no stored salary of its own — the caller passes the CURRENT
+  // settings.salary); otherwise `am.salary` is used if present (an archived
+  // month's stored snapshot — see closeMonth); otherwise `0` (a pre-Session-9
+  // archived month with no snapshot — see BUSINESS_RULES.md for why this is
+  // the safe backward-compatible fallback, not a guess from today's salary).
+  function monthTotals(am, salary) {
     am = am || {};
+    const resolvedSalary = salary != null ? salary : (am.salary != null ? am.salary : 0);
     const expenses = am.expenses || [];
-    const ingresos = expenses.filter((e) => e.type === 'income').reduce((a, e) => a + e.amount, 0);
+    const additionalIncome = expenses.filter((e) => e.type === 'income').reduce((a, e) => a + e.amount, 0);
+    const ingresos = resolvedSalary + additionalIncome;
     const variables = expenses.filter((e) => e.type === 'expense').reduce((a, e) => a + e.amount, 0);
     const fijos = (am.gastosFijosPagados || []).reduce((a, g) => a + g.amount, 0);
     const ahorros = (am.aportesAhorro || []).reduce((a, x) => a + x.amount, 0);
     const deudas = (am.pagosDeuda || []).reduce((a, p) => a + p.amount, 0);
-    const sobrante = ingresos - fijos - variables - ahorros;
-    return { ingresos, variables, fijos, ahorros, deudas, sobrante };
+    const sobrante = ingresos - fijos - variables - ahorros - deudas;
+    return { salary: resolvedSalary, additionalIncome, ingresos, variables, fijos, ahorros, deudas, sobrante };
+  }
+
+  // Page-level totals — single source of truth for AccountsPage, the
+  // Wallets/Ahorros page, DebtTracker, and dashboardTotals below. Pure,
+  // framework-free, so any screen (or test) can call them directly instead
+  // of re-deriving the same reduce().
+  function totalAccountBalance(accounts) {
+    return (accounts || []).reduce((a, x) => a + x.balance, 0);
+  }
+  function totalWalletBalance(wallets) {
+    return (wallets || []).reduce((a, w) => a + w.balance, 0);
+  }
+  function totalActiveDebt(debts) {
+    return (debts || []).filter((d) => d.status !== 'pagada').reduce((a, d) => a + (d.total - d.paid), 0);
   }
 
   // Full dashboard calculation. Safe on zero/empty state (no NaN/Infinity).
@@ -244,21 +283,33 @@
     const debts = state.debts || [];
     const am = state.activeMonth || {};
 
-    const totalAvailable = accs.reduce((a, x) => a + x.balance, 0);
-    const totalSavings = wallets.reduce((a, w) => a + w.balance, 0);
+    const totalAvailable = totalAccountBalance(accs);
+    const totalSavings = totalWalletBalance(wallets);
     const netWorth = totalAvailable + totalSavings;
-    const totalDebt = debts.filter((d) => d.status !== 'pagada').reduce((a, d) => a + (d.total - d.paid), 0);
+    const totalDebt = totalActiveDebt(debts);
 
-    const mt = monthTotals(am);
-    const totalIncomeDash = mt.ingresos;
+    // The live/active month always uses the CURRENT configured salary
+    // (confirmed rule) — passed explicitly, never read from am.salary (the
+    // active month has no stored snapshot of its own; only archived months do).
+    const mt = monthTotals(am, settings.salary || 0);
+    const salary = mt.salary;
+    const additionalIncome = mt.additionalIncome;
+    const totalIncomeDash = mt.ingresos; // salary + additionalIncome, always
     const totalVariable = mt.variables;
     const monthlySavings = mt.ahorros;
     const totalFixed = mt.fijos;
     const monthlyDebt = mt.deudas;
 
-    const incomeSrc = totalIncomeDash > 0 ? totalIncomeDash : settings.salary || 0;
+    // incomeSrc: kept for API compatibility as the savingsRate denominator.
+    // Under the additive model totalIncomeDash always includes the configured
+    // salary, so there's no more "no income logged yet" case to fall back
+    // from — incomeSrc is simply totalIncomeDash.
+    const incomeSrc = totalIncomeDash;
     const savingsRate = incomeSrc ? Math.round((monthlySavings / incomeSrc) * 100) : 0;
-    const remaining = incomeSrc - totalFixed - monthlySavings - totalVariable;
+    // remaining: real money left this month. Reuses monthTotals' own
+    // sobrante directly (same terms) so it can never drift from the
+    // section-total/month-close/archive calculation.
+    const remaining = mt.sobrante;
 
     return {
       totalAvailable,
@@ -273,6 +324,8 @@
       incomeSrc,
       savingsRate,
       remaining,
+      salary,
+      additionalIncome,
     };
   }
 
@@ -292,5 +345,8 @@
     closeMonth,
     monthTotals,
     dashboardTotals,
+    totalAccountBalance,
+    totalWalletBalance,
+    totalActiveDebt,
   };
 });

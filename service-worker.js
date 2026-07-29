@@ -5,13 +5,17 @@
 // "update available" modal (Perita.jsx / Settings) already handles prompting
 // the user and calling skipWaiting() via postMessage — see the message
 // listener at the bottom of this file.
-const CACHE_NAME = 'perita-cache-v1';
+const CACHE_NAME = 'perita-cache-v3';
 
 const APP_SHELL = [
   '/',
   '/index.html',
   '/manifest.json',
   '/perita-core.js',
+  '/icons/apple-touch-icon.png',
+  '/icons/icon-152x152.png',
+  '/icons/icon-192x192.png',
+  '/icons/icon-512x512.png',
 ];
 
 self.addEventListener('install', (event) => {
