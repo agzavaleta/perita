@@ -1199,6 +1199,17 @@ test('V1.1.0 account-ledger foundation', async (t) => {
       },
     };
   };
+  const seedV110Salary = () => {
+    const state = seedV110Domains();
+    return {
+      ...state,
+      settings: { salary: 1200 },
+      activeMonth: {
+        ...state.activeMonth,
+        salary: 1000,
+      },
+    };
+  };
 
   await t.test('new schema starts empty and accounts keep only an initial balance', () => {
     let s = PC.makeV110Default();
@@ -1216,6 +1227,7 @@ test('V1.1.0 account-ledger foundation', async (t) => {
       activeMonth: {
         month: PC.curMonthId(),
         salary: 0,
+        salaryReceipt: null,
         expenses: [],
         pagosDeuda: [],
         aportesAhorro: [],
@@ -1352,6 +1364,362 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     assert.equal(closed.activeMonth.salary, 700);
   });
 
+  await t.test('a month starts with its reference salary but without receipt or movement', () => {
+    const state = PC.loadV110(JSON.stringify({
+      schemaVersion: '1.1.0',
+      settings: { salary: 1200 },
+      activeMonth: { month: '2026-08' },
+    }));
+
+    assert.equal(state.activeMonth.salary, 1200);
+    assert.equal(state.activeMonth.salaryReceipt, null);
+    assert.deepEqual(state.accountMovements, []);
+  });
+
+  await t.test('registering salary reception creates one exact credit without duplicating the amount in the receipt', () => {
+    const state = PC.registerV110SalaryReceipt(seedV110Salary(), {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+
+    assert.deepEqual(state.activeMonth.salaryReceipt, {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    assert.equal(Object.hasOwn(state.activeMonth.salaryReceipt, 'amount'), false);
+    assert.deepEqual(state.accountMovements, [{
+      id: 1,
+      accountId: 1,
+      date: '2026-08-05',
+      amount: 1000,
+      type: 'credit',
+      operationRef: 'salary:2026-08',
+    }]);
+    assert.equal(PC.v110AccountBalance(state, 1), 1100);
+  });
+
+  await t.test('editing the reception date updates the same salary movement', () => {
+    const registered = PC.registerV110SalaryReceipt(seedV110Salary(), {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    const edited = PC.editV110SalaryReceipt(registered, {
+      date: '2026-08-20',
+    });
+
+    assert.deepEqual(edited.activeMonth.salaryReceipt, {
+      date: '2026-08-20',
+      accountId: 1,
+    });
+    assert.equal(edited.accountMovements.length, 1);
+    assert.equal(edited.accountMovements[0].id, registered.accountMovements[0].id);
+    assert.equal(edited.accountMovements[0].operationRef, 'salary:2026-08');
+    assert.equal(edited.accountMovements[0].date, '2026-08-20');
+    assert.equal(edited.nextMovementId, registered.nextMovementId);
+  });
+
+  await t.test('editing the destination account moves the same salary credit between accounts', () => {
+    const registered = PC.registerV110SalaryReceipt(seedV110Salary(), {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    const edited = PC.editV110SalaryReceipt(registered, { accountId: 2 });
+
+    assert.equal(edited.accountMovements.length, 1);
+    assert.equal(edited.accountMovements[0].id, registered.accountMovements[0].id);
+    assert.equal(edited.accountMovements[0].accountId, 2);
+    assert.equal(PC.v110AccountBalance(edited, 1), 100);
+    assert.equal(PC.v110AccountBalance(edited, 2), 1020);
+    assert.equal(PC.v110AccountBalance(registered, 1), 1100);
+  });
+
+  await t.test('changing a received monthly salary synchronizes its movement but not the reference', () => {
+    const registered = PC.registerV110SalaryReceipt(seedV110Salary(), {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    const edited = PC.setV110ActiveMonthSalary(registered, 875);
+
+    assert.equal(edited.activeMonth.salary, 875);
+    assert.deepEqual(edited.activeMonth.salaryReceipt, registered.activeMonth.salaryReceipt);
+    assert.equal(edited.settings.salary, 1200);
+    assert.equal(edited.accountMovements.length, 1);
+    assert.equal(edited.accountMovements[0].id, registered.accountMovements[0].id);
+    assert.equal(edited.accountMovements[0].amount, 875);
+    assert.equal(edited.accountMovements[0].operationRef, 'salary:2026-08');
+    assert.equal(PC.v110AccountBalance(edited, 1), 975);
+  });
+
+  await t.test('removing reception deletes only the salary movement and preserves the monthly salary', () => {
+    const registered = PC.registerV110SalaryReceipt(seedV110Salary(), {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    const removed = PC.removeV110SalaryReceipt(registered);
+
+    assert.equal(removed.activeMonth.salary, 1000);
+    assert.equal(removed.activeMonth.salaryReceipt, null);
+    assert.deepEqual(removed.accountMovements, []);
+    assert.equal(removed.nextMovementId, 2, 'movement IDs are not reused');
+  });
+
+  await t.test('registering reception again edits in place and never duplicates its deterministic reference', () => {
+    const first = PC.registerV110SalaryReceipt(seedV110Salary(), {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    const second = PC.registerV110SalaryReceipt(first, {
+      date: '2026-08-21',
+      accountId: 2,
+    });
+
+    assert.equal(second.accountMovements.length, 1);
+    assert.equal(second.accountMovements[0].id, first.accountMovements[0].id);
+    assert.equal(second.accountMovements[0].operationRef, 'salary:2026-08');
+    assert.equal(second.accountMovements[0].date, '2026-08-21');
+    assert.equal(second.accountMovements[0].accountId, 2);
+  });
+
+  await t.test('salary reception rejects nonexistent or inactive accounts without mutation', () => {
+    const state = seedV110Salary();
+    const inactive = PC.addV110Account(state, {
+      name: 'Cerrada',
+      initialBalance: 0,
+      active: false,
+    });
+    const before = JSON.stringify(inactive);
+
+    assert.throws(
+      () => PC.registerV110SalaryReceipt(inactive, {
+        date: '2026-08-05',
+        accountId: 999,
+      }),
+      (error) => error.code === 'ACCOUNT_NOT_FOUND'
+    );
+    assert.throws(
+      () => PC.registerV110SalaryReceipt(inactive, {
+        date: '2026-08-05',
+        accountId: 6,
+      }),
+      (error) => error.code === 'ACCOUNT_INACTIVE'
+    );
+    assert.equal(JSON.stringify(inactive), before);
+  });
+
+  await t.test('closing a received salary preserves its receipt, movement ID, and reference without recreation', () => {
+    const registered = PC.registerV110SalaryReceipt(seedV110Salary(), {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    const movements = registered.accountMovements;
+    const closed = PC.closeV110Month(
+      registered,
+      '2026-08-31T23:00:00.000Z',
+      '2026-08'
+    );
+
+    assert.deepEqual(closed.monthlyHistory[0].salaryReceipt, {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    assert.equal(closed.monthlyHistory[0].salary, 1000);
+    assert.equal(closed.accountMovements, movements);
+    assert.equal(closed.accountMovements[0].id, 1);
+    assert.equal(closed.accountMovements[0].operationRef, 'salary:2026-08');
+    assert.equal(closed.nextMovementId, registered.nextMovementId);
+    assert.deepEqual(PC.loadV110(PC.serializeV110(closed)), closed);
+  });
+
+  await t.test('the month after close copies the reference without receipt or automatic movement', () => {
+    const registered = PC.registerV110SalaryReceipt(seedV110Salary(), {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    const closed = PC.closeV110Month(
+      registered,
+      '2026-08-31T23:00:00.000Z',
+      '2026-08'
+    );
+
+    assert.equal(closed.activeMonth.month, '2026-09');
+    assert.equal(closed.activeMonth.salary, 1200);
+    assert.equal(closed.activeMonth.salaryReceipt, null);
+    assert.equal(closed.accountMovements.length, 1);
+    assert.equal(
+      closed.accountMovements.some((movement) => movement.operationRef === 'salary:2026-09'),
+      false
+    );
+  });
+
+  await t.test('an unreceived salary closes and persists explicitly without a receipt or movement', () => {
+    const state = seedV110Salary();
+    const closed = PC.closeV110Month(
+      state,
+      '2026-08-31T23:00:00.000Z',
+      '2026-08'
+    );
+    const loaded = PC.loadV110(PC.serializeV110(closed));
+
+    assert.equal(closed.monthlyHistory[0].salary, 1000);
+    assert.equal(closed.monthlyHistory[0].salaryReceipt, null);
+    assert.deepEqual(closed.accountMovements, []);
+    assert.deepEqual(loaded, closed);
+  });
+
+  await t.test('all salary reception validation failures roll back the complete original state', () => {
+    const zeroSalary = {
+      ...seedV110Salary(),
+      activeMonth: {
+        ...seedV110Salary().activeMonth,
+        salary: 0,
+      },
+    };
+    const zeroBefore = JSON.stringify(zeroSalary);
+    assert.throws(
+      () => PC.registerV110SalaryReceipt(zeroSalary, {
+        date: '2026-08-05',
+        accountId: 1,
+      }),
+      (error) => error.code === 'INVALID_AMOUNT'
+    );
+    assert.equal(JSON.stringify(zeroSalary), zeroBefore);
+
+    const state = seedV110Salary();
+    const before = JSON.stringify(state);
+    for (const receipt of [
+      { accountId: 1 },
+      { date: '2026-08-05' },
+      { date: '2026-02-29', accountId: 1 },
+      { date: '2026-07-31', accountId: 1 },
+      { date: '2026-08-05', accountId: 1, amount: 1000 },
+    ]) {
+      assert.throws(() => PC.registerV110SalaryReceipt(state, receipt));
+      assert.equal(JSON.stringify(state), before);
+    }
+    assert.throws(
+      () => PC.editV110SalaryReceipt(state, { date: '2026-08-05' }),
+      (error) => error.code === 'OPERATION_NOT_FOUND'
+    );
+    assert.throws(
+      () => PC.removeV110SalaryReceipt(state),
+      (error) => error.code === 'OPERATION_NOT_FOUND'
+    );
+    assert.throws(
+      () => PC.adjustV110AccountBalance(state, {
+        accountId: 1,
+        date: '2026-08-05',
+        targetBalance: 200,
+        operationRef: 'salary:2026-08',
+      }),
+      (error) => error.code === 'INVALID_OPERATION_REF'
+    );
+    assert.equal(JSON.stringify(state), before);
+
+    const registered = PC.registerV110SalaryReceipt(state, {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    const registeredBefore = JSON.stringify(registered);
+    assert.throws(
+      () => PC.editV110SalaryReceipt(registered, { date: '2026-09-01' }),
+      (error) => error.code === 'INVALID_DATE'
+    );
+    assert.throws(
+      () => PC.setV110ActiveMonthSalary(registered, 0),
+      (error) => error.code === 'INVALID_AMOUNT'
+    );
+    assert.equal(JSON.stringify(registered), registeredBefore);
+
+    const missingMovement = {
+      ...registered,
+      accountMovements: [],
+    };
+    const corruptBefore = JSON.stringify(missingMovement);
+    assert.throws(
+      () => PC.closeV110Month(
+        missingMovement,
+        '2026-08-31T23:00:00.000Z',
+        '2026-08'
+      ),
+      (error) => error.code === 'ORPHAN_OPERATION'
+    );
+    assert.equal(JSON.stringify(missingMovement), corruptBefore);
+  });
+
+  await t.test('persistence safely rejects inconsistent salary receipts and movements', () => {
+    const valid = PC.registerV110SalaryReceipt(seedV110Salary(), {
+      date: '2026-08-05',
+      accountId: 1,
+    });
+    const clone = () => JSON.parse(JSON.stringify(valid));
+    const missingMovement = clone();
+    missingMovement.accountMovements = [];
+    const orphanMovement = clone();
+    orphanMovement.activeMonth.salaryReceipt = null;
+    const duplicateMovement = clone();
+    duplicateMovement.accountMovements.push({
+      ...duplicateMovement.accountMovements[0],
+      id: 2,
+    });
+    const wrongAccount = clone();
+    wrongAccount.accountMovements[0].accountId = 2;
+    const wrongDate = clone();
+    wrongDate.accountMovements[0].date = '2026-08-06';
+    const wrongAmount = clone();
+    wrongAmount.accountMovements[0].amount = 999;
+    const wrongDirection = clone();
+    wrongDirection.accountMovements[0].type = 'debit';
+    const wrongMonth = clone();
+    wrongMonth.activeMonth.salaryReceipt.date = '2026-07-31';
+    wrongMonth.accountMovements[0].date = '2026-07-31';
+    const duplicatedAmount = clone();
+    duplicatedAmount.activeMonth.salaryReceipt.amount = 1000;
+    const incompleteReceipt = clone();
+    delete incompleteReceipt.activeMonth.salaryReceipt.accountId;
+    const zeroReceivedSalary = clone();
+    zeroReceivedSalary.activeMonth.salary = 0;
+    zeroReceivedSalary.accountMovements[0].amount = 0;
+    const inactiveAccount = clone();
+    inactiveAccount.accounts[0].active = false;
+    const orphanSalaryAdjustment = clone();
+    orphanSalaryAdjustment.activeMonth.salaryReceipt = null;
+    orphanSalaryAdjustment.accountMovements[0].type = 'adjustment';
+
+    const closed = PC.closeV110Month(
+      valid,
+      '2026-08-31T23:00:00.000Z',
+      '2026-08'
+    );
+    const historicalMissingMovement = JSON.parse(JSON.stringify(closed));
+    historicalMissingMovement.accountMovements = [];
+    const historicalOrphanMovement = JSON.parse(JSON.stringify(closed));
+    historicalOrphanMovement.monthlyHistory[0].salaryReceipt = null;
+
+    for (const invalid of [
+      missingMovement,
+      orphanMovement,
+      duplicateMovement,
+      wrongAccount,
+      wrongDate,
+      wrongAmount,
+      wrongDirection,
+      wrongMonth,
+      duplicatedAmount,
+      incompleteReceipt,
+      zeroReceivedSalary,
+      inactiveAccount,
+      orphanSalaryAdjustment,
+      historicalMissingMovement,
+      historicalOrphanMovement,
+    ]) {
+      assert.deepEqual(PC.loadV110(JSON.stringify(invalid)), PC.makeV110Default());
+      assert.throws(
+        () => PC.serializeV110(invalid),
+        (error) => error.name === 'V110ValidationError'
+      );
+    }
+  });
+
   await t.test('active and archived salaries round-trip and invalid salaries fail closed', () => {
     const valid = {
       ...PC.makeV110Default(),
@@ -1364,6 +1732,7 @@ test('V1.1.0 account-ledger foundation', async (t) => {
       monthlyHistory: [{
         month: '2026-07',
         salary: 800,
+        salaryReceipt: null,
         expenses: [],
         pagosDeuda: [],
         aportesAhorro: [],
@@ -1425,6 +1794,7 @@ test('V1.1.0 account-ledger foundation', async (t) => {
       activeMonth: {
         month: '2026-08',
         salary: 850,
+        salaryReceipt: null,
         expenses: [
           {
             id: 6, date: '2026-08-01', amount: 25, description: 'Bono',
@@ -1450,6 +1820,7 @@ test('V1.1.0 account-ledger foundation', async (t) => {
       },
       monthlyHistory: [{
         month: '2026-07',
+        salaryReceipt: null,
         expenses: [{
           id: 11, date: '2026-07-02', amount: 300, description: 'Freelance',
           type: 'income', accountId: 1, category: 'Ingreso', method: '', notes: '',

@@ -368,6 +368,7 @@
     return {
       month,
       salary,
+      salaryReceipt: null,
       expenses: [],
       pagosDeuda: [],
       aportesAhorro: [],
@@ -424,6 +425,14 @@
     const account = (state.accounts || []).find((a) => a.id === accountId);
     if (!account) {
       throw v110ValidationError('ACCOUNT_NOT_FOUND', `Account not found: ${accountId}`);
+    }
+    return account;
+  }
+
+  function v110ActiveAccountOrThrow(state, accountId) {
+    const account = v110AccountOrThrow(state, accountId);
+    if (account.active === false) {
+      throw v110ValidationError('ACCOUNT_INACTIVE', `Account is inactive: ${accountId}`);
     }
     return account;
   }
@@ -712,9 +721,48 @@
         archived ? 0 : settings.salary,
         0
       );
+      let salaryReceipt = null;
+      if (v110Own(source, 'salaryReceipt') && source.salaryReceipt !== null) {
+        const receipt = source.salaryReceipt;
+        if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
+          throw v110ValidationError('INVALID_OBJECT', 'salaryReceipt must be an object or null');
+        }
+        if (v110Own(receipt, 'amount')) {
+          throw v110ValidationError(
+            'CONFLICTING_FIELD',
+            'Salary receipt uses the monthly salary and must not store an amount'
+          );
+        }
+        if (salary <= 0) {
+          throw v110ValidationError(
+            'INVALID_AMOUNT',
+            `A received salary must be greater than zero: ${salary}`
+          );
+        }
+        const date = v110DateOrThrow(receipt.date);
+        if (date.slice(0, 7) !== month) {
+          throw v110ValidationError(
+            'INVALID_DATE',
+            `Salary receipt date must belong to ${month}: ${date}`
+          );
+        }
+        const accountId = v110PositiveIntegerOrThrow(
+          receipt.accountId,
+          'Salary receipt account id'
+        );
+        const account = accounts.find((candidate) => candidate.id === accountId);
+        if (!account) {
+          throw v110ValidationError('ACCOUNT_NOT_FOUND', `Account not found: ${accountId}`);
+        }
+        if (account.active === false) {
+          throw v110ValidationError('ACCOUNT_INACTIVE', `Account is inactive: ${accountId}`);
+        }
+        salaryReceipt = { date, accountId };
+      }
       const normalized = {
         month,
         salary,
+        salaryReceipt,
         expenses,
         pagosDeuda,
         aportesAhorro,
@@ -759,6 +807,16 @@
       });
     };
     for (const monthState of [activeMonth, ...monthlyHistory]) {
+      if (monthState.salaryReceipt) {
+        expectMovement(
+          {
+            ...monthState.salaryReceipt,
+            amount: monthState.salary,
+          },
+          `salary:${monthState.month}`,
+          V110_MOVEMENT_TYPES.CREDIT
+        );
+      }
       for (const transaction of monthState.expenses) {
         expectMovement(
           transaction,
@@ -779,7 +837,15 @@
       }
     }
     for (const movement of accountMovements) {
-      if (movement.type === V110_MOVEMENT_TYPES.ADJUSTMENT) continue;
+      if (movement.type === V110_MOVEMENT_TYPES.ADJUSTMENT) {
+        if (movement.operationRef.startsWith('salary:')) {
+          throw v110ValidationError(
+            'ORPHAN_MOVEMENT',
+            `Salary references are reserved for salary credits: ${movement.operationRef}`
+          );
+        }
+        continue;
+      }
       const expected = expectedMovements.get(movement.operationRef);
       if (!expected) {
         throw v110ValidationError(
@@ -845,15 +911,185 @@
     return JSON.stringify(normalizeV110State(state));
   }
 
+  function v110SalaryOperationRef(month) {
+    return `salary:${v110MonthOrThrow(month)}`;
+  }
+
+  function v110SalaryReceiptOrThrow(state, monthState, receipt) {
+    const month = v110MonthOrThrow(monthState && monthState.month);
+    const salary = monthState && monthState.salary;
+    if (!Number.isFinite(salary) || salary <= 0) {
+      throw v110ValidationError(
+        'INVALID_AMOUNT',
+        `A received salary must be greater than zero: ${salary}`
+      );
+    }
+    if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
+      throw v110ValidationError('INVALID_OBJECT', 'Salary receipt is required');
+    }
+    if (Object.prototype.hasOwnProperty.call(receipt, 'amount')) {
+      throw v110ValidationError(
+        'CONFLICTING_FIELD',
+        'Salary receipt uses the monthly salary and must not store an amount'
+      );
+    }
+    const date = v110DateOrThrow(receipt.date);
+    if (date.slice(0, 7) !== month) {
+      throw v110ValidationError(
+        'INVALID_DATE',
+        `Salary receipt date must belong to ${month}: ${date}`
+      );
+    }
+    const accountId = v110PositiveIntegerOrThrow(
+      receipt.accountId,
+      'Salary receipt account id'
+    );
+    v110ActiveAccountOrThrow(state, accountId);
+    return { date, accountId };
+  }
+
+  function v110SalaryMovementOrThrow(state, monthState) {
+    const operationRef = v110SalaryOperationRef(monthState.month);
+    const movements = (state.accountMovements || []).filter(
+      (movement) => movement.operationRef === operationRef
+    );
+    const receipt = monthState.salaryReceipt;
+    if (!receipt) {
+      if (movements.length) {
+        throw v110ValidationError(
+          'ORPHAN_MOVEMENT',
+          `Salary movement has no receipt: ${operationRef}`
+        );
+      }
+      return null;
+    }
+    const normalizedReceipt = v110SalaryReceiptOrThrow(state, monthState, receipt);
+    if (movements.length !== 1) {
+      throw v110ValidationError(
+        movements.length ? 'DUPLICATE_OPERATION_REF' : 'ORPHAN_OPERATION',
+        movements.length
+          ? `More than one salary movement exists: ${operationRef}`
+          : `Salary receipt has no movement: ${operationRef}`
+      );
+    }
+    const movement = movements[0];
+    if (movement.accountId !== normalizedReceipt.accountId
+      || movement.date !== normalizedReceipt.date
+      || movement.amount !== monthState.salary
+      || movement.type !== V110_MOVEMENT_TYPES.CREDIT) {
+      throw v110ValidationError(
+        'MOVEMENT_MISMATCH',
+        `Salary movement does not match its receipt: ${operationRef}`
+      );
+    }
+    return movement;
+  }
+
   function setV110ActiveMonthSalary(state, salary) {
     if (!Number.isFinite(salary) || salary < 0) {
       throw v110ValidationError('INVALID_AMOUNT', `Invalid active-month salary: ${salary}`);
     }
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    if (!activeMonth.salaryReceipt) {
+      return {
+        ...state,
+        activeMonth: {
+          ...activeMonth,
+          salary,
+        },
+      };
+    }
+    if (salary === 0) {
+      throw v110ValidationError(
+        'INVALID_AMOUNT',
+        'A received salary cannot be changed to zero'
+      );
+    }
+    v110SalaryMovementOrThrow(state, activeMonth);
+    const receipt = v110SalaryReceiptOrThrow(state, { ...activeMonth, salary }, activeMonth.salaryReceipt);
+    const operationRef = v110SalaryOperationRef(activeMonth.month);
+    const withMovement = v110ReplaceOperationMovement(
+      state,
+      operationRef,
+      { ...receipt, amount: salary },
+      V110_MOVEMENT_TYPES.CREDIT
+    );
     return {
-      ...state,
+      ...withMovement,
       activeMonth: {
-        ...state.activeMonth,
+        ...activeMonth,
         salary,
+      },
+    };
+  }
+
+  function v110SaveSalaryReceipt(state, receipt, requireExisting) {
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    const hadReceipt = activeMonth.salaryReceipt !== null
+      && activeMonth.salaryReceipt !== undefined;
+    if (requireExisting && !hadReceipt) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', 'Salary receipt not found');
+    }
+    if (hadReceipt) v110SalaryMovementOrThrow(state, activeMonth);
+    const normalizedReceipt = v110SalaryReceiptOrThrow(state, activeMonth, receipt);
+    const operationRef = v110SalaryOperationRef(activeMonth.month);
+    const operation = {
+      ...normalizedReceipt,
+      amount: activeMonth.salary,
+    };
+    const withMovement = hadReceipt
+      ? v110ReplaceOperationMovement(
+        state,
+        operationRef,
+        operation,
+        V110_MOVEMENT_TYPES.CREDIT
+      )
+      : v110CreateOperationMovement(
+        state,
+        operation,
+        V110_MOVEMENT_TYPES.CREDIT,
+        operationRef
+      );
+    return {
+      ...withMovement,
+      activeMonth: {
+        ...activeMonth,
+        salaryReceipt: normalizedReceipt,
+      },
+    };
+  }
+
+  function registerV110SalaryReceipt(state, receipt) {
+    return v110SaveSalaryReceipt(state, receipt, false);
+  }
+
+  function editV110SalaryReceipt(state, patch) {
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    if (!activeMonth.salaryReceipt) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', 'Salary receipt not found');
+    }
+    return v110SaveSalaryReceipt(
+      state,
+      { ...activeMonth.salaryReceipt, ...(patch || {}) },
+      true
+    );
+  }
+
+  function removeV110SalaryReceipt(state) {
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    if (!activeMonth.salaryReceipt) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', 'Salary receipt not found');
+    }
+    v110SalaryMovementOrThrow(state, activeMonth);
+    const withoutMovement = v110RemoveOperationMovement(
+      state,
+      v110SalaryOperationRef(activeMonth.month)
+    );
+    return {
+      ...withoutMovement,
+      activeMonth: {
+        ...activeMonth,
+        salaryReceipt: null,
       },
     };
   }
@@ -876,10 +1112,12 @@
     if (typeof closedAt !== 'string' || !closedAt || !Number.isFinite(Date.parse(closedAt))) {
       throw v110ValidationError('INVALID_DATE', `Invalid close timestamp: ${closedAt}`);
     }
+    v110SalaryMovementOrThrow(state, activeMonth);
     const copyEntries = (entries) => (entries || []).map((entry) => ({ ...entry }));
     const snapshot = {
       month,
       salary,
+      salaryReceipt: activeMonth.salaryReceipt ? { ...activeMonth.salaryReceipt } : null,
       expenses: copyEntries(activeMonth.expenses),
       pagosDeuda: copyEntries(activeMonth.pagosDeuda),
       aportesAhorro: copyEntries(activeMonth.aportesAhorro),
@@ -1399,6 +1637,12 @@
     v110AccountOrThrow(state, accountId);
     const date = v110DateOrThrow(adjustment && adjustment.date);
     const operationRef = v110OperationRefOrThrow(adjustment && adjustment.operationRef);
+    if (operationRef.startsWith('salary:')) {
+      throw v110ValidationError(
+        'INVALID_OPERATION_REF',
+        `Salary references are reserved for salary credits: ${operationRef}`
+      );
+    }
     v110AssertUniqueOperationRef(state, operationRef);
     const targetBalance = adjustment && adjustment.targetBalance;
     if (!Number.isFinite(targetBalance)) {
@@ -1451,6 +1695,9 @@
     loadV110,
     serializeV110,
     setV110ActiveMonthSalary,
+    registerV110SalaryReceipt,
+    editV110SalaryReceipt,
+    removeV110SalaryReceipt,
     closeV110Month,
     isValidV110Date,
     addV110Account,
