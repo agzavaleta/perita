@@ -348,7 +348,7 @@ const { useState, useEffect, useRef, useCallback } = React;
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const fmt = (n) => new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP',maximumFractionDigits:0}).format(n||0);
 const pct = (a,b) => b ? Math.min(100,Math.round((a/b)*100)) : 0;
-const today = () => new Date().toISOString().slice(0,10);
+const today = () => PeritaCore.localDateId();
 const monthsLeft = (current,goal,monthly) => {
   if(monthly<=0) return '∞';
   const left = goal - current;
@@ -1856,7 +1856,7 @@ const Settings = ({state, setState, notify}) => {
   };
 
   // ── Monthly close helpers ─────────────────────────────────────────────────
-  const activeMonth = state.activeMonth || {month: new Date().toISOString().slice(0,7), expenses:[]};
+  const activeMonth = state.activeMonth || {month: PeritaCore.curMonthId(), expenses:[]};
   const monthExpenses = activeMonth.expenses || [];
   const curMonth = activeMonth.month;
 
@@ -1875,9 +1875,8 @@ const Settings = ({state, setState, notify}) => {
     // it only closes if the active month is still the one shown in the
     // summary the user just confirmed.
     setState(s => PeritaCore.closeMonth(s, undefined, curMonth));
-    const msgNextMonthDate = new Date(curMonth + '-01');
-    msgNextMonthDate.setMonth(msgNextMonthDate.getMonth() + 1);
-    notify(`Mes ${curMonth} archivado. Nuevo mes: ${msgNextMonthDate.toISOString().slice(0,7)}`, 'success');
+    const msgNextMonth = PeritaCore.nextMonthId(curMonth);
+    notify(`Mes ${curMonth} archivado. Nuevo mes: ${msgNextMonth}`, 'success');
     setClosing(false);
   };
 

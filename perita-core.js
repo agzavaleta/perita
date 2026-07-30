@@ -14,7 +14,32 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  const curMonthId = () => new Date().toISOString().slice(0, 7);
+  // Calendar dates shown/recorded by the app follow the user's local calendar,
+  // not UTC. Using toISOString() here can move late-evening users into the next
+  // day or month in negative UTC offsets.
+  function localDateId(date) {
+    const d = date || new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  function curMonthId() {
+    return localDateId().slice(0, 7);
+  }
+
+  // Month IDs are calendar identifiers, not instants in time. Advance them
+  // arithmetically so no UTC/local-time conversion can change the result.
+  function nextMonthId(monthId) {
+    const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(monthId || '');
+    if (!match) throw new RangeError(`Invalid month id: ${monthId}`);
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    return month === 12
+      ? `${year + 1}-01`
+      : `${year}-${String(month + 1).padStart(2, '0')}`;
+  }
 
   // ── Default / fresh state ───────────────────────────────────────────────────
   function makeDefault() {
@@ -223,9 +248,7 @@
     // settings.salary, or editing salary later would silently rewrite history.
     const salaryAtClose = (state.settings && state.settings.salary) || 0;
     const snapshot = { ...am, salary: salaryAtClose, closedAt: closedAt || new Date().toISOString() };
-    const nextMonthDate = new Date(am.month + '-01');
-    nextMonthDate.setMonth(nextMonthDate.getMonth() + 1);
-    const nextMonth = nextMonthDate.toISOString().slice(0, 7);
+    const nextMonth = nextMonthId(am.month);
     return {
       ...state,
       activeMonth: { month: nextMonth, expenses: [], pagosDeuda: [], aportesAhorro: [], gastosFijosPagados: [] },
@@ -330,6 +353,9 @@
   }
 
   return {
+    localDateId,
+    curMonthId,
+    nextMonthId,
     makeDefault,
     withExpensesAlias,
     syncExpensesAlias,

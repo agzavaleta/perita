@@ -9,6 +9,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const path = require('node:path');
 const PC = require('../perita-core.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -102,6 +104,64 @@ test('1. Monthly transactions', async (t) => {
     s = PC.deleteTransaction(s, expenseTx);
     mt = PC.monthTotals(s.activeMonth);
     assert.equal(mt.variables, 0, 'reflects delete without any reload');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Calendar dates and month identifiers
+// ═══════════════════════════════════════════════════════════════════════════
+test('Calendar dates and month identifiers', async (t) => {
+  await t.test('nextMonthId advances normal months and December without Date parsing', () => {
+    assert.equal(PC.nextMonthId('2026-07'), '2026-08');
+    assert.equal(PC.nextMonthId('2026-11'), '2026-12');
+    assert.equal(PC.nextMonthId('2026-12'), '2027-01');
+  });
+
+  await t.test('local dates and closeMonth are correct in America/Santiago and UTC', () => {
+    const corePath = path.join(__dirname, '..', 'perita-core.js');
+    const scenario = `
+      const PC = require(${JSON.stringify(corePath)});
+      const localDate = PC.localDateId(new Date('2026-08-01T01:30:00.000Z'));
+      let state = PC.resetToDefault();
+      state = {
+        ...state,
+        activeMonth: { ...state.activeMonth, month: '2026-12' },
+      };
+      const closed = PC.closeMonth(state, '2026-12-31T23:59:59.000Z', '2026-12');
+      const duplicate = PC.closeMonth(closed, '2027-01-01T00:00:00.000Z', '2026-12');
+      process.stdout.write(JSON.stringify({
+        localDate,
+        nextMonth: closed.activeMonth.month,
+        historyLength: closed.monthlyHistory.length,
+        duplicateWasNoOp: duplicate === closed,
+      }));
+    `;
+    const run = (tz) => JSON.parse(execFileSync(
+      process.execPath,
+      ['-e', scenario],
+      { env: { ...process.env, TZ: tz }, encoding: 'utf8' }
+    ));
+
+    assert.deepEqual(run('America/Santiago'), {
+      localDate: '2026-07-31',
+      nextMonth: '2027-01',
+      historyLength: 1,
+      duplicateWasNoOp: true,
+    });
+    assert.deepEqual(run('UTC'), {
+      localDate: '2026-08-01',
+      nextMonth: '2027-01',
+      historyLength: 1,
+      duplicateWasNoOp: true,
+    });
+  });
+
+  await t.test('Perita.jsx uses the shared local-date and month helpers', () => {
+    const fs = require('fs');
+    const src = fs.readFileSync(path.join(__dirname, '..', 'Perita.jsx'), 'utf8');
+    assert.match(src, /const today = \(\) => PeritaCore\.localDateId\(\)/);
+    assert.match(src, /PeritaCore\.nextMonthId\(curMonth\)/);
+    assert.doesNotMatch(src, /new Date\(curMonth \+ '-01'\)/);
   });
 });
 
