@@ -1151,3 +1151,218 @@ test('syncExpensesAlias (App.setState choke point)', async (t) => {
     assert.equal(synced, base, 'same reference — no unnecessary object creation');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// V1.1.0 account-ledger foundation — intentionally separate from perita_v1
+// ═══════════════════════════════════════════════════════════════════════════
+test('V1.1.0 account-ledger foundation', async (t) => {
+  const addAccount = (state, data = {}) => PC.addV110Account(state, {
+    name: data.name || 'Cuenta',
+    type: data.type || 'bank',
+    initialBalance: data.initialBalance == null ? 0 : data.initialBalance,
+    active: data.active,
+  });
+
+  await t.test('new schema starts empty and accounts keep only an initial balance', () => {
+    let s = PC.makeV110Default();
+    assert.equal(s.schemaVersion, '1.1.0');
+    assert.deepEqual(s.accounts, []);
+    assert.deepEqual(s.accountMovements, []);
+
+    s = addAccount(s, { name: 'Principal', initialBalance: 500 });
+    assert.deepEqual(s.accounts[0], {
+      id: 1,
+      name: 'Principal',
+      type: 'bank',
+      initialBalance: 500,
+      active: true,
+    });
+    assert.equal(Object.hasOwn(s.accounts[0], 'balance'), false, 'current balance is derived, never stored');
+    assert.equal(PC.v110AccountBalance(s, 1), 500);
+  });
+
+  await t.test('credits and debits create central movements and derive the current balance', () => {
+    let s = addAccount(PC.makeV110Default(), { initialBalance: 100 });
+    s = PC.createV110LinkedOperation(s, {
+      accountId: 1,
+      date: '2026-08-01',
+      amount: 250,
+      type: PC.V110_MOVEMENT_TYPES.CREDIT,
+      operationRef: 'income:10',
+    });
+    s = PC.createV110LinkedOperation(s, {
+      accountId: 1,
+      date: '2026-08-02',
+      amount: 40,
+      type: PC.V110_MOVEMENT_TYPES.DEBIT,
+      operationRef: 'expense:20',
+    });
+
+    assert.equal(PC.v110AccountBalance(s, 1), 310);
+    assert.deepEqual(s.accountMovements.map(({ accountId, date, amount, type, operationRef }) => ({
+      accountId, date, amount, type, operationRef,
+    })), [
+      { accountId: 1, date: '2026-08-01', amount: 250, type: 'credit', operationRef: 'income:10' },
+      { accountId: 1, date: '2026-08-02', amount: 40, type: 'debit', operationRef: 'expense:20' },
+    ]);
+  });
+
+  await t.test('editing an operation reverses its old movement before applying the replacement', () => {
+    let s = addAccount(PC.makeV110Default(), { name: 'Origen', initialBalance: 100 });
+    s = addAccount(s, { name: 'Destino', initialBalance: 20 });
+    s = PC.createV110LinkedOperation(s, {
+      accountId: 1,
+      date: '2026-08-01',
+      amount: 50,
+      type: 'credit',
+      operationRef: 'operation:1',
+    });
+    const movementId = s.accountMovements[0].id;
+
+    const edited = PC.editV110LinkedOperation(s, 'operation:1', {
+      accountId: 2,
+      date: '2026-08-03',
+      amount: 30,
+      type: 'debit',
+    });
+
+    assert.equal(PC.v110AccountBalance(edited, 1), 100, 'old account is restored');
+    assert.equal(PC.v110AccountBalance(edited, 2), -10, 'replacement applies once to the new account');
+    assert.equal(edited.accountMovements.length, 1);
+    assert.equal(edited.accountMovements[0].id, movementId);
+    assert.equal(edited.accountMovements[0].operationRef, 'operation:1');
+    assert.equal(PC.v110AccountBalance(s, 1), 150, 'input state was not mutated');
+  });
+
+  await t.test('deleting an operation removes its movement and restores the derived balance', () => {
+    let s = addAccount(PC.makeV110Default(), { initialBalance: 200 });
+    s = PC.createV110LinkedOperation(s, {
+      accountId: 1,
+      date: '2026-08-01',
+      amount: 75,
+      type: 'debit',
+      operationRef: 'expense:delete-me',
+    });
+    const deleted = PC.deleteV110LinkedOperation(s, 'expense:delete-me');
+
+    assert.equal(PC.v110AccountBalance(s, 1), 125);
+    assert.equal(PC.v110AccountBalance(deleted, 1), 200);
+    assert.deepEqual(deleted.accountMovements, []);
+  });
+
+  await t.test('balance adjustments are explicit signed movements, never silent overwrites', () => {
+    let s = addAccount(PC.makeV110Default(), { initialBalance: 100 });
+    s = PC.adjustV110AccountBalance(s, {
+      accountId: 1,
+      date: '2026-08-05',
+      targetBalance: 130,
+      operationRef: 'adjustment:1',
+    });
+    s = PC.adjustV110AccountBalance(s, {
+      accountId: 1,
+      date: '2026-08-06',
+      targetBalance: 90,
+      operationRef: 'adjustment:2',
+    });
+
+    assert.equal(s.accounts[0].initialBalance, 100);
+    assert.equal(PC.v110AccountBalance(s, 1), 90);
+    assert.deepEqual(s.accountMovements.map((movement) => ({
+      amount: movement.amount,
+      type: movement.type,
+      operationRef: movement.operationRef,
+    })), [
+      { amount: 30, type: 'adjustment', operationRef: 'adjustment:1' },
+      { amount: -40, type: 'adjustment', operationRef: 'adjustment:2' },
+    ]);
+  });
+
+  await t.test('one operation reference can produce at most one movement', () => {
+    let s = addAccount(PC.makeV110Default());
+    s = PC.createV110LinkedOperation(s, {
+      accountId: 1,
+      date: '2026-08-01',
+      amount: 10,
+      type: 'credit',
+      operationRef: 'unique:1',
+    });
+
+    assert.throws(
+      () => PC.createV110LinkedOperation(s, {
+        accountId: 1,
+        date: '2026-08-02',
+        amount: 20,
+        type: 'credit',
+        operationRef: 'unique:1',
+      }),
+      (error) => error.code === 'DUPLICATE_OPERATION_REF'
+    );
+    assert.throws(
+      () => PC.adjustV110AccountBalance(s, {
+        accountId: 1,
+        date: '2026-08-02',
+        targetBalance: 50,
+        operationRef: 'unique:1',
+      }),
+      (error) => error.code === 'DUPLICATE_OPERATION_REF'
+    );
+    assert.equal(s.accountMovements.length, 1);
+  });
+
+  await t.test('validates nonexistent accounts, calendar dates, amounts, and references', () => {
+    const s = addAccount(PC.makeV110Default());
+    const valid = {
+      accountId: 1,
+      date: '2024-02-29',
+      amount: 10,
+      type: 'credit',
+      operationRef: 'valid:1',
+    };
+
+    assert.throws(
+      () => PC.createV110LinkedOperation(s, { ...valid, accountId: 999 }),
+      (error) => error.code === 'ACCOUNT_NOT_FOUND'
+    );
+    for (const date of ['2026-02-29', '2026-04-31', '2026-13-01', '01-08-2026']) {
+      assert.throws(
+        () => PC.createV110LinkedOperation(s, { ...valid, date }),
+        (error) => error.code === 'INVALID_DATE'
+      );
+    }
+    for (const amount of [0, -1, NaN, Infinity]) {
+      assert.throws(
+        () => PC.createV110LinkedOperation(s, { ...valid, amount }),
+        (error) => error.code === 'INVALID_AMOUNT'
+      );
+    }
+    assert.throws(
+      () => PC.createV110LinkedOperation(s, { ...valid, operationRef: '  ' }),
+      (error) => error.code === 'INVALID_OPERATION_REF'
+    );
+    assert.equal(PC.isValidV110Date('2024-02-29'), true);
+    assert.equal(s.accountMovements.length, 0, 'failed validations do not mutate state');
+  });
+
+  await t.test('available is the sum of current balances from active accounts only', () => {
+    let s = addAccount(PC.makeV110Default(), { name: 'Activa', initialBalance: 100 });
+    s = addAccount(s, { name: 'Inactiva', initialBalance: 1000, active: false });
+    s = PC.createV110LinkedOperation(s, {
+      accountId: 1,
+      date: '2026-08-01',
+      amount: 50,
+      type: 'credit',
+      operationRef: 'active:income',
+    });
+    s = PC.createV110LinkedOperation(s, {
+      accountId: 2,
+      date: '2026-08-01',
+      amount: 500,
+      type: 'credit',
+      operationRef: 'inactive:income',
+    });
+
+    assert.equal(PC.v110AccountBalance(s, 1), 150);
+    assert.equal(PC.v110AccountBalance(s, 2), 1500);
+    assert.equal(PC.v110TotalAvailable(s), 150);
+  });
+});

@@ -352,6 +352,241 @@
     };
   }
 
+  // ── V1.1.0 account-ledger foundation (not integrated with the app yet) ─────
+  //
+  // This is an intentionally separate, empty-start schema. The current
+  // perita_v1 state, persistence helpers, UI writers, and dashboard calculations
+  // above continue to use the existing model until a later integration step.
+  const V110_SCHEMA_VERSION = '1.1.0';
+  const V110_MOVEMENT_TYPES = {
+    CREDIT: 'credit',
+    DEBIT: 'debit',
+    ADJUSTMENT: 'adjustment',
+  };
+
+  function makeV110Default() {
+    return {
+      schemaVersion: V110_SCHEMA_VERSION,
+      accounts: [],
+      accountMovements: [],
+      nextAccountId: 1,
+      nextMovementId: 1,
+    };
+  }
+
+  function v110ValidationError(code, message) {
+    const error = new Error(message);
+    error.name = 'V110ValidationError';
+    error.code = code;
+    return error;
+  }
+
+  function isValidV110Date(date) {
+    if (typeof date !== 'string') return false;
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+    if (!match) return false;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (year < 1 || month < 1 || month > 12 || day < 1) return false;
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    return day <= daysInMonth[month - 1];
+  }
+
+  function v110AccountOrThrow(state, accountId) {
+    const account = (state.accounts || []).find((a) => a.id === accountId);
+    if (!account) {
+      throw v110ValidationError('ACCOUNT_NOT_FOUND', `Account not found: ${accountId}`);
+    }
+    return account;
+  }
+
+  function v110OperationRefOrThrow(operationRef) {
+    if (typeof operationRef !== 'string' || !operationRef.trim()) {
+      throw v110ValidationError('INVALID_OPERATION_REF', 'Operation reference must be a non-empty string');
+    }
+    return operationRef.trim();
+  }
+
+  function v110DateOrThrow(date) {
+    if (!isValidV110Date(date)) {
+      throw v110ValidationError('INVALID_DATE', `Invalid local calendar date: ${date}`);
+    }
+    return date;
+  }
+
+  function v110PositiveAmountOrThrow(amount) {
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw v110ValidationError('INVALID_AMOUNT', `Amount must be finite and greater than zero: ${amount}`);
+    }
+    return amount;
+  }
+
+  function v110AssertUniqueOperationRef(state, operationRef) {
+    if ((state.accountMovements || []).some((movement) => movement.operationRef === operationRef)) {
+      throw v110ValidationError('DUPLICATE_OPERATION_REF', `Duplicate operation reference: ${operationRef}`);
+    }
+  }
+
+  function addV110Account(state, accountData) {
+    const initialBalance = accountData && accountData.initialBalance != null
+      ? accountData.initialBalance
+      : 0;
+    if (!Number.isFinite(initialBalance)) {
+      throw v110ValidationError('INVALID_AMOUNT', `Initial balance must be finite: ${initialBalance}`);
+    }
+    const id = state.nextAccountId;
+    const account = {
+      id,
+      name: (accountData && accountData.name) || '',
+      type: (accountData && accountData.type) || 'bank',
+      initialBalance,
+      active: !accountData || accountData.active !== false,
+    };
+    return {
+      ...state,
+      accounts: [...(state.accounts || []), account],
+      nextAccountId: id + 1,
+    };
+  }
+
+  function v110MovementDelta(movement) {
+    if (movement.type === V110_MOVEMENT_TYPES.CREDIT) return movement.amount;
+    if (movement.type === V110_MOVEMENT_TYPES.DEBIT) return -movement.amount;
+    if (movement.type === V110_MOVEMENT_TYPES.ADJUSTMENT) return movement.amount;
+    return 0;
+  }
+
+  function v110AccountBalance(state, accountId) {
+    const account = v110AccountOrThrow(state, accountId);
+    return (state.accountMovements || [])
+      .filter((movement) => movement.accountId === accountId)
+      .reduce((balance, movement) => balance + v110MovementDelta(movement), account.initialBalance);
+  }
+
+  function v110TotalAvailable(state) {
+    return (state.accounts || [])
+      .filter((account) => account.active !== false)
+      .reduce((total, account) => total + v110AccountBalance(state, account.id), 0);
+  }
+
+  function createV110LinkedOperation(state, operation) {
+    const accountId = operation && operation.accountId;
+    v110AccountOrThrow(state, accountId);
+    const date = v110DateOrThrow(operation && operation.date);
+    const amount = v110PositiveAmountOrThrow(operation && operation.amount);
+    const type = operation && operation.type;
+    if (type !== V110_MOVEMENT_TYPES.CREDIT && type !== V110_MOVEMENT_TYPES.DEBIT) {
+      throw v110ValidationError('INVALID_MOVEMENT_TYPE', `Invalid linked-operation type: ${type}`);
+    }
+    const operationRef = v110OperationRefOrThrow(operation && operation.operationRef);
+    v110AssertUniqueOperationRef(state, operationRef);
+
+    const movement = {
+      id: state.nextMovementId,
+      accountId,
+      date,
+      amount,
+      type,
+      operationRef,
+    };
+    return {
+      ...state,
+      accountMovements: [...(state.accountMovements || []), movement],
+      nextMovementId: state.nextMovementId + 1,
+    };
+  }
+
+  function editV110LinkedOperation(state, operationRef, patch) {
+    const normalizedRef = v110OperationRefOrThrow(operationRef);
+    const previous = (state.accountMovements || []).find(
+      (movement) => movement.operationRef === normalizedRef
+    );
+    if (!previous) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', `Operation not found: ${normalizedRef}`);
+    }
+    const accountId = patch && Object.prototype.hasOwnProperty.call(patch, 'accountId')
+      ? patch.accountId
+      : previous.accountId;
+    const date = patch && Object.prototype.hasOwnProperty.call(patch, 'date')
+      ? patch.date
+      : previous.date;
+    const amount = patch && Object.prototype.hasOwnProperty.call(patch, 'amount')
+      ? patch.amount
+      : previous.amount;
+    const type = patch && Object.prototype.hasOwnProperty.call(patch, 'type')
+      ? patch.type
+      : previous.type;
+
+    v110AccountOrThrow(state, accountId);
+    v110DateOrThrow(date);
+    v110PositiveAmountOrThrow(amount);
+    if (type !== V110_MOVEMENT_TYPES.CREDIT && type !== V110_MOVEMENT_TYPES.DEBIT) {
+      throw v110ValidationError('INVALID_MOVEMENT_TYPE', `Invalid linked-operation type: ${type}`);
+    }
+
+    const replacement = {
+      ...previous,
+      accountId,
+      date,
+      amount,
+      type,
+      operationRef: normalizedRef,
+    };
+    return {
+      ...state,
+      accountMovements: state.accountMovements.map(
+        (movement) => movement.id === previous.id ? replacement : movement
+      ),
+    };
+  }
+
+  function deleteV110LinkedOperation(state, operationRef) {
+    const normalizedRef = v110OperationRefOrThrow(operationRef);
+    const exists = (state.accountMovements || []).some(
+      (movement) => movement.operationRef === normalizedRef
+    );
+    if (!exists) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', `Operation not found: ${normalizedRef}`);
+    }
+    return {
+      ...state,
+      accountMovements: state.accountMovements.filter(
+        (movement) => movement.operationRef !== normalizedRef
+      ),
+    };
+  }
+
+  function adjustV110AccountBalance(state, adjustment) {
+    const accountId = adjustment && adjustment.accountId;
+    v110AccountOrThrow(state, accountId);
+    const date = v110DateOrThrow(adjustment && adjustment.date);
+    const operationRef = v110OperationRefOrThrow(adjustment && adjustment.operationRef);
+    v110AssertUniqueOperationRef(state, operationRef);
+    const targetBalance = adjustment && adjustment.targetBalance;
+    if (!Number.isFinite(targetBalance)) {
+      throw v110ValidationError('INVALID_AMOUNT', `Target balance must be finite: ${targetBalance}`);
+    }
+    const amount = targetBalance - v110AccountBalance(state, accountId);
+    if (amount === 0) {
+      throw v110ValidationError('INVALID_AMOUNT', 'Adjustment must change the account balance');
+    }
+    const movement = {
+      id: state.nextMovementId,
+      accountId,
+      date,
+      amount,
+      type: V110_MOVEMENT_TYPES.ADJUSTMENT,
+      operationRef,
+    };
+    return {
+      ...state,
+      accountMovements: [...(state.accountMovements || []), movement],
+      nextMovementId: state.nextMovementId + 1,
+    };
+  }
+
   return {
     localDateId,
     curMonthId,
@@ -374,5 +609,16 @@
     totalAccountBalance,
     totalWalletBalance,
     totalActiveDebt,
+    V110_SCHEMA_VERSION,
+    V110_MOVEMENT_TYPES,
+    makeV110Default,
+    isValidV110Date,
+    addV110Account,
+    v110AccountBalance,
+    v110TotalAvailable,
+    createV110LinkedOperation,
+    editV110LinkedOperation,
+    deleteV110LinkedOperation,
+    adjustV110AccountBalance,
   };
 });
