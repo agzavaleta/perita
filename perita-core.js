@@ -682,9 +682,6 @@
           notes: v110StringOrDefault(entry, 'notes', ''),
         };
       });
-      // Pending V1.1.0 integration: formalize and validate the deterministic
-      // transaction:<id> relationship against accountMovements. Persistence
-      // currently validates both sides independently without inventing it.
       const normalizeAccountOutflow = (entry, common, relationKey, nameKey) => {
         const accountId = v110PositiveIntegerOrThrow(entry.accountId, `${relationKey} account id`);
         if (!accountIds.has(accountId)) {
@@ -748,6 +745,66 @@
       historyMonths.add(monthState.month);
       return monthState;
     });
+
+    const expectedMovements = new Map();
+    const expectMovement = (operation, operationRef, type) => {
+      if (expectedMovements.has(operationRef)) {
+        throw v110ValidationError('DUPLICATE_OPERATION_REF', `Duplicate operation reference: ${operationRef}`);
+      }
+      expectedMovements.set(operationRef, {
+        accountId: operation.accountId,
+        date: operation.date,
+        amount: operation.amount,
+        type,
+      });
+    };
+    for (const monthState of [activeMonth, ...monthlyHistory]) {
+      for (const transaction of monthState.expenses) {
+        expectMovement(
+          transaction,
+          `transaction:${transaction.id}`,
+          transaction.type === 'income'
+            ? V110_MOVEMENT_TYPES.CREDIT
+            : V110_MOVEMENT_TYPES.DEBIT
+        );
+      }
+      for (const payment of monthState.gastosFijosPagados) {
+        expectMovement(payment, `fixed-payment:${payment.id}`, V110_MOVEMENT_TYPES.DEBIT);
+      }
+      for (const payment of monthState.pagosDeuda) {
+        expectMovement(payment, `debt-payment:${payment.id}`, V110_MOVEMENT_TYPES.DEBIT);
+      }
+      for (const deposit of monthState.aportesAhorro) {
+        expectMovement(deposit, `saving-deposit:${deposit.id}`, V110_MOVEMENT_TYPES.DEBIT);
+      }
+    }
+    for (const movement of accountMovements) {
+      if (movement.type === V110_MOVEMENT_TYPES.ADJUSTMENT) continue;
+      const expected = expectedMovements.get(movement.operationRef);
+      if (!expected) {
+        throw v110ValidationError(
+          'ORPHAN_MOVEMENT',
+          `Movement has no monthly operation: ${movement.operationRef}`
+        );
+      }
+      if (movement.accountId !== expected.accountId
+        || movement.date !== expected.date
+        || movement.amount !== expected.amount
+        || movement.type !== expected.type) {
+        throw v110ValidationError(
+          'MOVEMENT_MISMATCH',
+          `Movement does not match monthly operation: ${movement.operationRef}`
+        );
+      }
+      expectedMovements.delete(movement.operationRef);
+    }
+    if (expectedMovements.size) {
+      const [operationRef] = expectedMovements.keys();
+      throw v110ValidationError(
+        'ORPHAN_OPERATION',
+        `Monthly operation has no movement: ${operationRef}`
+      );
+    }
 
     const nextId = Math.max(
       Number.isInteger(saved.nextId) && saved.nextId > 0 ? saved.nextId : 1,
@@ -879,17 +936,31 @@
       .reduce((total, account) => total + v110AccountBalance(state, account.id), 0);
   }
 
-  function createV110LinkedOperation(state, operation) {
-    const accountId = operation && operation.accountId;
+  function v110ActiveMonthOrThrow(state) {
+    if (!state || !state.activeMonth) {
+      throw v110ValidationError('INVALID_MONTH', 'Active month is required');
+    }
+    return state.activeMonth;
+  }
+
+  function v110EntityOrThrow(collection, id, code, label) {
+    const entity = (collection || []).find((item) => item.id === id);
+    if (!entity) {
+      throw v110ValidationError(code, `${label} not found: ${id}`);
+    }
+    return entity;
+  }
+
+  function v110CreateOperationMovement(state, operation, type, operationRef) {
+    const accountId = operation.accountId;
     v110AccountOrThrow(state, accountId);
-    const date = v110DateOrThrow(operation && operation.date);
-    const amount = v110PositiveAmountOrThrow(operation && operation.amount);
-    const type = operation && operation.type;
+    const date = v110DateOrThrow(operation.date);
+    const amount = v110PositiveAmountOrThrow(operation.amount);
     if (type !== V110_MOVEMENT_TYPES.CREDIT && type !== V110_MOVEMENT_TYPES.DEBIT) {
       throw v110ValidationError('INVALID_MOVEMENT_TYPE', `Invalid linked-operation type: ${type}`);
     }
-    const operationRef = v110OperationRefOrThrow(operation && operation.operationRef);
-    v110AssertUniqueOperationRef(state, operationRef);
+    const normalizedRef = v110OperationRefOrThrow(operationRef);
+    v110AssertUniqueOperationRef(state, normalizedRef);
 
     const movement = {
       id: state.nextMovementId,
@@ -897,7 +968,7 @@
       date,
       amount,
       type,
-      operationRef,
+      operationRef: normalizedRef,
     };
     return {
       ...state,
@@ -906,7 +977,7 @@
     };
   }
 
-  function editV110LinkedOperation(state, operationRef, patch) {
+  function v110ReplaceOperationMovement(state, operationRef, operation, type) {
     const normalizedRef = v110OperationRefOrThrow(operationRef);
     const previous = (state.accountMovements || []).find(
       (movement) => movement.operationRef === normalizedRef
@@ -914,19 +985,9 @@
     if (!previous) {
       throw v110ValidationError('OPERATION_NOT_FOUND', `Operation not found: ${normalizedRef}`);
     }
-    const accountId = patch && Object.prototype.hasOwnProperty.call(patch, 'accountId')
-      ? patch.accountId
-      : previous.accountId;
-    const date = patch && Object.prototype.hasOwnProperty.call(patch, 'date')
-      ? patch.date
-      : previous.date;
-    const amount = patch && Object.prototype.hasOwnProperty.call(patch, 'amount')
-      ? patch.amount
-      : previous.amount;
-    const type = patch && Object.prototype.hasOwnProperty.call(patch, 'type')
-      ? patch.type
-      : previous.type;
-
+    const { accountId } = operation;
+    const date = operation.date;
+    const amount = operation.amount;
     v110AccountOrThrow(state, accountId);
     v110DateOrThrow(date);
     v110PositiveAmountOrThrow(amount);
@@ -950,7 +1011,7 @@
     };
   }
 
-  function deleteV110LinkedOperation(state, operationRef) {
+  function v110RemoveOperationMovement(state, operationRef) {
     const normalizedRef = v110OperationRefOrThrow(operationRef);
     const exists = (state.accountMovements || []).some(
       (movement) => movement.operationRef === normalizedRef
@@ -964,6 +1025,373 @@
         (movement) => movement.operationRef !== normalizedRef
       ),
     };
+  }
+
+  function v110TransactionOrThrow(state, source, id) {
+    const accountId = source && source.accountId;
+    v110AccountOrThrow(state, accountId);
+    const date = v110DateOrThrow(source && source.date);
+    const amount = v110PositiveAmountOrThrow(source && source.amount);
+    const type = source && source.type;
+    if (type !== 'income' && type !== 'expense') {
+      throw v110ValidationError('INVALID_TRANSACTION_TYPE', `Invalid transaction type: ${type}`);
+    }
+    return {
+      id,
+      date,
+      amount,
+      description: v110StringOrDefault(source, 'description', ''),
+      type,
+      accountId,
+      category: v110StringOrDefault(source, 'category', type === 'income' ? 'Ingreso' : ''),
+      method: v110StringOrDefault(source, 'method', ''),
+      notes: v110StringOrDefault(source, 'notes', ''),
+    };
+  }
+
+  function v110CreateMonthlyOperation(state, collectionKey, operation, movementType, operationRef) {
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    const withMovement = v110CreateOperationMovement(
+      state,
+      operation,
+      movementType,
+      operationRef
+    );
+    return {
+      ...withMovement,
+      activeMonth: {
+        ...activeMonth,
+        [collectionKey]: [...(activeMonth[collectionKey] || []), operation],
+      },
+      nextId: state.nextId + 1,
+    };
+  }
+
+  function v110EditMonthlyOperation(state, collectionKey, id, patch, normalize, movementType) {
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    const previous = (activeMonth[collectionKey] || []).find((operation) => operation.id === id);
+    if (!previous) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', `Operation not found: ${id}`);
+    }
+    const replacement = normalize({ ...previous, ...(patch || {}), id }, id);
+    const operationRef = replacement.operationRef;
+    const withMovement = v110ReplaceOperationMovement(
+      state,
+      operationRef,
+      replacement.operation,
+      movementType(replacement.operation)
+    );
+    return {
+      ...withMovement,
+      activeMonth: {
+        ...activeMonth,
+        [collectionKey]: activeMonth[collectionKey].map(
+          (operation) => operation.id === id ? replacement.operation : operation
+        ),
+      },
+    };
+  }
+
+  function v110DeleteMonthlyOperation(state, collectionKey, id, operationRef) {
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    const exists = (activeMonth[collectionKey] || []).some((operation) => operation.id === id);
+    if (!exists) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', `Operation not found: ${id}`);
+    }
+    const withMovement = v110RemoveOperationMovement(state, operationRef);
+    return {
+      ...withMovement,
+      activeMonth: {
+        ...activeMonth,
+        [collectionKey]: activeMonth[collectionKey].filter((operation) => operation.id !== id),
+      },
+    };
+  }
+
+  function createV110Transaction(state, transaction) {
+    const id = state.nextId;
+    const operation = v110TransactionOrThrow(state, transaction, id);
+    return v110CreateMonthlyOperation(
+      state,
+      'expenses',
+      operation,
+      operation.type === 'income' ? V110_MOVEMENT_TYPES.CREDIT : V110_MOVEMENT_TYPES.DEBIT,
+      `transaction:${id}`
+    );
+  }
+
+  function editV110Transaction(state, id, patch) {
+    return v110EditMonthlyOperation(
+      state,
+      'expenses',
+      id,
+      patch,
+      (source) => ({
+        operation: v110TransactionOrThrow(state, source, id),
+        operationRef: `transaction:${id}`,
+      }),
+      (operation) => operation.type === 'income'
+        ? V110_MOVEMENT_TYPES.CREDIT
+        : V110_MOVEMENT_TYPES.DEBIT
+    );
+  }
+
+  function deleteV110Transaction(state, id) {
+    return v110DeleteMonthlyOperation(state, 'expenses', id, `transaction:${id}`);
+  }
+
+  function v110FixedPaymentOrThrow(state, source, id) {
+    const budgetItem = v110EntityOrThrow(
+      state.budget,
+      source && source.budgetId,
+      'BUDGET_NOT_FOUND',
+      'Budget item'
+    );
+    const accountId = source && source.accountId;
+    v110AccountOrThrow(state, accountId);
+    return {
+      id,
+      date: v110DateOrThrow(source && source.date),
+      amount: v110PositiveAmountOrThrow(
+        source && source.amount != null ? source.amount : budgetItem.amount
+      ),
+      budgetId: budgetItem.id,
+      name: budgetItem.name,
+      accountId,
+    };
+  }
+
+  function createV110FixedPayment(state, payment) {
+    const id = state.nextId;
+    const operation = v110FixedPaymentOrThrow(state, payment, id);
+    return v110CreateMonthlyOperation(
+      state,
+      'gastosFijosPagados',
+      operation,
+      V110_MOVEMENT_TYPES.DEBIT,
+      `fixed-payment:${id}`
+    );
+  }
+
+  function editV110FixedPayment(state, id, patch) {
+    return v110EditMonthlyOperation(
+      state,
+      'gastosFijosPagados',
+      id,
+      patch,
+      (source) => ({
+        operation: v110FixedPaymentOrThrow(state, source, id),
+        operationRef: `fixed-payment:${id}`,
+      }),
+      () => V110_MOVEMENT_TYPES.DEBIT
+    );
+  }
+
+  function deleteV110FixedPayment(state, id) {
+    return v110DeleteMonthlyOperation(
+      state,
+      'gastosFijosPagados',
+      id,
+      `fixed-payment:${id}`
+    );
+  }
+
+  function v110DebtPaymentOrThrow(state, source, id, debts) {
+    const debt = v110EntityOrThrow(
+      debts || state.debts,
+      source && source.debtId,
+      'DEBT_NOT_FOUND',
+      'Debt'
+    );
+    const accountId = source && source.accountId;
+    v110AccountOrThrow(state, accountId);
+    const amount = v110PositiveAmountOrThrow(source && source.amount);
+    if (debt.paid + amount > debt.total) {
+      throw v110ValidationError('INVALID_AMOUNT', 'Debt payment exceeds remaining balance');
+    }
+    return {
+      id,
+      date: v110DateOrThrow(source && source.date),
+      amount,
+      debtId: debt.id,
+      debtName: debt.name,
+      accountId,
+    };
+  }
+
+  function v110ApplyDebtPayment(debts, payment, direction) {
+    return debts.map((debt) => {
+      if (debt.id !== payment.debtId) return debt;
+      const paid = debt.paid + direction * payment.amount;
+      if (!Number.isFinite(paid) || paid < 0 || paid > debt.total) {
+        throw v110ValidationError('INVALID_DEBT', `Invalid paid amount for debt: ${debt.id}`);
+      }
+      return {
+        ...debt,
+        paid,
+        status: paid >= debt.total
+          ? 'pagada'
+          : debt.status === 'pagada' ? 'activa' : debt.status,
+      };
+    });
+  }
+
+  function createV110DebtPayment(state, payment) {
+    const id = state.nextId;
+    const operation = v110DebtPaymentOrThrow(state, payment, id);
+    const withOperation = v110CreateMonthlyOperation(
+      state,
+      'pagosDeuda',
+      operation,
+      V110_MOVEMENT_TYPES.DEBIT,
+      `debt-payment:${id}`
+    );
+    return {
+      ...withOperation,
+      debts: v110ApplyDebtPayment(state.debts, operation, 1),
+    };
+  }
+
+  function editV110DebtPayment(state, id, patch) {
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    const previous = activeMonth.pagosDeuda.find((payment) => payment.id === id);
+    if (!previous) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', `Operation not found: ${id}`);
+    }
+    const revertedDebts = v110ApplyDebtPayment(state.debts, previous, -1);
+    const operation = v110DebtPaymentOrThrow(
+      state,
+      { ...previous, ...(patch || {}), id },
+      id,
+      revertedDebts
+    );
+    const updatedDebts = v110ApplyDebtPayment(revertedDebts, operation, 1);
+    const withMovement = v110ReplaceOperationMovement(
+      state,
+      `debt-payment:${id}`,
+      operation,
+      V110_MOVEMENT_TYPES.DEBIT
+    );
+    return {
+      ...withMovement,
+      debts: updatedDebts,
+      activeMonth: {
+        ...activeMonth,
+        pagosDeuda: activeMonth.pagosDeuda.map(
+          (payment) => payment.id === id ? operation : payment
+        ),
+      },
+    };
+  }
+
+  function deleteV110DebtPayment(state, id) {
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    const previous = activeMonth.pagosDeuda.find((payment) => payment.id === id);
+    if (!previous) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', `Operation not found: ${id}`);
+    }
+    const debts = v110ApplyDebtPayment(state.debts, previous, -1);
+    const withoutOperation = v110DeleteMonthlyOperation(
+      state,
+      'pagosDeuda',
+      id,
+      `debt-payment:${id}`
+    );
+    return { ...withoutOperation, debts };
+  }
+
+  function v110SavingDepositOrThrow(state, source, id) {
+    const wallet = v110EntityOrThrow(
+      state.wallets,
+      source && source.walletId,
+      'WALLET_NOT_FOUND',
+      'Wallet'
+    );
+    const accountId = source && source.accountId;
+    v110AccountOrThrow(state, accountId);
+    return {
+      id,
+      date: v110DateOrThrow(source && source.date),
+      amount: v110PositiveAmountOrThrow(source && source.amount),
+      walletId: wallet.id,
+      walletName: wallet.name,
+      accountId,
+    };
+  }
+
+  function v110ApplySavingDeposit(wallets, deposit, direction) {
+    return wallets.map((wallet) => {
+      if (wallet.id !== deposit.walletId) return wallet;
+      const balance = wallet.balance + direction * deposit.amount;
+      if (!Number.isFinite(balance) || balance < 0) {
+        throw v110ValidationError('INVALID_AMOUNT', `Invalid wallet balance: ${wallet.id}`);
+      }
+      return { ...wallet, balance };
+    });
+  }
+
+  function createV110SavingDeposit(state, deposit) {
+    const id = state.nextId;
+    const operation = v110SavingDepositOrThrow(state, deposit, id);
+    const withOperation = v110CreateMonthlyOperation(
+      state,
+      'aportesAhorro',
+      operation,
+      V110_MOVEMENT_TYPES.DEBIT,
+      `saving-deposit:${id}`
+    );
+    return {
+      ...withOperation,
+      wallets: v110ApplySavingDeposit(state.wallets, operation, 1),
+    };
+  }
+
+  function editV110SavingDeposit(state, id, patch) {
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    const previous = activeMonth.aportesAhorro.find((deposit) => deposit.id === id);
+    if (!previous) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', `Operation not found: ${id}`);
+    }
+    const revertedWallets = v110ApplySavingDeposit(state.wallets, previous, -1);
+    const stateAfterRevert = { ...state, wallets: revertedWallets };
+    const operation = v110SavingDepositOrThrow(
+      stateAfterRevert,
+      { ...previous, ...(patch || {}), id },
+      id
+    );
+    const wallets = v110ApplySavingDeposit(revertedWallets, operation, 1);
+    const withMovement = v110ReplaceOperationMovement(
+      state,
+      `saving-deposit:${id}`,
+      operation,
+      V110_MOVEMENT_TYPES.DEBIT
+    );
+    return {
+      ...withMovement,
+      wallets,
+      activeMonth: {
+        ...activeMonth,
+        aportesAhorro: activeMonth.aportesAhorro.map(
+          (deposit) => deposit.id === id ? operation : deposit
+        ),
+      },
+    };
+  }
+
+  function deleteV110SavingDeposit(state, id) {
+    const activeMonth = v110ActiveMonthOrThrow(state);
+    const previous = activeMonth.aportesAhorro.find((deposit) => deposit.id === id);
+    if (!previous) {
+      throw v110ValidationError('OPERATION_NOT_FOUND', `Operation not found: ${id}`);
+    }
+    const wallets = v110ApplySavingDeposit(state.wallets, previous, -1);
+    const withoutOperation = v110DeleteMonthlyOperation(
+      state,
+      'aportesAhorro',
+      id,
+      `saving-deposit:${id}`
+    );
+    return { ...withoutOperation, wallets };
   }
 
   function adjustV110AccountBalance(state, adjustment) {
@@ -1028,9 +1456,18 @@
     addV110Account,
     v110AccountBalance,
     v110TotalAvailable,
-    createV110LinkedOperation,
-    editV110LinkedOperation,
-    deleteV110LinkedOperation,
+    createV110Transaction,
+    editV110Transaction,
+    deleteV110Transaction,
+    createV110FixedPayment,
+    editV110FixedPayment,
+    deleteV110FixedPayment,
+    createV110DebtPayment,
+    editV110DebtPayment,
+    deleteV110DebtPayment,
+    createV110SavingDeposit,
+    editV110SavingDeposit,
+    deleteV110SavingDeposit,
     adjustV110AccountBalance,
   };
 });

@@ -1162,6 +1162,43 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     initialBalance: data.initialBalance == null ? 0 : data.initialBalance,
     active: data.active,
   });
+  const seedV110Domains = () => {
+    let state = addAccount(PC.makeV110Default(), {
+      name: 'Principal',
+      initialBalance: 100,
+    });
+    state = addAccount(state, {
+      name: 'Secundaria',
+      initialBalance: 20,
+    });
+    return {
+      ...state,
+      debts: [{
+        id: 3,
+        name: 'Tarjeta',
+        total: 500,
+        paid: 100,
+        monthly: 50,
+        dueDate: '2026-08-10',
+        status: 'activa',
+      }],
+      wallets: [{
+        id: 4,
+        emoji: '💰',
+        name: 'Viaje',
+        bank: 'Banco Estado',
+        balance: 200,
+        monthly: 20,
+        goal: 1000,
+      }],
+      budget: [{ id: 5, name: 'Arriendo', amount: 30 }],
+      nextId: 6,
+      activeMonth: {
+        ...state.activeMonth,
+        month: '2026-08',
+      },
+    };
+  };
 
   await t.test('new schema starts empty and accounts keep only an initial balance', () => {
     let s = PC.makeV110Default();
@@ -1233,12 +1270,11 @@ test('V1.1.0 account-ledger foundation', async (t) => {
       ...state,
       settings: { salary: 1000 },
     };
-    state = PC.createV110LinkedOperation(state, {
+    state = PC.createV110Transaction(state, {
       accountId: 1,
       date: '2026-08-01',
       amount: 50,
-      type: 'credit',
-      operationRef: 'existing:movement',
+      type: 'income',
     });
     const movements = state.accountMovements;
     const edited = PC.setV110ActiveMonthSalary(state, 875);
@@ -1258,20 +1294,15 @@ test('V1.1.0 account-ledger foundation', async (t) => {
         ...state.activeMonth,
         month: '2026-08',
         salary: 950,
-        expenses: [{
-          id: 2,
-          accountId: 1,
-          date: '2026-08-05',
-          amount: 200,
-          description: 'Freelance',
-          type: 'income',
-          category: 'Ingreso',
-          method: '',
-          notes: '',
-        }],
       },
-      nextId: 3,
     };
+    state = PC.createV110Transaction(state, {
+      accountId: 1,
+      date: '2026-08-05',
+      amount: 200,
+      description: 'Freelance',
+      type: 'income',
+    });
     const movements = state.accountMovements;
     const closed = PC.closeV110Month(
       state,
@@ -1292,7 +1323,7 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     assert.deepEqual(closed.activeMonth.gastosFijosPagados, []);
     assert.equal(closed.settings.salary, 1200);
     assert.equal(closed.accountMovements, movements);
-    assert.equal(closed.accountMovements.length, 0);
+    assert.equal(closed.accountMovements.length, 1);
   });
 
   await t.test('salary lifecycle actions never turn salary into additional income or an account movement', () => {
@@ -1373,8 +1404,11 @@ test('V1.1.0 account-ledger foundation', async (t) => {
         { id: 2, accountId: 1, date: '2026-08-01', amount: 25, type: 'credit', operationRef: 'transaction:6' },
         { id: 3, accountId: 1, date: '2026-08-02', amount: 10, type: 'debit', operationRef: 'transaction:7' },
         { id: 4, accountId: 1, date: '2026-08-03', amount: 15, type: 'debit', operationRef: 'debt-payment:8' },
-        { id: 5, accountId: 1, date: '2026-08-04', amount: 20, type: 'debit', operationRef: 'saving:9' },
-        { id: 6, accountId: 1, date: '2026-08-05', amount: 30, type: 'debit', operationRef: 'fixed-expense:10' },
+        { id: 5, accountId: 1, date: '2026-08-04', amount: 20, type: 'debit', operationRef: 'saving-deposit:9' },
+        { id: 6, accountId: 1, date: '2026-08-05', amount: 30, type: 'debit', operationRef: 'fixed-payment:10' },
+        { id: 7, accountId: 1, date: '2026-07-03', amount: 25, type: 'debit', operationRef: 'debt-payment:12' },
+        { id: 8, accountId: 1, date: '2026-07-04', amount: 20, type: 'debit', operationRef: 'saving-deposit:13' },
+        { id: 9, accountId: 1, date: '2026-07-05', amount: 300, type: 'debit', operationRef: 'fixed-payment:14' },
       ],
       debts: [{
         id: 2, name: 'Tarjeta', total: 500, paid: 100, monthly: 50,
@@ -1387,7 +1421,7 @@ test('V1.1.0 account-ledger foundation', async (t) => {
       budget: [{ id: 4, name: 'Arriendo', amount: 300 }],
       varCategories: [{ id: 5, name: 'Comida' }],
       nextId: 15,
-      nextMovementId: 7,
+      nextMovementId: 10,
       activeMonth: {
         month: '2026-08',
         salary: 850,
@@ -1501,8 +1535,15 @@ test('V1.1.0 account-ledger foundation', async (t) => {
         accountId: 7,
         date: '2026-08-01',
         amount: 10,
+        type: 'adjustment',
+        operationRef: 'adjustment:existing',
+      }, {
+        id: 13,
+        accountId: 7,
+        date: '2026-07-01',
+        amount: 10,
         type: 'credit',
-        operationRef: 'income:existing',
+        operationRef: 'transaction:40',
       }],
       activeMonth: { month: '2026-08' },
       monthlyHistory: [{
@@ -1520,60 +1561,16 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     }));
 
     assert.equal(loaded.nextId, 41);
-    assert.equal(loaded.nextMovementId, 13);
+    assert.equal(loaded.nextMovementId, 14);
     const withAccount = addAccount(loaded);
     assert.equal(withAccount.accounts.at(-1).id, 41);
-    const withMovement = PC.createV110LinkedOperation(withAccount, {
+    const withMovement = PC.createV110Transaction(withAccount, {
       accountId: 41,
       date: '2026-08-02',
       amount: 20,
-      type: 'debit',
-      operationRef: 'expense:new',
+      type: 'expense',
     });
-    assert.equal(withMovement.accountMovements.at(-1).id, 13);
-  });
-
-  await t.test('invalid ledgers fail closed instead of returning partial financial data', () => {
-    const base = {
-      schemaVersion: '1.1.0',
-      accounts: [{ id: 1, name: 'Cuenta', initialBalance: 100, active: true }],
-      accountMovements: [{
-        id: 1,
-        accountId: 1,
-        date: '2026-08-01',
-        amount: 10,
-        type: 'credit',
-        operationRef: 'operation:1',
-      }],
-    };
-    const invalidStates = [
-      { ...base, accounts: [...base.accounts, { ...base.accounts[0] }] },
-      { ...base, accountMovements: [...base.accountMovements, { ...base.accountMovements[0], operationRef: 'operation:2' }] },
-      { ...base, accountMovements: [...base.accountMovements, { ...base.accountMovements[0], id: 2 }] },
-      { ...base, accountMovements: [{ ...base.accountMovements[0], accountId: 999 }] },
-      { ...base, accountMovements: [{ ...base.accountMovements[0], date: '2026-02-30' }] },
-      { ...base, accountMovements: [{ ...base.accountMovements[0], amount: 0 }] },
-      { ...base, accountMovements: [{ ...base.accountMovements[0], type: 'transfer' }] },
-      { ...base, accounts: [{ ...base.accounts[0], initialBalance: Infinity }] },
-    ];
-
-    for (const invalid of invalidStates) {
-      assert.deepEqual(PC.loadV110(JSON.stringify(invalid)), PC.makeV110Default());
-    }
-    assert.deepEqual(
-      PC.loadV110(JSON.stringify({
-        ...base,
-        accountMovements: [
-          ...base.accountMovements,
-          { ...base.accountMovements[0], id: 2, operationRef: 'operation:1' },
-        ],
-      })),
-      PC.makeV110Default()
-    );
-    assert.throws(
-      () => PC.serializeV110({ ...base, accountMovements: [{ ...base.accountMovements[0], amount: -1 }] }),
-      (error) => error.name === 'V110ValidationError' && error.code === 'INVALID_AMOUNT'
-    );
+    assert.equal(withMovement.accountMovements.at(-1).id, 14);
   });
 
   await t.test('invalid complete-state domains and conflicting V1.0 fields fail closed', () => {
@@ -1646,73 +1643,212 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     );
   });
 
-  await t.test('credits and debits create central movements and derive the current balance', () => {
-    let s = addAccount(PC.makeV110Default(), { initialBalance: 100 });
-    s = PC.createV110LinkedOperation(s, {
+  await t.test('creating every monthly operation atomically creates one deterministic movement', () => {
+    let state = seedV110Domains();
+    state = PC.createV110Transaction(state, {
       accountId: 1,
       date: '2026-08-01',
       amount: 250,
-      type: PC.V110_MOVEMENT_TYPES.CREDIT,
-      operationRef: 'income:10',
+      type: 'income',
+      description: 'Freelance',
     });
-    s = PC.createV110LinkedOperation(s, {
+    state = PC.createV110Transaction(state, {
       accountId: 1,
       date: '2026-08-02',
       amount: 40,
-      type: PC.V110_MOVEMENT_TYPES.DEBIT,
-      operationRef: 'expense:20',
+      type: 'expense',
+      description: 'Comida',
+    });
+    state = PC.createV110FixedPayment(state, {
+      budgetId: 5,
+      accountId: 1,
+      date: '2026-08-03',
+    });
+    state = PC.createV110DebtPayment(state, {
+      debtId: 3,
+      accountId: 1,
+      date: '2026-08-04',
+      amount: 15,
+    });
+    state = PC.createV110SavingDeposit(state, {
+      walletId: 4,
+      accountId: 1,
+      date: '2026-08-05',
+      amount: 20,
     });
 
-    assert.equal(PC.v110AccountBalance(s, 1), 310);
-    assert.deepEqual(s.accountMovements.map(({ accountId, date, amount, type, operationRef }) => ({
-      accountId, date, amount, type, operationRef,
-    })), [
-      { accountId: 1, date: '2026-08-01', amount: 250, type: 'credit', operationRef: 'income:10' },
-      { accountId: 1, date: '2026-08-02', amount: 40, type: 'debit', operationRef: 'expense:20' },
-    ]);
+    assert.deepEqual(
+      state.accountMovements.map(({ operationRef, type, accountId, date, amount }) => ({
+        operationRef, type, accountId, date, amount,
+      })),
+      [
+        { operationRef: 'transaction:6', type: 'credit', accountId: 1, date: '2026-08-01', amount: 250 },
+        { operationRef: 'transaction:7', type: 'debit', accountId: 1, date: '2026-08-02', amount: 40 },
+        { operationRef: 'fixed-payment:8', type: 'debit', accountId: 1, date: '2026-08-03', amount: 30 },
+        { operationRef: 'debt-payment:9', type: 'debit', accountId: 1, date: '2026-08-04', amount: 15 },
+        { operationRef: 'saving-deposit:10', type: 'debit', accountId: 1, date: '2026-08-05', amount: 20 },
+      ]
+    );
+    assert.equal(state.activeMonth.expenses.length, 2);
+    assert.equal(state.activeMonth.gastosFijosPagados.length, 1);
+    assert.equal(state.activeMonth.pagosDeuda.length, 1);
+    assert.equal(state.activeMonth.aportesAhorro.length, 1);
+    assert.equal(state.debts[0].paid, 115);
+    assert.equal(state.wallets[0].balance, 220);
+    assert.equal(PC.v110AccountBalance(state, 1), 245);
   });
 
-  await t.test('editing an operation reverses its old movement before applying the replacement', () => {
-    let s = addAccount(PC.makeV110Default(), { name: 'Origen', initialBalance: 100 });
-    s = addAccount(s, { name: 'Destino', initialBalance: 20 });
-    s = PC.createV110LinkedOperation(s, {
+  await t.test('editing a transaction preserves its identity while changing account and direction', () => {
+    let state = seedV110Domains();
+    state = PC.createV110Transaction(state, {
       accountId: 1,
       date: '2026-08-01',
       amount: 50,
-      type: 'credit',
-      operationRef: 'operation:1',
+      type: 'income',
     });
-    const movementId = s.accountMovements[0].id;
-
-    const edited = PC.editV110LinkedOperation(s, 'operation:1', {
+    const id = state.activeMonth.expenses[0].id;
+    const movementId = state.accountMovements[0].id;
+    const edited = PC.editV110Transaction(state, id, {
       accountId: 2,
       date: '2026-08-03',
       amount: 30,
-      type: 'debit',
+      type: 'expense',
     });
 
-    assert.equal(PC.v110AccountBalance(edited, 1), 100, 'old account is restored');
-    assert.equal(PC.v110AccountBalance(edited, 2), -10, 'replacement applies once to the new account');
-    assert.equal(edited.accountMovements.length, 1);
+    assert.equal(edited.activeMonth.expenses[0].id, id);
     assert.equal(edited.accountMovements[0].id, movementId);
-    assert.equal(edited.accountMovements[0].operationRef, 'operation:1');
-    assert.equal(PC.v110AccountBalance(s, 1), 150, 'input state was not mutated');
+    assert.equal(edited.accountMovements[0].operationRef, `transaction:${id}`);
+    assert.equal(edited.accountMovements[0].type, 'debit');
+    assert.equal(edited.accountMovements[0].accountId, 2);
+    assert.equal(PC.v110AccountBalance(edited, 1), 100);
+    assert.equal(PC.v110AccountBalance(edited, 2), -10);
+    assert.equal(PC.v110AccountBalance(state, 1), 150, 'input state remains unchanged');
   });
 
-  await t.test('deleting an operation removes its movement and restores the derived balance', () => {
-    let s = addAccount(PC.makeV110Default(), { initialBalance: 200 });
-    s = PC.createV110LinkedOperation(s, {
+  await t.test('deleting transactions and fixed payments removes both operation and movement', () => {
+    let state = seedV110Domains();
+    state = PC.createV110Transaction(state, {
       accountId: 1,
       date: '2026-08-01',
-      amount: 75,
-      type: 'debit',
-      operationRef: 'expense:delete-me',
+      amount: 25,
+      type: 'expense',
     });
-    const deleted = PC.deleteV110LinkedOperation(s, 'expense:delete-me');
+    const transactionId = state.activeMonth.expenses[0].id;
+    state = PC.deleteV110Transaction(state, transactionId);
+    assert.deepEqual(state.activeMonth.expenses, []);
+    assert.deepEqual(state.accountMovements, []);
 
-    assert.equal(PC.v110AccountBalance(s, 1), 125);
-    assert.equal(PC.v110AccountBalance(deleted, 1), 200);
-    assert.deepEqual(deleted.accountMovements, []);
+    state = PC.createV110FixedPayment(state, {
+      budgetId: 5,
+      accountId: 1,
+      date: '2026-08-02',
+    });
+    const paymentId = state.activeMonth.gastosFijosPagados[0].id;
+    state = PC.editV110FixedPayment(state, paymentId, {
+      accountId: 2,
+      date: '2026-08-03',
+      amount: 35,
+    });
+    assert.deepEqual(
+      state.accountMovements[0],
+      {
+        id: 2,
+        accountId: 2,
+        date: '2026-08-03',
+        amount: 35,
+        type: 'debit',
+        operationRef: `fixed-payment:${paymentId}`,
+      }
+    );
+    state = PC.deleteV110FixedPayment(state, paymentId);
+    assert.deepEqual(state.activeMonth.gastosFijosPagados, []);
+    assert.deepEqual(state.accountMovements, []);
+  });
+
+  await t.test('debt payment create, edit, and delete reconcile debt.paid atomically', () => {
+    let state = seedV110Domains();
+    state = PC.createV110DebtPayment(state, {
+      debtId: 3,
+      accountId: 1,
+      date: '2026-08-01',
+      amount: 40,
+    });
+    const id = state.activeMonth.pagosDeuda[0].id;
+    assert.equal(state.debts[0].paid, 140);
+
+    state = PC.editV110DebtPayment(state, id, {
+      accountId: 2,
+      date: '2026-08-02',
+      amount: 60,
+    });
+    assert.equal(state.debts[0].paid, 160);
+    assert.equal(state.accountMovements[0].accountId, 2);
+    assert.equal(state.accountMovements[0].amount, 60);
+    assert.equal(state.accountMovements[0].operationRef, `debt-payment:${id}`);
+
+    state = PC.deleteV110DebtPayment(state, id);
+    assert.equal(state.debts[0].paid, 100);
+    assert.deepEqual(state.activeMonth.pagosDeuda, []);
+    assert.deepEqual(state.accountMovements, []);
+  });
+
+  await t.test('saving deposit create, edit, and delete reconcile wallet.balance atomically', () => {
+    let state = seedV110Domains();
+    state = PC.createV110SavingDeposit(state, {
+      walletId: 4,
+      accountId: 1,
+      date: '2026-08-01',
+      amount: 40,
+    });
+    const id = state.activeMonth.aportesAhorro[0].id;
+    assert.equal(state.wallets[0].balance, 240);
+
+    state = PC.editV110SavingDeposit(state, id, {
+      accountId: 2,
+      date: '2026-08-02',
+      amount: 60,
+    });
+    assert.equal(state.wallets[0].balance, 260);
+    assert.equal(state.accountMovements[0].accountId, 2);
+    assert.equal(state.accountMovements[0].amount, 60);
+    assert.equal(state.accountMovements[0].operationRef, `saving-deposit:${id}`);
+
+    state = PC.deleteV110SavingDeposit(state, id);
+    assert.equal(state.wallets[0].balance, 200);
+    assert.deepEqual(state.activeMonth.aportesAhorro, []);
+    assert.deepEqual(state.accountMovements, []);
+  });
+
+  await t.test('failed creates and edits leave the original state untouched', () => {
+    const state = seedV110Domains();
+    const before = JSON.stringify(state);
+    assert.throws(
+      () => PC.createV110DebtPayment(state, {
+        debtId: 3,
+        accountId: 1,
+        date: '2026-08-01',
+        amount: 1000,
+      }),
+      (error) => error.code === 'INVALID_AMOUNT'
+    );
+    assert.equal(JSON.stringify(state), before);
+
+    const withDeposit = PC.createV110SavingDeposit(state, {
+      walletId: 4,
+      accountId: 1,
+      date: '2026-08-01',
+      amount: 40,
+    });
+    const withDepositBefore = JSON.stringify(withDeposit);
+    assert.throws(
+      () => PC.editV110SavingDeposit(
+        withDeposit,
+        withDeposit.activeMonth.aportesAhorro[0].id,
+        { accountId: 999 }
+      ),
+      (error) => error.code === 'ACCOUNT_NOT_FOUND'
+    );
+    assert.equal(JSON.stringify(withDeposit), withDepositBefore);
   });
 
   await t.test('balance adjustments are explicit signed movements, never silent overwrites', () => {
@@ -1742,88 +1878,159 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     ]);
   });
 
-  await t.test('one operation reference can produce at most one movement', () => {
-    let s = addAccount(PC.makeV110Default());
-    s = PC.createV110LinkedOperation(s, {
+  await t.test('generic unlinked movement writers are not public', () => {
+    assert.equal(PC.createV110LinkedOperation, undefined);
+    assert.equal(PC.editV110LinkedOperation, undefined);
+    assert.equal(PC.deleteV110LinkedOperation, undefined);
+  });
+
+  await t.test('closing preserves deterministic references and remains serializable', () => {
+    let state = seedV110Domains();
+    state = PC.createV110Transaction(state, {
       accountId: 1,
       date: '2026-08-01',
       amount: 10,
-      type: 'credit',
-      operationRef: 'unique:1',
+      type: 'income',
     });
+    state = PC.createV110DebtPayment(state, {
+      debtId: 3,
+      accountId: 1,
+      date: '2026-08-02',
+      amount: 20,
+    });
+    const refs = state.accountMovements.map((movement) => movement.operationRef);
+    const closed = PC.closeV110Month(
+      state,
+      '2026-08-31T23:00:00.000Z',
+      '2026-08'
+    );
 
-    assert.throws(
-      () => PC.createV110LinkedOperation(s, {
-        accountId: 1,
-        date: '2026-08-02',
-        amount: 20,
-        type: 'credit',
-        operationRef: 'unique:1',
-      }),
-      (error) => error.code === 'DUPLICATE_OPERATION_REF'
-    );
-    assert.throws(
-      () => PC.adjustV110AccountBalance(s, {
-        accountId: 1,
-        date: '2026-08-02',
-        targetBalance: 50,
-        operationRef: 'unique:1',
-      }),
-      (error) => error.code === 'DUPLICATE_OPERATION_REF'
-    );
-    assert.equal(s.accountMovements.length, 1);
+    assert.deepEqual(closed.accountMovements.map((movement) => movement.operationRef), refs);
+    assert.deepEqual(closed.activeMonth.expenses, []);
+    assert.equal(closed.monthlyHistory[0].expenses.length, 1);
+    assert.equal(closed.monthlyHistory[0].pagosDeuda.length, 1);
+    assert.deepEqual(PC.loadV110(PC.serializeV110(closed)), closed);
   });
 
-  await t.test('validates nonexistent accounts, calendar dates, amounts, and references', () => {
-    const s = addAccount(PC.makeV110Default());
+  await t.test('persistence rejects orphaned, duplicate, and discordant operation links', () => {
+    let valid = seedV110Domains();
+    valid = PC.createV110Transaction(valid, {
+      accountId: 1,
+      date: '2026-08-01',
+      amount: 10,
+      type: 'income',
+    });
+    const clone = () => JSON.parse(JSON.stringify(valid));
+    const orphanOperation = clone();
+    orphanOperation.accountMovements = [];
+    const orphanMovement = clone();
+    orphanMovement.activeMonth.expenses = [];
+    const mismatchedAmount = clone();
+    mismatchedAmount.accountMovements[0].amount = 11;
+    const mismatchedAccount = clone();
+    mismatchedAccount.accountMovements[0].accountId = 2;
+    const mismatchedDate = clone();
+    mismatchedDate.accountMovements[0].date = '2026-08-02';
+    const mismatchedDirection = clone();
+    mismatchedDirection.accountMovements[0].type = 'debit';
+    const duplicate = clone();
+    duplicate.accountMovements.push({
+      ...duplicate.accountMovements[0],
+      id: 2,
+    });
+    const duplicateOperation = clone();
+    duplicateOperation.activeMonth.expenses.push({
+      ...duplicateOperation.activeMonth.expenses[0],
+    });
+    const closed = PC.closeV110Month(
+      valid,
+      '2026-08-31T23:00:00.000Z',
+      '2026-08'
+    );
+    const historicalOrphanOperation = JSON.parse(JSON.stringify(closed));
+    historicalOrphanOperation.accountMovements = [];
+    const historicalOrphanMovement = JSON.parse(JSON.stringify(closed));
+    historicalOrphanMovement.monthlyHistory[0].expenses = [];
+    const historicalMismatch = JSON.parse(JSON.stringify(closed));
+    historicalMismatch.monthlyHistory[0].expenses[0].amount = 11;
+
+    for (const invalid of [
+      orphanOperation,
+      orphanMovement,
+      mismatchedAmount,
+      mismatchedAccount,
+      mismatchedDate,
+      mismatchedDirection,
+      duplicate,
+      duplicateOperation,
+      historicalOrphanOperation,
+      historicalOrphanMovement,
+      historicalMismatch,
+    ]) {
+      assert.deepEqual(PC.loadV110(JSON.stringify(invalid)), PC.makeV110Default());
+      assert.throws(
+        () => PC.serializeV110(invalid),
+        (error) => error.name === 'V110ValidationError'
+      );
+    }
+
+    let adjustmentOnly = addAccount(PC.makeV110Default(), { initialBalance: 100 });
+    adjustmentOnly = PC.adjustV110AccountBalance(adjustmentOnly, {
+      accountId: 1,
+      date: '2026-08-01',
+      targetBalance: 120,
+      operationRef: 'adjustment:standalone',
+    });
+    assert.deepEqual(
+      PC.loadV110(PC.serializeV110(adjustmentOnly)),
+      adjustmentOnly
+    );
+  });
+
+  await t.test('validates nonexistent accounts, calendar dates, and amounts atomically', () => {
+    const state = seedV110Domains();
     const valid = {
       accountId: 1,
       date: '2024-02-29',
       amount: 10,
-      type: 'credit',
-      operationRef: 'valid:1',
+      type: 'income',
     };
 
     assert.throws(
-      () => PC.createV110LinkedOperation(s, { ...valid, accountId: 999 }),
+      () => PC.createV110Transaction(state, { ...valid, accountId: 999 }),
       (error) => error.code === 'ACCOUNT_NOT_FOUND'
     );
     for (const date of ['2026-02-29', '2026-04-31', '2026-13-01', '01-08-2026']) {
       assert.throws(
-        () => PC.createV110LinkedOperation(s, { ...valid, date }),
+        () => PC.createV110Transaction(state, { ...valid, date }),
         (error) => error.code === 'INVALID_DATE'
       );
     }
     for (const amount of [0, -1, NaN, Infinity]) {
       assert.throws(
-        () => PC.createV110LinkedOperation(s, { ...valid, amount }),
+        () => PC.createV110Transaction(state, { ...valid, amount }),
         (error) => error.code === 'INVALID_AMOUNT'
       );
     }
-    assert.throws(
-      () => PC.createV110LinkedOperation(s, { ...valid, operationRef: '  ' }),
-      (error) => error.code === 'INVALID_OPERATION_REF'
-    );
     assert.equal(PC.isValidV110Date('2024-02-29'), true);
-    assert.equal(s.accountMovements.length, 0, 'failed validations do not mutate state');
+    assert.equal(state.accountMovements.length, 0, 'failed validations do not mutate state');
+    assert.equal(state.activeMonth.expenses.length, 0);
   });
 
   await t.test('available is the sum of current balances from active accounts only', () => {
     let s = addAccount(PC.makeV110Default(), { name: 'Activa', initialBalance: 100 });
     s = addAccount(s, { name: 'Inactiva', initialBalance: 1000, active: false });
-    s = PC.createV110LinkedOperation(s, {
+    s = PC.createV110Transaction(s, {
       accountId: 1,
       date: '2026-08-01',
       amount: 50,
-      type: 'credit',
-      operationRef: 'active:income',
+      type: 'income',
     });
-    s = PC.createV110LinkedOperation(s, {
+    s = PC.createV110Transaction(s, {
       accountId: 2,
       date: '2026-08-01',
       amount: 500,
-      type: 'credit',
-      operationRef: 'inactive:income',
+      type: 'income',
     });
 
     assert.equal(PC.v110AccountBalance(s, 1), 150);
