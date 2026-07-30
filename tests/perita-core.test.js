@@ -1181,6 +1181,141 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     assert.equal(PC.v110AccountBalance(s, 1), 500);
   });
 
+  await t.test('isolated persistence loads empty storage as a fresh V1.1.0 state', () => {
+    assert.deepEqual(PC.loadV110(null), PC.makeV110Default());
+    assert.deepEqual(PC.loadV110(''), PC.makeV110Default());
+  });
+
+  await t.test('isolated persistence round-trips a valid account ledger', () => {
+    let s = addAccount(PC.makeV110Default(), { name: 'Principal', initialBalance: 100 });
+    s = PC.createV110LinkedOperation(s, {
+      accountId: 1,
+      date: '2026-08-01',
+      amount: 25,
+      type: 'credit',
+      operationRef: 'income:round-trip',
+    });
+
+    const raw = PC.serializeV110(s);
+    const loaded = PC.loadV110(raw);
+
+    assert.deepEqual(loaded, s);
+    assert.notEqual(loaded, s);
+    assert.notEqual(loaded.accounts, s.accounts);
+    assert.notEqual(loaded.accounts[0], s.accounts[0]);
+    assert.notEqual(loaded.accountMovements, s.accountMovements);
+    assert.notEqual(loaded.accountMovements[0], s.accountMovements[0]);
+  });
+
+  await t.test('invalid JSON, missing schema, and other schema versions start empty', () => {
+    for (const raw of [
+      '{not-json',
+      JSON.stringify({ accounts: [] }),
+      JSON.stringify({ schemaVersion: '1.0.0', accounts: [] }),
+      JSON.stringify({ schemaVersion: '1.2.0', accounts: [] }),
+    ]) {
+      assert.deepEqual(PC.loadV110(raw), PC.makeV110Default());
+    }
+  });
+
+  await t.test('valid partial V1.1.0 state receives independent defaults', () => {
+    const first = PC.loadV110(JSON.stringify({
+      schemaVersion: '1.1.0',
+      accounts: [{ id: 4, name: 'Parcial' }],
+    }));
+    const second = PC.loadV110(JSON.stringify({ schemaVersion: '1.1.0' }));
+
+    assert.deepEqual(first, {
+      schemaVersion: '1.1.0',
+      accounts: [{
+        id: 4,
+        name: 'Parcial',
+        type: 'bank',
+        initialBalance: 0,
+        active: true,
+      }],
+      accountMovements: [],
+      nextAccountId: 5,
+      nextMovementId: 1,
+    });
+    first.accounts.push({ id: 99 });
+    first.accountMovements.push({ id: 99 });
+    assert.deepEqual(second, PC.makeV110Default(), 'default arrays are never shared across loads');
+  });
+
+  await t.test('stale counters advance beyond existing account and movement IDs', () => {
+    const loaded = PC.loadV110(JSON.stringify({
+      schemaVersion: '1.1.0',
+      accounts: [{ id: 7, name: 'Cuenta', initialBalance: 0, active: true }],
+      accountMovements: [{
+        id: 12,
+        accountId: 7,
+        date: '2026-08-01',
+        amount: 10,
+        type: 'credit',
+        operationRef: 'income:existing',
+      }],
+      nextAccountId: 2,
+      nextMovementId: 3,
+    }));
+
+    assert.equal(loaded.nextAccountId, 8);
+    assert.equal(loaded.nextMovementId, 13);
+    const withAccount = addAccount(loaded);
+    assert.equal(withAccount.accounts.at(-1).id, 8);
+    const withMovement = PC.createV110LinkedOperation(withAccount, {
+      accountId: 8,
+      date: '2026-08-02',
+      amount: 20,
+      type: 'debit',
+      operationRef: 'expense:new',
+    });
+    assert.equal(withMovement.accountMovements.at(-1).id, 13);
+  });
+
+  await t.test('invalid ledgers fail closed instead of returning partial financial data', () => {
+    const base = {
+      schemaVersion: '1.1.0',
+      accounts: [{ id: 1, name: 'Cuenta', initialBalance: 100, active: true }],
+      accountMovements: [{
+        id: 1,
+        accountId: 1,
+        date: '2026-08-01',
+        amount: 10,
+        type: 'credit',
+        operationRef: 'operation:1',
+      }],
+    };
+    const invalidStates = [
+      { ...base, accounts: [...base.accounts, { ...base.accounts[0] }] },
+      { ...base, accountMovements: [...base.accountMovements, { ...base.accountMovements[0], operationRef: 'operation:2' }] },
+      { ...base, accountMovements: [...base.accountMovements, { ...base.accountMovements[0], id: 2 }] },
+      { ...base, accountMovements: [{ ...base.accountMovements[0], accountId: 999 }] },
+      { ...base, accountMovements: [{ ...base.accountMovements[0], date: '2026-02-30' }] },
+      { ...base, accountMovements: [{ ...base.accountMovements[0], amount: 0 }] },
+      { ...base, accountMovements: [{ ...base.accountMovements[0], type: 'transfer' }] },
+      { ...base, accounts: [{ ...base.accounts[0], initialBalance: Infinity }] },
+    ];
+
+    for (const invalid of invalidStates) {
+      assert.deepEqual(PC.loadV110(JSON.stringify(invalid)), PC.makeV110Default());
+    }
+    assert.deepEqual(
+      PC.loadV110(JSON.stringify({
+        ...base,
+        accountMovements: [
+          ...base.accountMovements,
+          { ...base.accountMovements[0], id: 2, operationRef: 'operation:1' },
+        ],
+      })),
+      PC.makeV110Default()
+    );
+    assert.throws(
+      () => PC.serializeV110({ ...base, accountMovements: [{ ...base.accountMovements[0], amount: -1 }] }),
+      (error) => error.name === 'V110ValidationError' && error.code === 'INVALID_AMOUNT'
+    );
+  });
+
   await t.test('credits and debits create central movements and derive the current balance', () => {
     let s = addAccount(PC.makeV110Default(), { initialBalance: 100 });
     s = PC.createV110LinkedOperation(s, {

@@ -374,6 +374,13 @@
     };
   }
 
+  function v110PositiveIntegerOrThrow(value, field) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw v110ValidationError('INVALID_ID', `${field} must be a positive integer: ${value}`);
+    }
+    return value;
+  }
+
   function v110ValidationError(code, message) {
     const error = new Error(message);
     error.name = 'V110ValidationError';
@@ -423,10 +430,116 @@
     return amount;
   }
 
+  function v110MovementAmountOrThrow(amount, type) {
+    if (!Number.isFinite(amount)
+      || (type === V110_MOVEMENT_TYPES.ADJUSTMENT ? amount === 0 : amount <= 0)) {
+      throw v110ValidationError('INVALID_AMOUNT', `Invalid amount for ${type}: ${amount}`);
+    }
+    return amount;
+  }
+
   function v110AssertUniqueOperationRef(state, operationRef) {
     if ((state.accountMovements || []).some((movement) => movement.operationRef === operationRef)) {
       throw v110ValidationError('DUPLICATE_OPERATION_REF', `Duplicate operation reference: ${operationRef}`);
     }
+  }
+
+  function normalizeV110State(saved) {
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)
+      || saved.schemaVersion !== V110_SCHEMA_VERSION) {
+      throw v110ValidationError('INVALID_SCHEMA', `Expected schema version ${V110_SCHEMA_VERSION}`);
+    }
+    if (saved.accounts != null && !Array.isArray(saved.accounts)) {
+      throw v110ValidationError('INVALID_ACCOUNTS', 'Accounts must be an array');
+    }
+    if (saved.accountMovements != null && !Array.isArray(saved.accountMovements)) {
+      throw v110ValidationError('INVALID_MOVEMENTS', 'Account movements must be an array');
+    }
+
+    const accountIds = new Set();
+    const accounts = (saved.accounts || []).map((source) => {
+      if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw v110ValidationError('INVALID_ACCOUNT', 'Each account must be an object');
+      }
+      const id = v110PositiveIntegerOrThrow(source.id, 'Account id');
+      if (accountIds.has(id)) {
+        throw v110ValidationError('DUPLICATE_ACCOUNT_ID', `Duplicate account id: ${id}`);
+      }
+      accountIds.add(id);
+      const initialBalance = Object.prototype.hasOwnProperty.call(source, 'initialBalance')
+        ? source.initialBalance
+        : 0;
+      if (!Number.isFinite(initialBalance)) {
+        throw v110ValidationError('INVALID_AMOUNT', `Initial balance must be finite: ${initialBalance}`);
+      }
+      return {
+        id,
+        name: typeof source.name === 'string' ? source.name : '',
+        type: typeof source.type === 'string' && source.type ? source.type : 'bank',
+        initialBalance,
+        active: source.active !== false,
+      };
+    });
+
+    const movementIds = new Set();
+    const operationRefs = new Set();
+    const accountMovements = (saved.accountMovements || []).map((source) => {
+      if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw v110ValidationError('INVALID_MOVEMENT', 'Each account movement must be an object');
+      }
+      const id = v110PositiveIntegerOrThrow(source.id, 'Movement id');
+      if (movementIds.has(id)) {
+        throw v110ValidationError('DUPLICATE_MOVEMENT_ID', `Duplicate movement id: ${id}`);
+      }
+      movementIds.add(id);
+      const accountId = v110PositiveIntegerOrThrow(source.accountId, 'Movement account id');
+      if (!accountIds.has(accountId)) {
+        throw v110ValidationError('ACCOUNT_NOT_FOUND', `Account not found: ${accountId}`);
+      }
+      const date = v110DateOrThrow(source.date);
+      const type = source.type;
+      if (!Object.values(V110_MOVEMENT_TYPES).includes(type)) {
+        throw v110ValidationError('INVALID_MOVEMENT_TYPE', `Invalid movement type: ${type}`);
+      }
+      const amount = v110MovementAmountOrThrow(source.amount, type);
+      const operationRef = v110OperationRefOrThrow(source.operationRef);
+      if (operationRefs.has(operationRef)) {
+        throw v110ValidationError('DUPLICATE_OPERATION_REF', `Duplicate operation reference: ${operationRef}`);
+      }
+      operationRefs.add(operationRef);
+      return { id, accountId, date, amount, type, operationRef };
+    });
+
+    const nextAccountId = Math.max(
+      Number.isInteger(saved.nextAccountId) && saved.nextAccountId > 0 ? saved.nextAccountId : 1,
+      ...accounts.map((account) => account.id + 1)
+    );
+    const nextMovementId = Math.max(
+      Number.isInteger(saved.nextMovementId) && saved.nextMovementId > 0 ? saved.nextMovementId : 1,
+      ...accountMovements.map((movement) => movement.id + 1)
+    );
+    return {
+      schemaVersion: V110_SCHEMA_VERSION,
+      accounts,
+      accountMovements,
+      nextAccountId,
+      nextMovementId,
+    };
+  }
+
+  // Isolated V1.1.0 persistence. It intentionally does not read, migrate, or
+  // alter the current perita_v1 state used by the application.
+  function loadV110(raw) {
+    if (!raw) return makeV110Default();
+    try {
+      return normalizeV110State(JSON.parse(raw));
+    } catch (_) {
+      return makeV110Default();
+    }
+  }
+
+  function serializeV110(state) {
+    return JSON.stringify(normalizeV110State(state));
   }
 
   function addV110Account(state, accountData) {
@@ -612,6 +725,8 @@
     V110_SCHEMA_VERSION,
     V110_MOVEMENT_TYPES,
     makeV110Default,
+    loadV110,
+    serializeV110,
     isValidV110Date,
     addV110Account,
     v110AccountBalance,
