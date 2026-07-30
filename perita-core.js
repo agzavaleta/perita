@@ -364,13 +364,32 @@
     ADJUSTMENT: 'adjustment',
   };
 
+  function makeV110ActiveMonth(month, salary) {
+    return {
+      month,
+      salary,
+      expenses: [],
+      pagosDeuda: [],
+      aportesAhorro: [],
+      gastosFijosPagados: [],
+    };
+  }
+
   function makeV110Default() {
+    const referenceSalary = 0;
     return {
       schemaVersion: V110_SCHEMA_VERSION,
+      settings: { salary: referenceSalary },
       accounts: [],
       accountMovements: [],
-      nextAccountId: 1,
+      debts: [],
+      wallets: [],
+      budget: [],
+      varCategories: [],
+      nextId: 1,
       nextMovementId: 1,
+      activeMonth: makeV110ActiveMonth(curMonthId(), referenceSalary),
+      monthlyHistory: [],
     };
   }
 
@@ -444,46 +463,160 @@
     }
   }
 
+  function v110Own(source, key) {
+    return Object.prototype.hasOwnProperty.call(source, key);
+  }
+
+  function v110ArrayOrDefault(source, key) {
+    if (!v110Own(source, key)) return [];
+    if (!Array.isArray(source[key])) {
+      throw v110ValidationError('INVALID_COLLECTION', `${key} must be an array`);
+    }
+    return source[key];
+  }
+
+  function v110ObjectOrDefault(source, key, fallback) {
+    if (!v110Own(source, key)) return fallback;
+    const value = source[key];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw v110ValidationError('INVALID_OBJECT', `${key} must be an object`);
+    }
+    return value;
+  }
+
+  function v110StringOrDefault(source, key, fallback) {
+    if (!v110Own(source, key)) return fallback;
+    if (typeof source[key] !== 'string') {
+      throw v110ValidationError('INVALID_FIELD', `${key} must be a string`);
+    }
+    return source[key];
+  }
+
+  function v110FiniteOrDefault(source, key, fallback, minimum) {
+    const value = v110Own(source, key) ? source[key] : fallback;
+    if (!Number.isFinite(value) || (minimum != null && value < minimum)) {
+      throw v110ValidationError('INVALID_AMOUNT', `Invalid ${key}: ${value}`);
+    }
+    return value;
+  }
+
+  function v110MonthOrThrow(month) {
+    if (typeof month !== 'string' || !/^(\d{4})-(0[1-9]|1[0-2])$/.test(month)) {
+      throw v110ValidationError('INVALID_MONTH', `Invalid month id: ${month}`);
+    }
+    return month;
+  }
+
   function normalizeV110State(saved) {
     if (!saved || typeof saved !== 'object' || Array.isArray(saved)
       || saved.schemaVersion !== V110_SCHEMA_VERSION) {
       throw v110ValidationError('INVALID_SCHEMA', `Expected schema version ${V110_SCHEMA_VERSION}`);
     }
-    if (saved.accounts != null && !Array.isArray(saved.accounts)) {
-      throw v110ValidationError('INVALID_ACCOUNTS', 'Accounts must be an array');
-    }
-    if (saved.accountMovements != null && !Array.isArray(saved.accountMovements)) {
-      throw v110ValidationError('INVALID_MOVEMENTS', 'Account movements must be an array');
+    if (v110Own(saved, 'expenses') || v110Own(saved, 'nextAccountId')) {
+      throw v110ValidationError(
+        'CONFLICTING_FIELD',
+        'V1.1.0 uses activeMonth.expenses and one global nextId counter'
+      );
     }
 
+    const globalIds = new Set();
+    let highestGlobalId = 0;
+    const registerGlobalId = (value, field) => {
+      const id = v110PositiveIntegerOrThrow(value, field);
+      if (globalIds.has(id)) {
+        throw v110ValidationError('DUPLICATE_ID', `Duplicate global id: ${id}`);
+      }
+      globalIds.add(id);
+      highestGlobalId = Math.max(highestGlobalId, id);
+      return id;
+    };
     const accountIds = new Set();
-    const accounts = (saved.accounts || []).map((source) => {
+    const accounts = v110ArrayOrDefault(saved, 'accounts').map((source) => {
       if (!source || typeof source !== 'object' || Array.isArray(source)) {
         throw v110ValidationError('INVALID_ACCOUNT', 'Each account must be an object');
       }
-      const id = v110PositiveIntegerOrThrow(source.id, 'Account id');
-      if (accountIds.has(id)) {
-        throw v110ValidationError('DUPLICATE_ACCOUNT_ID', `Duplicate account id: ${id}`);
+      if (v110Own(source, 'balance')) {
+        throw v110ValidationError(
+          'STORED_ACCOUNT_BALANCE',
+          'V1.1.0 account balances must be derived from initialBalance and movements'
+        );
       }
+      const id = registerGlobalId(source.id, 'Account id');
       accountIds.add(id);
-      const initialBalance = Object.prototype.hasOwnProperty.call(source, 'initialBalance')
-        ? source.initialBalance
-        : 0;
-      if (!Number.isFinite(initialBalance)) {
-        throw v110ValidationError('INVALID_AMOUNT', `Initial balance must be finite: ${initialBalance}`);
+      const type = v110StringOrDefault(source, 'type', 'bank');
+      if (type !== 'bank' && type !== 'cash') {
+        throw v110ValidationError('INVALID_ACCOUNT_TYPE', `Invalid account type: ${type}`);
+      }
+      const active = v110Own(source, 'active') ? source.active : true;
+      if (typeof active !== 'boolean') {
+        throw v110ValidationError('INVALID_FIELD', 'active must be a boolean');
       }
       return {
         id,
-        name: typeof source.name === 'string' ? source.name : '',
-        type: typeof source.type === 'string' && source.type ? source.type : 'bank',
-        initialBalance,
-        active: source.active !== false,
+        name: v110StringOrDefault(source, 'name', ''),
+        type,
+        bank: v110StringOrDefault(source, 'bank', ''),
+        initialBalance: v110FiniteOrDefault(source, 'initialBalance', 0),
+        active,
       };
     });
 
+    const normalizeEntityCollection = (key, normalize) => v110ArrayOrDefault(saved, key).map((source) => {
+      if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw v110ValidationError('INVALID_ENTITY', `Each ${key} entry must be an object`);
+      }
+      const id = registerGlobalId(source.id, `${key} id`);
+      return normalize(source, id);
+    });
+    const debts = normalizeEntityCollection('debts', (source, id) => {
+      const total = v110FiniteOrDefault(source, 'total', 0, 0);
+      const paid = v110FiniteOrDefault(source, 'paid', 0, 0);
+      if (paid > total) {
+        throw v110ValidationError('INVALID_DEBT', `Debt paid amount exceeds total: ${id}`);
+      }
+      const status = v110StringOrDefault(source, 'status', 'activa');
+      if (!['activa', 'pausada', 'pagada'].includes(status)) {
+        throw v110ValidationError('INVALID_DEBT_STATUS', `Invalid debt status: ${status}`);
+      }
+      const dueDate = v110StringOrDefault(source, 'dueDate', localDateId());
+      v110DateOrThrow(dueDate);
+      return {
+        id,
+        name: v110StringOrDefault(source, 'name', ''),
+        total,
+        paid,
+        monthly: v110FiniteOrDefault(source, 'monthly', 0, 0),
+        dueDate,
+        status,
+      };
+    });
+    const wallets = normalizeEntityCollection('wallets', (source, id) => ({
+      id,
+      emoji: v110StringOrDefault(source, 'emoji', '💰'),
+      name: v110StringOrDefault(source, 'name', ''),
+      bank: v110StringOrDefault(source, 'bank', ''),
+      balance: v110FiniteOrDefault(source, 'balance', 0, 0),
+      monthly: v110FiniteOrDefault(source, 'monthly', 0, 0),
+      goal: v110FiniteOrDefault(source, 'goal', 0, 0),
+    }));
+    const budget = normalizeEntityCollection('budget', (source, id) => ({
+      id,
+      name: v110StringOrDefault(source, 'name', ''),
+      amount: v110FiniteOrDefault(source, 'amount', 0, 0),
+    }));
+    const varCategories = normalizeEntityCollection('varCategories', (source, id) => ({
+      id,
+      name: v110StringOrDefault(source, 'name', ''),
+    }));
+
+    const settingsSource = v110ObjectOrDefault(saved, 'settings', {});
+    const settings = {
+      salary: v110FiniteOrDefault(settingsSource, 'salary', 0, 0),
+    };
+
     const movementIds = new Set();
     const operationRefs = new Set();
-    const accountMovements = (saved.accountMovements || []).map((source) => {
+    const accountMovements = v110ArrayOrDefault(saved, 'accountMovements').map((source) => {
       if (!source || typeof source !== 'object' || Array.isArray(source)) {
         throw v110ValidationError('INVALID_MOVEMENT', 'Each account movement must be an object');
       }
@@ -510,9 +643,115 @@
       return { id, accountId, date, amount, type, operationRef };
     });
 
-    const nextAccountId = Math.max(
-      Number.isInteger(saved.nextAccountId) && saved.nextAccountId > 0 ? saved.nextAccountId : 1,
-      ...accounts.map((account) => account.id + 1)
+    const normalizeMonthlyState = (source, archived) => {
+      if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw v110ValidationError('INVALID_MONTH', 'Monthly state must be an object');
+      }
+      const month = v110MonthOrThrow(v110StringOrDefault(source, 'month', curMonthId()));
+      const normalizeMonthlyCollection = (key, normalize) => v110ArrayOrDefault(source, key).map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+          throw v110ValidationError('INVALID_MONTHLY_ENTRY', `Each ${key} entry must be an object`);
+        }
+        const id = registerGlobalId(entry.id, `${key} id`);
+        const date = v110DateOrThrow(entry.date);
+        const amount = v110PositiveAmountOrThrow(entry.amount);
+        return normalize(entry, { id, date, amount });
+      });
+      const expenses = normalizeMonthlyCollection('expenses', (entry, common) => {
+        if (v110Own(entry, 'account')) {
+          throw v110ValidationError(
+            'CONFLICTING_FIELD',
+            'V1.1.0 transactions use the numeric accountId field'
+          );
+        }
+        const type = v110StringOrDefault(entry, 'type', '');
+        if (type !== 'income' && type !== 'expense') {
+          throw v110ValidationError('INVALID_TRANSACTION_TYPE', `Invalid transaction type: ${type}`);
+        }
+        const accountId = v110PositiveIntegerOrThrow(entry.accountId, 'Transaction account id');
+        if (!accountIds.has(accountId)) {
+          throw v110ValidationError('ACCOUNT_NOT_FOUND', `Account not found: ${accountId}`);
+        }
+        return {
+          ...common,
+          description: v110StringOrDefault(entry, 'description', ''),
+          type,
+          accountId,
+          category: v110StringOrDefault(entry, 'category', type === 'income' ? 'Ingreso' : ''),
+          method: v110StringOrDefault(entry, 'method', ''),
+          notes: v110StringOrDefault(entry, 'notes', ''),
+        };
+      });
+      // Pending V1.1.0 integration: formalize and validate the deterministic
+      // transaction:<id> relationship against accountMovements. Persistence
+      // currently validates both sides independently without inventing it.
+      const normalizeAccountOutflow = (entry, common, relationKey, nameKey) => {
+        const accountId = v110PositiveIntegerOrThrow(entry.accountId, `${relationKey} account id`);
+        if (!accountIds.has(accountId)) {
+          throw v110ValidationError('ACCOUNT_NOT_FOUND', `Account not found: ${accountId}`);
+        }
+        return {
+          ...common,
+          [relationKey]: v110PositiveIntegerOrThrow(entry[relationKey], relationKey),
+          [nameKey]: v110StringOrDefault(entry, nameKey, ''),
+          accountId,
+        };
+      };
+      const pagosDeuda = normalizeMonthlyCollection(
+        'pagosDeuda',
+        (entry, common) => normalizeAccountOutflow(entry, common, 'debtId', 'debtName')
+      );
+      const aportesAhorro = normalizeMonthlyCollection(
+        'aportesAhorro',
+        (entry, common) => normalizeAccountOutflow(entry, common, 'walletId', 'walletName')
+      );
+      const gastosFijosPagados = normalizeMonthlyCollection(
+        'gastosFijosPagados',
+        (entry, common) => normalizeAccountOutflow(entry, common, 'budgetId', 'name')
+      );
+      const salary = v110FiniteOrDefault(
+        source,
+        'salary',
+        archived ? 0 : settings.salary,
+        0
+      );
+      const normalized = {
+        month,
+        salary,
+        expenses,
+        pagosDeuda,
+        aportesAhorro,
+        gastosFijosPagados,
+      };
+      if (archived) {
+        const closedAt = v110StringOrDefault(source, 'closedAt', '');
+        if (closedAt && !Number.isFinite(Date.parse(closedAt))) {
+          throw v110ValidationError('INVALID_DATE', `Invalid close timestamp: ${closedAt}`);
+        }
+        normalized.closedAt = closedAt;
+      }
+      return normalized;
+    };
+
+    const activeMonthSource = v110ObjectOrDefault(
+      saved,
+      'activeMonth',
+      { month: curMonthId() }
+    );
+    const activeMonth = normalizeMonthlyState(activeMonthSource, false);
+    const historyMonths = new Set();
+    const monthlyHistory = v110ArrayOrDefault(saved, 'monthlyHistory').map((source) => {
+      const monthState = normalizeMonthlyState(source, true);
+      if (monthState.month === activeMonth.month || historyMonths.has(monthState.month)) {
+        throw v110ValidationError('DUPLICATE_MONTH', `Duplicate month: ${monthState.month}`);
+      }
+      historyMonths.add(monthState.month);
+      return monthState;
+    });
+
+    const nextId = Math.max(
+      Number.isInteger(saved.nextId) && saved.nextId > 0 ? saved.nextId : 1,
+      highestGlobalId + 1
     );
     const nextMovementId = Math.max(
       Number.isInteger(saved.nextMovementId) && saved.nextMovementId > 0 ? saved.nextMovementId : 1,
@@ -520,10 +759,17 @@
     );
     return {
       schemaVersion: V110_SCHEMA_VERSION,
+      settings,
       accounts,
       accountMovements,
-      nextAccountId,
+      debts,
+      wallets,
+      budget,
+      varCategories,
+      nextId,
       nextMovementId,
+      activeMonth,
+      monthlyHistory,
     };
   }
 
@@ -542,6 +788,54 @@
     return JSON.stringify(normalizeV110State(state));
   }
 
+  function setV110ActiveMonthSalary(state, salary) {
+    if (!Number.isFinite(salary) || salary < 0) {
+      throw v110ValidationError('INVALID_AMOUNT', `Invalid active-month salary: ${salary}`);
+    }
+    return {
+      ...state,
+      activeMonth: {
+        ...state.activeMonth,
+        salary,
+      },
+    };
+  }
+
+  function closeV110Month(state, closedAt, expectedMonth) {
+    const activeMonth = state && state.activeMonth;
+    if (!activeMonth) {
+      throw v110ValidationError('INVALID_MONTH', 'Active month is required');
+    }
+    if (expectedMonth != null && activeMonth.month !== expectedMonth) return state;
+    const month = v110MonthOrThrow(activeMonth.month);
+    const salary = activeMonth.salary;
+    if (!Number.isFinite(salary) || salary < 0) {
+      throw v110ValidationError('INVALID_AMOUNT', `Invalid active-month salary: ${salary}`);
+    }
+    const referenceSalary = state.settings && state.settings.salary;
+    if (!Number.isFinite(referenceSalary) || referenceSalary < 0) {
+      throw v110ValidationError('INVALID_AMOUNT', `Invalid reference salary: ${referenceSalary}`);
+    }
+    if (typeof closedAt !== 'string' || !closedAt || !Number.isFinite(Date.parse(closedAt))) {
+      throw v110ValidationError('INVALID_DATE', `Invalid close timestamp: ${closedAt}`);
+    }
+    const copyEntries = (entries) => (entries || []).map((entry) => ({ ...entry }));
+    const snapshot = {
+      month,
+      salary,
+      expenses: copyEntries(activeMonth.expenses),
+      pagosDeuda: copyEntries(activeMonth.pagosDeuda),
+      aportesAhorro: copyEntries(activeMonth.aportesAhorro),
+      gastosFijosPagados: copyEntries(activeMonth.gastosFijosPagados),
+      closedAt,
+    };
+    return {
+      ...state,
+      activeMonth: makeV110ActiveMonth(nextMonthId(month), referenceSalary),
+      monthlyHistory: [...(state.monthlyHistory || []), snapshot],
+    };
+  }
+
   function addV110Account(state, accountData) {
     const initialBalance = accountData && accountData.initialBalance != null
       ? accountData.initialBalance
@@ -549,18 +843,19 @@
     if (!Number.isFinite(initialBalance)) {
       throw v110ValidationError('INVALID_AMOUNT', `Initial balance must be finite: ${initialBalance}`);
     }
-    const id = state.nextAccountId;
+    const id = state.nextId;
     const account = {
       id,
       name: (accountData && accountData.name) || '',
       type: (accountData && accountData.type) || 'bank',
+      bank: (accountData && accountData.bank) || '',
       initialBalance,
       active: !accountData || accountData.active !== false,
     };
     return {
       ...state,
       accounts: [...(state.accounts || []), account],
-      nextAccountId: id + 1,
+      nextId: id + 1,
     };
   }
 
@@ -727,6 +1022,8 @@
     makeV110Default,
     loadV110,
     serializeV110,
+    setV110ActiveMonthSalary,
+    closeV110Month,
     isValidV110Date,
     addV110Account,
     v110AccountBalance,

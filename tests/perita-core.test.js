@@ -1165,15 +1165,36 @@ test('V1.1.0 account-ledger foundation', async (t) => {
 
   await t.test('new schema starts empty and accounts keep only an initial balance', () => {
     let s = PC.makeV110Default();
-    assert.equal(s.schemaVersion, '1.1.0');
-    assert.deepEqual(s.accounts, []);
-    assert.deepEqual(s.accountMovements, []);
+    assert.deepEqual(s, {
+      schemaVersion: '1.1.0',
+      settings: { salary: 0 },
+      accounts: [],
+      accountMovements: [],
+      debts: [],
+      wallets: [],
+      budget: [],
+      varCategories: [],
+      nextId: 1,
+      nextMovementId: 1,
+      activeMonth: {
+        month: PC.curMonthId(),
+        salary: 0,
+        expenses: [],
+        pagosDeuda: [],
+        aportesAhorro: [],
+        gastosFijosPagados: [],
+      },
+      monthlyHistory: [],
+    });
+    assert.equal(Object.hasOwn(s, 'expenses'), false, 'monthly transactions have one canonical location');
+    assert.equal(Object.hasOwn(s, 'nextAccountId'), false, 'all non-movement entities share the global counter');
 
     s = addAccount(s, { name: 'Principal', initialBalance: 500 });
     assert.deepEqual(s.accounts[0], {
       id: 1,
       name: 'Principal',
       type: 'bank',
+      bank: '',
       initialBalance: 500,
       active: true,
     });
@@ -1186,15 +1207,235 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     assert.deepEqual(PC.loadV110(''), PC.makeV110Default());
   });
 
-  await t.test('isolated persistence round-trips a valid account ledger', () => {
-    let s = addAccount(PC.makeV110Default(), { name: 'Principal', initialBalance: 100 });
-    s = PC.createV110LinkedOperation(s, {
+  await t.test('reference salary and active-month salary are independent values', () => {
+    const startedFromReference = PC.loadV110(JSON.stringify({
+      schemaVersion: '1.1.0',
+      settings: { salary: 1000 },
+    }));
+    const state = {
+      ...startedFromReference,
+      settings: { salary: 1000 },
+      activeMonth: {
+        ...startedFromReference.activeMonth,
+        salary: 850,
+      },
+    };
+
+    assert.equal(startedFromReference.activeMonth.salary, 1000);
+    assert.deepEqual(startedFromReference.accountMovements, []);
+    assert.equal(state.settings.salary, 1000);
+    assert.equal(state.activeMonth.salary, 850);
+  });
+
+  await t.test('editing the active-month salary does not change the reference or movements', () => {
+    let state = addAccount(PC.makeV110Default(), { initialBalance: 100 });
+    state = {
+      ...state,
+      settings: { salary: 1000 },
+    };
+    state = PC.createV110LinkedOperation(state, {
       accountId: 1,
       date: '2026-08-01',
-      amount: 25,
+      amount: 50,
       type: 'credit',
-      operationRef: 'income:round-trip',
+      operationRef: 'existing:movement',
     });
+    const movements = state.accountMovements;
+    const edited = PC.setV110ActiveMonthSalary(state, 875);
+
+    assert.equal(edited.activeMonth.salary, 875);
+    assert.equal(edited.settings.salary, 1000);
+    assert.equal(edited.accountMovements, movements);
+    assert.equal(state.activeMonth.salary, 0, 'input state is not mutated');
+  });
+
+  await t.test('closing archives the exact active salary and starts the next month from the reference', () => {
+    let state = addAccount(PC.makeV110Default(), { initialBalance: 100 });
+    state = {
+      ...state,
+      settings: { salary: 1200 },
+      activeMonth: {
+        ...state.activeMonth,
+        month: '2026-08',
+        salary: 950,
+        expenses: [{
+          id: 2,
+          accountId: 1,
+          date: '2026-08-05',
+          amount: 200,
+          description: 'Freelance',
+          type: 'income',
+          category: 'Ingreso',
+          method: '',
+          notes: '',
+        }],
+      },
+      nextId: 3,
+    };
+    const movements = state.accountMovements;
+    const closed = PC.closeV110Month(
+      state,
+      '2026-08-31T23:00:00.000Z',
+      '2026-08'
+    );
+
+    assert.equal(closed.monthlyHistory.length, 1);
+    assert.equal(closed.monthlyHistory[0].salary, 950);
+    assert.equal(closed.monthlyHistory[0].expenses.length, 1);
+    assert.equal(closed.monthlyHistory[0].expenses[0].type, 'income');
+    assert.equal(closed.monthlyHistory[0].expenses[0].amount, 200);
+    assert.equal(closed.activeMonth.month, '2026-09');
+    assert.equal(closed.activeMonth.salary, 1200);
+    assert.deepEqual(closed.activeMonth.expenses, []);
+    assert.deepEqual(closed.activeMonth.pagosDeuda, []);
+    assert.deepEqual(closed.activeMonth.aportesAhorro, []);
+    assert.deepEqual(closed.activeMonth.gastosFijosPagados, []);
+    assert.equal(closed.settings.salary, 1200);
+    assert.equal(closed.accountMovements, movements);
+    assert.equal(closed.accountMovements.length, 0);
+  });
+
+  await t.test('salary lifecycle actions never turn salary into additional income or an account movement', () => {
+    const initial = {
+      ...PC.makeV110Default(),
+      settings: { salary: 700 },
+      activeMonth: {
+        ...PC.makeV110Default().activeMonth,
+        month: '2026-10',
+        salary: 650,
+      },
+    };
+    const edited = PC.setV110ActiveMonthSalary(initial, 675);
+    const closed = PC.closeV110Month(
+      edited,
+      '2026-10-31T23:00:00.000Z',
+      '2026-10'
+    );
+
+    assert.deepEqual(initial.accountMovements, []);
+    assert.deepEqual(edited.accountMovements, []);
+    assert.deepEqual(closed.accountMovements, []);
+    assert.deepEqual(edited.activeMonth.expenses, []);
+    assert.deepEqual(closed.monthlyHistory[0].expenses, []);
+    assert.equal(closed.monthlyHistory[0].salary, 675);
+    assert.equal(closed.activeMonth.salary, 700);
+  });
+
+  await t.test('active and archived salaries round-trip and invalid salaries fail closed', () => {
+    const valid = {
+      ...PC.makeV110Default(),
+      settings: { salary: 1000 },
+      activeMonth: {
+        ...PC.makeV110Default().activeMonth,
+        month: '2026-08',
+        salary: 900,
+      },
+      monthlyHistory: [{
+        month: '2026-07',
+        salary: 800,
+        expenses: [],
+        pagosDeuda: [],
+        aportesAhorro: [],
+        gastosFijosPagados: [],
+        closedAt: '2026-07-31T23:00:00.000Z',
+      }],
+    };
+
+    assert.deepEqual(PC.loadV110(PC.serializeV110(valid)), valid);
+    for (const invalidSalary of [-1, null, '1000']) {
+      const invalidActive = {
+        ...valid,
+        activeMonth: { ...valid.activeMonth, salary: invalidSalary },
+      };
+      const invalidHistory = {
+        ...valid,
+        monthlyHistory: [{ ...valid.monthlyHistory[0], salary: invalidSalary }],
+      };
+      assert.deepEqual(PC.loadV110(JSON.stringify(invalidActive)), PC.makeV110Default());
+      assert.deepEqual(PC.loadV110(JSON.stringify(invalidHistory)), PC.makeV110Default());
+      assert.throws(
+        () => PC.serializeV110(invalidActive),
+        (error) => error.name === 'V110ValidationError' && error.code === 'INVALID_AMOUNT'
+      );
+    }
+  });
+
+  await t.test('isolated persistence round-trips every canonical application domain', () => {
+    const s = {
+      schemaVersion: '1.1.0',
+      settings: { salary: 1000 },
+      accounts: [{
+        id: 1, name: 'Principal', type: 'bank', bank: 'Banco Estado',
+        initialBalance: 100, active: true,
+      }],
+      accountMovements: [
+        { id: 1, accountId: 1, date: '2026-07-02', amount: 300, type: 'credit', operationRef: 'transaction:11' },
+        { id: 2, accountId: 1, date: '2026-08-01', amount: 25, type: 'credit', operationRef: 'transaction:6' },
+        { id: 3, accountId: 1, date: '2026-08-02', amount: 10, type: 'debit', operationRef: 'transaction:7' },
+        { id: 4, accountId: 1, date: '2026-08-03', amount: 15, type: 'debit', operationRef: 'debt-payment:8' },
+        { id: 5, accountId: 1, date: '2026-08-04', amount: 20, type: 'debit', operationRef: 'saving:9' },
+        { id: 6, accountId: 1, date: '2026-08-05', amount: 30, type: 'debit', operationRef: 'fixed-expense:10' },
+      ],
+      debts: [{
+        id: 2, name: 'Tarjeta', total: 500, paid: 100, monthly: 50,
+        dueDate: '2026-08-10', status: 'activa',
+      }],
+      wallets: [{
+        id: 3, emoji: '💰', name: 'Viaje', bank: 'Banco Estado',
+        balance: 200, monthly: 20, goal: 1000,
+      }],
+      budget: [{ id: 4, name: 'Arriendo', amount: 300 }],
+      varCategories: [{ id: 5, name: 'Comida' }],
+      nextId: 15,
+      nextMovementId: 7,
+      activeMonth: {
+        month: '2026-08',
+        salary: 850,
+        expenses: [
+          {
+            id: 6, date: '2026-08-01', amount: 25, description: 'Bono',
+            type: 'income', accountId: 1, category: 'Ingreso', method: '', notes: '',
+          },
+          {
+            id: 7, date: '2026-08-02', amount: 10, description: 'Almuerzo',
+            type: 'expense', accountId: 1, category: 'Comida', method: '', notes: '',
+          },
+        ],
+        pagosDeuda: [{
+          id: 8, date: '2026-08-03', amount: 15, debtId: 2,
+          debtName: 'Tarjeta', accountId: 1,
+        }],
+        aportesAhorro: [{
+          id: 9, date: '2026-08-04', amount: 20, walletId: 3,
+          walletName: 'Viaje', accountId: 1,
+        }],
+        gastosFijosPagados: [{
+          id: 10, date: '2026-08-05', amount: 30, budgetId: 4,
+          name: 'Arriendo', accountId: 1,
+        }],
+      },
+      monthlyHistory: [{
+        month: '2026-07',
+        expenses: [{
+          id: 11, date: '2026-07-02', amount: 300, description: 'Freelance',
+          type: 'income', accountId: 1, category: 'Ingreso', method: '', notes: '',
+        }],
+        pagosDeuda: [{
+          id: 12, date: '2026-07-03', amount: 25, debtId: 2,
+          debtName: 'Tarjeta', accountId: 1,
+        }],
+        aportesAhorro: [{
+          id: 13, date: '2026-07-04', amount: 20, walletId: 3,
+          walletName: 'Viaje', accountId: 1,
+        }],
+        gastosFijosPagados: [{
+          id: 14, date: '2026-07-05', amount: 300, budgetId: 4,
+          name: 'Arriendo', accountId: 1,
+        }],
+        salary: 900,
+        closedAt: '2026-07-31T23:00:00.000Z',
+      }],
+    };
 
     const raw = PC.serializeV110(s);
     const loaded = PC.loadV110(raw);
@@ -1205,6 +1446,11 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     assert.notEqual(loaded.accounts[0], s.accounts[0]);
     assert.notEqual(loaded.accountMovements, s.accountMovements);
     assert.notEqual(loaded.accountMovements[0], s.accountMovements[0]);
+    assert.notEqual(loaded.settings, s.settings);
+    assert.notEqual(loaded.activeMonth, s.activeMonth);
+    assert.notEqual(loaded.activeMonth.expenses, s.activeMonth.expenses);
+    assert.notEqual(loaded.monthlyHistory, s.monthlyHistory);
+    assert.notEqual(loaded.monthlyHistory[0], s.monthlyHistory[0]);
   });
 
   await t.test('invalid JSON, missing schema, and other schema versions start empty', () => {
@@ -1226,27 +1472,30 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     const second = PC.loadV110(JSON.stringify({ schemaVersion: '1.1.0' }));
 
     assert.deepEqual(first, {
-      schemaVersion: '1.1.0',
+      ...PC.makeV110Default(),
       accounts: [{
         id: 4,
         name: 'Parcial',
         type: 'bank',
+        bank: '',
         initialBalance: 0,
         active: true,
       }],
-      accountMovements: [],
-      nextAccountId: 5,
-      nextMovementId: 1,
+      nextId: 5,
     });
+    first.settings.salary = 123;
     first.accounts.push({ id: 99 });
     first.accountMovements.push({ id: 99 });
+    first.activeMonth.expenses.push({ id: 100 });
+    first.monthlyHistory.push({ month: '2099-01' });
     assert.deepEqual(second, PC.makeV110Default(), 'default arrays are never shared across loads');
   });
 
-  await t.test('stale counters advance beyond existing account and movement IDs', () => {
+  await t.test('stale counters advance beyond IDs in permanent, monthly, historical, and ledger data', () => {
     const loaded = PC.loadV110(JSON.stringify({
       schemaVersion: '1.1.0',
       accounts: [{ id: 7, name: 'Cuenta', initialBalance: 0, active: true }],
+      wallets: [{ id: 20, name: 'Ahorro' }],
       accountMovements: [{
         id: 12,
         accountId: 7,
@@ -1255,16 +1504,27 @@ test('V1.1.0 account-ledger foundation', async (t) => {
         type: 'credit',
         operationRef: 'income:existing',
       }],
-      nextAccountId: 2,
+      activeMonth: { month: '2026-08' },
+      monthlyHistory: [{
+        month: '2026-07',
+        expenses: [{
+          id: 40,
+          accountId: 7,
+          date: '2026-07-01',
+          amount: 10,
+          type: 'income',
+        }],
+      }],
+      nextId: 2,
       nextMovementId: 3,
     }));
 
-    assert.equal(loaded.nextAccountId, 8);
+    assert.equal(loaded.nextId, 41);
     assert.equal(loaded.nextMovementId, 13);
     const withAccount = addAccount(loaded);
-    assert.equal(withAccount.accounts.at(-1).id, 8);
+    assert.equal(withAccount.accounts.at(-1).id, 41);
     const withMovement = PC.createV110LinkedOperation(withAccount, {
-      accountId: 8,
+      accountId: 41,
       date: '2026-08-02',
       amount: 20,
       type: 'debit',
@@ -1313,6 +1573,76 @@ test('V1.1.0 account-ledger foundation', async (t) => {
     assert.throws(
       () => PC.serializeV110({ ...base, accountMovements: [{ ...base.accountMovements[0], amount: -1 }] }),
       (error) => error.name === 'V110ValidationError' && error.code === 'INVALID_AMOUNT'
+    );
+  });
+
+  await t.test('invalid complete-state domains and conflicting V1.0 fields fail closed', () => {
+    const validAccount = {
+      id: 1, name: 'Cuenta', type: 'bank', bank: '',
+      initialBalance: 100, active: true,
+    };
+    const invalidStates = [
+      { schemaVersion: '1.1.0', settings: { salary: -1 } },
+      { schemaVersion: '1.1.0', wallets: {} },
+      {
+        schemaVersion: '1.1.0',
+        accounts: [validAccount],
+        debts: [{ id: 2, total: 100, paid: 101 }],
+      },
+      {
+        schemaVersion: '1.1.0',
+        accounts: [validAccount],
+        wallets: [{ id: 1 }],
+      },
+      {
+        schemaVersion: '1.1.0',
+        accounts: [validAccount],
+        activeMonth: {
+          month: '2026-08',
+          expenses: [{
+            id: 2, accountId: 999, date: '2026-08-01',
+            amount: 10, type: 'expense',
+          }],
+        },
+      },
+      {
+        schemaVersion: '1.1.0',
+        accounts: [validAccount],
+        activeMonth: {
+          month: '2026-08',
+          expenses: [{
+            id: 2, accountId: 1, date: '2026-08-32',
+            amount: 10, type: 'expense',
+          }],
+        },
+      },
+      {
+        schemaVersion: '1.1.0',
+        activeMonth: { month: '2026-08' },
+        monthlyHistory: [{ month: '2026-08' }],
+      },
+      { schemaVersion: '1.1.0', expenses: [] },
+      { schemaVersion: '1.1.0', nextAccountId: 1 },
+      { schemaVersion: '1.1.0', accounts: [{ ...validAccount, balance: 100 }] },
+      {
+        schemaVersion: '1.1.0',
+        accounts: [validAccount],
+        activeMonth: {
+          month: '2026-08',
+          expenses: [{
+            id: 2, accountId: 1, account: '1', date: '2026-08-01',
+            amount: 10, type: 'expense',
+          }],
+        },
+      },
+    ];
+
+    for (const invalid of invalidStates) {
+      assert.deepEqual(PC.loadV110(JSON.stringify(invalid)), PC.makeV110Default());
+    }
+    assert.throws(
+      () => PC.serializeV110(invalidStates.at(-1)),
+      (error) => error.name === 'V110ValidationError' && error.code === 'CONFLICTING_FIELD'
     );
   });
 
