@@ -14,9 +14,15 @@ const path = require('node:path');
 const PC = require('../perita-core.js');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+function resetV1ForMonth(month) {
+  const state = PC.resetToDefault();
+  const activeMonth = { ...state.activeMonth, month };
+  return { ...state, activeMonth, expenses: activeMonth.expenses };
+}
+
 function seedState() {
   // A state with permanent entities already in place, ready for monthly activity.
-  let s = PC.resetToDefault();
+  let s = resetV1ForMonth('2026-07');
   s = { ...s, settings: { salary: 1000 } };
   s = { ...s, accounts: [{ id: 1, name: 'Cuenta Principal', type: 'bank', balance: 500 }] };
   s = { ...s, debts: [{ id: 2, name: 'Tarjeta', total: 1000, paid: 200, status: 'activa' }] };
@@ -1005,7 +1011,7 @@ test('10. Month-closing flow', async (t) => {
   });
 
   await t.test('empty-month close is safe: no NaN, no missing fields, no corrupted history', () => {
-    let s = PC.resetToDefault(); // nothing at all — no accounts, no debts, no wallets, no budget, salary 0
+    let s = resetV1ForMonth('2026-07'); // nothing at all — no accounts, no debts, no wallets, no budget, salary 0
     const closed = PC.closeMonth(s, '2026-07-31T00:00:00Z', s.activeMonth.month);
     const archived = closed.monthlyHistory[0];
     const mt = PC.monthTotals(archived);
