@@ -29,6 +29,11 @@
     INVALID_UUID_ENTROPY: 'INVALID_UUID_ENTROPY',
     CRYPTO_UNAVAILABLE: 'CRYPTO_UNAVAILABLE',
     CRYPTO_UUID_FAILED: 'CRYPTO_UUID_FAILED',
+    STORAGE_OPEN_FAILED: 'STORAGE_OPEN_FAILED',
+    STORAGE_READ_FAILED: 'STORAGE_READ_FAILED',
+    STORAGE_WRITE_FAILED: 'STORAGE_WRITE_FAILED',
+    SCHEMA_UNSUPPORTED: 'SCHEMA_UNSUPPORTED',
+    QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
     INVALID_REVISION: 'INVALID_REVISION',
     REVISION_CONFLICT: 'REVISION_CONFLICT',
     REVISION_OVERFLOW: 'REVISION_OVERFLOW',
@@ -80,6 +85,8 @@
   class ContractValidationError extends PeritaError {}
 
   class RevisionConflictError extends PeritaError {}
+
+  class StorageError extends PeritaError {}
 
   function validationError(code, message, context, cause) {
     return new ContractValidationError(code, message, context, cause);
@@ -514,6 +521,7 @@
     PeritaError,
     ContractValidationError,
     RevisionConflictError,
+    StorageError,
     assertMoney,
     assertPositiveMoney,
     assertSafeDelta,
