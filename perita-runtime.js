@@ -164,7 +164,12 @@
 
   function assertRuntimeRecord(value) {
     try {
-      if (!value || value.key !== RUNTIME_KEY || typeof value.writeEnabled !== 'boolean') {
+      if (
+        !value || value.key !== RUNTIME_KEY || typeof value.writeEnabled !== 'boolean' ||
+        !['ok', 'warning', 'restricted', 'diagnostic_only'].includes(value.healthStatus) ||
+        !Array.isArray(value.restrictedScopes) ||
+        !value.restrictedScopes.every((scope) => typeof scope === 'string')
+      ) {
         throw new Error('system/runtime is missing or invalid');
       }
       assertRevision(value.dataRevision, { field: 'dataRevision', allowZero: true });
@@ -251,6 +256,49 @@
       }
     }
     return normalized;
+  }
+
+  function normalizeAffectedScopes(scopes) {
+    if (scopes === undefined || scopes === null) return [];
+    if (
+      !Array.isArray(scopes) ||
+      !scopes.every((scope) => typeof scope === 'string' && scope.trim() !== '')
+    ) {
+      throw runtimeError(
+        ERROR_CODES.COMMAND_FAILED,
+        'affectedScopes must be an array of non-empty strings',
+        { affectedScopes: scopes }
+      );
+    }
+    return [...new Set(scopes)];
+  }
+
+  function assertIntegrityAccess(runtime, command) {
+    if (runtime.healthStatus === 'diagnostic_only' && !command.allowDiagnosticOnly) {
+      throw runtimeError(
+        ERROR_CODES.DIAGNOSTIC_ONLY,
+        'normal writes are blocked while the database is diagnostic-only',
+        {
+          commandType: command.commandType,
+          healthStatus: runtime.healthStatus,
+          affectedScopes: command.affectedScopes,
+        }
+      );
+    }
+    const blockedScopes = command.affectedScopes.filter(
+      (scope) => runtime.restrictedScopes.includes(scope)
+    );
+    if (blockedScopes.length > 0) {
+      throw runtimeError(
+        ERROR_CODES.RESTRICTED_SCOPE,
+        'the command affects a restricted integrity scope',
+        {
+          commandType: command.commandType,
+          affectedScopes: command.affectedScopes,
+          blockedScopes,
+        }
+      );
+    }
   }
 
   function cloneMetadata(value, field) {
@@ -475,6 +523,7 @@
             const timestamp = timestampFromNow(now);
             assertWriterControl(writer, tabId, command.expectedWriterEpoch, timestamp);
             assertExpectedDataRevision(runtime, command.expectedDataRevision, command.commandType);
+            assertIntegrityAccess(runtime, command);
             if (!runtime.writeEnabled && !command.allowWriteDisabled) {
               throw runtimeError(
                 ERROR_CODES.WRITE_DISABLED,
@@ -501,6 +550,7 @@
             const writer = assertWriterRecord(await transaction.get('coordination', WRITER_KEY));
             assertWriterControl(writer, tabId, command.expectedWriterEpoch, timestampFromNow(now));
             assertExpectedDataRevision(runtime, command.expectedDataRevision, command.commandType);
+            assertIntegrityAccess(runtime, command);
             if (!runtime.writeEnabled && !command.allowWriteDisabled) {
               throw runtimeError(
                 ERROR_CODES.WRITE_DISABLED,
@@ -622,6 +672,7 @@
               command.expectedDataRevision,
               command.commandType
             );
+            assertIntegrityAccess(initialRuntime, command);
             if (!initialRuntime.writeEnabled && !command.allowWriteDisabled) {
               throw runtimeError(
                 ERROR_CODES.WRITE_DISABLED,
@@ -667,6 +718,7 @@
               command.expectedDataRevision,
               command.commandType
             );
+            assertIntegrityAccess(finalRuntime, command);
             if (!finalRuntime.writeEnabled && !command.allowWriteDisabled) {
               throw runtimeError(
                 ERROR_CODES.WRITE_DISABLED,
@@ -735,15 +787,18 @@
         : normalizeAffectedStores(request.affectedStores);
       const metadata = cloneMetadata(request.metadata, 'metadata');
       const intentOption = normalizeIntentOption(request.intent, metadata);
+      const affectedScopes = normalizeAffectedScopes(request.affectedScopes);
       const command = {
         commandType,
         expectedDataRevision,
         expectedWriterEpoch,
         affectedStores,
+        affectedScopes,
         execute: request.execute,
         metadata,
         intentId: null,
         allowWriteDisabled: Boolean(internalOptions && internalOptions.allowWriteDisabled),
+        allowDiagnosticOnly: Boolean(internalOptions && internalOptions.allowDiagnosticOnly),
         runtimePatch: internalOptions && internalOptions.runtimePatch,
       };
 
@@ -804,11 +859,13 @@
           expectedDataRevision: runtime.dataRevision,
           expectedWriterEpoch: heldWriterEpoch,
           affectedStores: ['system'],
+          affectedScopes: [],
           metadata: { enabled: request.enabled, reason },
           execute: async () => undefined,
         },
         {
           allowWriteDisabled: true,
+          allowDiagnosticOnly: request.enabled === false,
           affectedStores: ['system'],
           runtimePatch: { writeEnabled: request.enabled },
         }

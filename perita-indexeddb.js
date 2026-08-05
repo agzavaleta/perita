@@ -344,7 +344,7 @@
       if (
         runtime.key !== 'runtime' ||
         !['not_started', 'in_progress', 'completed', 'deleted'].includes(runtime.setupStatus) ||
-        !['ok', 'warning', 'restricted'].includes(runtime.healthStatus) ||
+        !['ok', 'warning', 'restricted', 'diagnostic_only'].includes(runtime.healthStatus) ||
         !Array.isArray(runtime.restrictedScopes) ||
         !runtime.restrictedScopes.every((scope) => typeof scope === 'string') ||
         typeof runtime.writeEnabled !== 'boolean'
