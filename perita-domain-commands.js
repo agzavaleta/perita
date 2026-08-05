@@ -1,8 +1,7 @@
 /* perita-domain-commands.js — isolated V1.1.0 domain commands
  *
- * Substage 8.1A intentionally exposes only setup.complete. Persistence is
- * delegated to PeritaRuntime so writer fencing, health gates, commits, and the
- * runtime revision remain authoritative and atomic.
+ * Persistence is delegated to PeritaRuntime so writer fencing, health gates,
+ * commits, and the runtime revision remain authoritative and atomic.
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -23,8 +22,11 @@
     ERROR_CODES,
     PeritaError,
     assertCivilDate,
+    assertExpectedRevision,
+    assertMoney,
     assertRevision,
     assertUuid,
+    nextRevision,
   } = Contracts;
 
   const SETUP_COMPLETE_STORES = Object.freeze([
@@ -35,6 +37,19 @@
     'auditEvents',
   ]);
   const NEGATIVE_OPENING_BALANCE_WARNING = 'NEGATIVE_OPENING_BALANCE';
+  const FINANCIAL_SETTINGS_UPDATE_STORES = Object.freeze([
+    'financialSettings',
+    'auditEvents',
+  ]);
+  const PERIOD_PLANNING_UPDATE_STORES = Object.freeze([
+    'periods',
+    'auditEvents',
+  ]);
+  const PERIOD_PLANNING_FIELDS = Object.freeze([
+    'plannedSalaryAmount',
+    'variableExpenseBudgetAmount',
+    'plannedSavingsAmount',
+  ]);
 
   function domainError(code, message, context, cause) {
     return new Domain.DomainError(code, message, context, cause);
@@ -67,6 +82,17 @@
     }
   }
 
+  function requireOnlyFields(record, fields, name) {
+    const unexpected = Object.keys(record).filter((field) => !fields.includes(field));
+    if (unexpected.length > 0) {
+      throw domainError(
+        ERROR_CODES.INVALID_DOMAIN_FIELD,
+        `${name} contains unsupported fields`,
+        { name, unexpectedFields: unexpected, allowedFields: fields }
+      );
+    }
+  }
+
   function canonicalTimestamp(now) {
     let value;
     try {
@@ -74,7 +100,7 @@
     } catch (cause) {
       throw domainError(
         ERROR_CODES.INVALID_DOMAIN_FIELD,
-        'the injected setup clock failed',
+        'the injected domain clock failed',
         { field: 'now' },
         cause
       );
@@ -133,6 +159,23 @@
       previousRevision: null,
       nextRevision: 1,
       previousValue: null,
+      nextValue: options.nextValue,
+      reason: null,
+      occurredAt: options.occurredAt,
+    });
+  }
+
+  function updatedAuditEvent(options) {
+    return Domain.validateAuditEvent({
+      id: options.id,
+      periodId: options.periodId,
+      subjectType: options.subjectType,
+      subjectId: options.subjectId,
+      action: 'updated',
+      commandType: options.commandType,
+      previousRevision: options.previousValue.revision,
+      nextRevision: options.nextValue.revision,
+      previousValue: options.previousValue,
       nextValue: options.nextValue,
       reason: null,
       occurredAt: options.occurredAt,
@@ -372,14 +415,179 @@
       });
     }
 
+    async function updateReferenceSalary(input) {
+      const request = requireRecord(input, 'financial-settings.update-reference-salary');
+      const fields = [
+        'expectedDataRevision',
+        'expectedWriterEpoch',
+        'expectedSettingsRevision',
+        'salaryReferenceAmount',
+      ];
+      requireFields(request, fields, 'financial-settings.update-reference-salary');
+      requireOnlyFields(request, fields, 'financial-settings.update-reference-salary');
+      assertRevision(request.expectedDataRevision, {
+        field: 'expectedDataRevision', allowZero: true,
+      });
+      assertRevision(request.expectedWriterEpoch, { field: 'expectedWriterEpoch' });
+      assertRevision(request.expectedSettingsRevision, { field: 'expectedSettingsRevision' });
+      assertMoney(request.salaryReferenceAmount, {
+        field: 'salaryReferenceAmount', allowZero: true,
+      });
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+
+      return runtime.executeCommand({
+        commandType: 'financial-settings.update-reference-salary',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: FINANCIAL_SETTINGS_UPDATE_STORES,
+        affectedScopes: [Domain.domainScope('financial_settings', 'current')],
+        metadata: { salaryReferenceAmount: request.salaryReferenceAmount },
+        execute: async (transaction) => {
+          const stored = await transaction.get('financialSettings', 'current');
+          if (stored === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'FinancialSettings.current does not exist',
+              { key: 'current' }
+            );
+          }
+          const previousValue = Domain.validateFinancialSettings(stored);
+          assertExpectedRevision(
+            previousValue.revision,
+            request.expectedSettingsRevision,
+            { entityType: 'FinancialSettings', entityId: 'current' }
+          );
+          const nextValue = Domain.validateFinancialSettings({
+            ...previousValue,
+            salaryReferenceAmount: request.salaryReferenceAmount,
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = updatedAuditEvent({
+            id: auditEventId,
+            periodId: null,
+            subjectType: 'financial_settings',
+            subjectId: 'current',
+            commandType: 'financial-settings.update-reference-salary',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('financialSettings', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ financialSettings: nextValue, auditEvent });
+        },
+      });
+    }
+
+    async function updatePlanning(input) {
+      const request = requireRecord(input, 'period.update-planning');
+      const requiredFields = [
+        'expectedDataRevision',
+        'expectedWriterEpoch',
+        'periodId',
+        'expectedPeriodRevision',
+      ];
+      const allowedFields = [...requiredFields, ...PERIOD_PLANNING_FIELDS];
+      requireFields(request, requiredFields, 'period.update-planning');
+      requireOnlyFields(request, allowedFields, 'period.update-planning');
+      assertRevision(request.expectedDataRevision, {
+        field: 'expectedDataRevision', allowZero: true,
+      });
+      assertRevision(request.expectedWriterEpoch, { field: 'expectedWriterEpoch' });
+      assertUuid(request.periodId, { field: 'periodId' });
+      assertRevision(request.expectedPeriodRevision, { field: 'expectedPeriodRevision' });
+      const changedFields = PERIOD_PLANNING_FIELDS.filter((field) => hasOwn(request, field));
+      if (changedFields.length === 0) {
+        throw domainError(
+          ERROR_CODES.INVALID_DOMAIN_FIELD,
+          'period.update-planning requires at least one planning field',
+          { planningFields: PERIOD_PLANNING_FIELDS }
+        );
+      }
+      for (const field of changedFields) {
+        assertMoney(request[field], { field, allowZero: true });
+      }
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+
+      return runtime.executeCommand({
+        commandType: 'period.update-planning',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: PERIOD_PLANNING_UPDATE_STORES,
+        affectedScopes: [Domain.domainScope('period', request.periodId)],
+        metadata: { periodId: request.periodId, changedFields },
+        execute: async (transaction, context) => {
+          const stored = await transaction.get('periods', request.periodId);
+          if (stored === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested Period does not exist',
+              { periodId: request.periodId }
+            );
+          }
+          const previousValue = Domain.validatePeriod(stored);
+          if (!context || !context.runtime || context.runtime.activePeriodId !== request.periodId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'planning can only change for the active Period',
+              {
+                periodId: request.periodId,
+                activePeriodId: context && context.runtime && context.runtime.activePeriodId,
+              }
+            );
+          }
+          if (previousValue.status !== 'open') {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'planning can only change for an open Period',
+              { periodId: request.periodId, status: previousValue.status }
+            );
+          }
+          assertExpectedRevision(
+            previousValue.revision,
+            request.expectedPeriodRevision,
+            { entityType: 'Period', entityId: request.periodId }
+          );
+          const planningPatch = {};
+          for (const field of changedFields) planningPatch[field] = request[field];
+          const nextValue = Domain.validatePeriod({
+            ...previousValue,
+            ...planningPatch,
+            revision: nextRevision(previousValue.revision),
+          });
+          const auditEvent = updatedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'period',
+            subjectId: request.periodId,
+            commandType: 'period.update-planning',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('periods', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ period: nextValue, auditEvent });
+        },
+      });
+    }
+
     return Object.freeze({
       setup: Object.freeze({ complete }),
+      financialSettings: Object.freeze({ updateReferenceSalary }),
+      period: Object.freeze({ updatePlanning }),
     });
   }
 
   return Object.freeze({
     SETUP_COMPLETE_STORES,
     NEGATIVE_OPENING_BALANCE_WARNING,
+    FINANCIAL_SETTINGS_UPDATE_STORES,
+    PERIOD_PLANNING_UPDATE_STORES,
+    PERIOD_PLANNING_FIELDS,
     createPeritaDomainCommands,
   });
 });
