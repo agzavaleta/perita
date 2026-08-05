@@ -24,6 +24,7 @@
     assertCivilDate,
     assertExpectedRevision,
     assertMoney,
+    assertPositiveMoney,
     assertRevision,
     assertUuid,
     nextRevision,
@@ -62,6 +63,64 @@
     'auditEvents',
   ]);
   const ACCOUNT_EDITABLE_FIELDS = Object.freeze(['name']);
+  const CATEGORY_STORES = Object.freeze(['categories', 'periods', 'auditEvents']);
+  const FIXED_TEMPLATE_CREATE_STORES = Object.freeze([
+    'fixedExpenseTemplates',
+    'fixedExpenseInstances',
+    'periods',
+    'auditEvents',
+  ]);
+  const FIXED_TEMPLATE_CHANGE_STORES = Object.freeze([
+    'fixedExpenseTemplates',
+    'periods',
+    'auditEvents',
+  ]);
+  const FIXED_INSTANCE_CHANGE_STORES = Object.freeze([
+    'fixedExpenseInstances',
+    'periods',
+    'auditEvents',
+  ]);
+  const SAVINGS_GOAL_CREATE_STORES = Object.freeze([
+    'savingsGoals',
+    'periods',
+    'periodOpenings',
+    'auditEvents',
+  ]);
+  const SAVINGS_GOAL_CHANGE_STORES = Object.freeze([
+    'savingsGoals',
+    'periods',
+    'auditEvents',
+  ]);
+  const DEBT_CREATE_STORES = Object.freeze([
+    'debts',
+    'periods',
+    'periodOpenings',
+    'auditEvents',
+  ]);
+  const DEBT_CHANGE_STORES = Object.freeze(['debts', 'periods', 'auditEvents']);
+  const CATEGORY_EDITABLE_FIELDS = Object.freeze(['name']);
+  const FIXED_TEMPLATE_EDITABLE_FIELDS = Object.freeze(['name', 'referenceAmount']);
+  const SAVINGS_GOAL_EDITABLE_FIELDS = Object.freeze([
+    'name',
+    'targetAmount',
+    'plannedMonthlyAmount',
+  ]);
+  const DEBT_EDITABLE_FIELDS = Object.freeze(['name', 'dueDate']);
+  const CATEGORY_FIELDS = Object.freeze([
+    'id', 'name', 'status', 'revision', 'createdAt', 'updatedAt',
+  ]);
+  const FIXED_TEMPLATE_FIELDS = Object.freeze([
+    'id', 'name', 'referenceAmount', 'status', 'revision', 'createdAt', 'updatedAt',
+  ]);
+  const SAVINGS_GOAL_FIELDS = Object.freeze([
+    'id', 'name', 'targetAmount', 'openingBalance', 'currentBalance',
+    'plannedMonthlyAmount', 'lifecycleStatus', 'progressStatus', 'closedAt',
+    'revision', 'createdAt', 'updatedAt',
+  ]);
+  const DEBT_FIELDS = Object.freeze([
+    'id', 'name', 'totalAmount', 'openingOutstanding', 'outstandingAmount',
+    'dueDate', 'lifecycleStatus', 'paymentStatus', 'revision', 'createdAt', 'updatedAt',
+  ]);
 
   function domainError(code, message, context, cause) {
     return new Domain.DomainError(code, message, context, cause);
@@ -103,6 +162,45 @@
         { name, unexpectedFields: unexpected, allowedFields: fields }
       );
     }
+  }
+
+  function validateCommandHeader(request, commandType, requiredFields, allowedFields) {
+    requireFields(request, requiredFields, commandType);
+    requireOnlyFields(request, allowedFields || requiredFields, commandType);
+    assertRevision(request.expectedDataRevision, {
+      field: 'expectedDataRevision', allowZero: true,
+    });
+    assertRevision(request.expectedWriterEpoch, { field: 'expectedWriterEpoch' });
+    assertUuid(request.periodId, { field: 'periodId' });
+  }
+
+  function editableFieldsFrom(request, editableFields, commandType) {
+    const changedFields = editableFields.filter((field) => hasOwn(request, field));
+    if (changedFields.length === 0) {
+      throw domainError(
+        ERROR_CODES.INVALID_DOMAIN_FIELD,
+        `${commandType} requires at least one editable field`,
+        { editableFields }
+      );
+    }
+    return changedFields;
+  }
+
+  function assertRealChange(previousValue, request, changedFields, commandType, entityId) {
+    if (changedFields.every((field) => request[field] === previousValue[field])) {
+      throw domainError(
+        ERROR_CODES.INVALID_DOMAIN_FIELD,
+        `${commandType} requires a real change`,
+        { entityId, editableFields: changedFields }
+      );
+    }
+  }
+
+  function entityScopes(periodId, scopeType, entityId) {
+    return [
+      Domain.domainScope('period', periodId),
+      Domain.domainScope(scopeType, entityId),
+    ];
   }
 
   function canonicalTimestamp(now) {
@@ -890,6 +988,807 @@
       });
     }
 
+    async function createCategory(input) {
+      const request = requireRecord(input, 'category.create');
+      const fields = ['expectedDataRevision', 'expectedWriterEpoch', 'periodId', 'category'];
+      validateCommandHeader(request, 'category.create', fields);
+      requireOnlyFields(requireRecord(request.category, 'Category'), CATEGORY_FIELDS, 'Category');
+      const category = Domain.validateCategory(request.category);
+      if (category.revision !== 1 || category.status !== 'active') {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'a new Category must be active and begin at revision 1',
+          { categoryId: category.id, status: category.status, revision: category.revision }
+        );
+      }
+      const occurredAt = canonicalTimestamp(now);
+      const auditEvent = createdAuditEvent({
+        id: createIdentifier(createUuid, 'auditEvent.id', new Set()),
+        periodId: request.periodId,
+        subjectType: 'category',
+        subjectId: category.id,
+        commandType: 'category.create',
+        nextValue: category,
+        occurredAt,
+      });
+      return runtime.executeCommand({
+        commandType: 'category.create',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: CATEGORY_STORES,
+        affectedScopes: entityScopes(request.periodId, 'category', category.id),
+        metadata: { periodId: request.periodId, categoryId: category.id },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'category.create');
+          if (await transaction.get('categories', category.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'a Category with the requested ID already exists',
+              { categoryId: category.id }
+            );
+          }
+          await transaction.add('categories', category);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ category, auditEvent });
+        },
+      });
+    }
+
+    async function updateCategory(input) {
+      const request = requireRecord(input, 'category.update');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'categoryId', 'expectedCategoryRevision',
+      ];
+      const allowed = [...required, ...CATEGORY_EDITABLE_FIELDS];
+      validateCommandHeader(request, 'category.update', required, allowed);
+      assertUuid(request.categoryId, { field: 'categoryId' });
+      assertRevision(request.expectedCategoryRevision, { field: 'expectedCategoryRevision' });
+      const changedFields = editableFieldsFrom(request, CATEGORY_EDITABLE_FIELDS, 'category.update');
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+      return runtime.executeCommand({
+        commandType: 'category.update',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: CATEGORY_STORES,
+        affectedScopes: entityScopes(request.periodId, 'category', request.categoryId),
+        metadata: { periodId: request.periodId, categoryId: request.categoryId, changedFields },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'category.update');
+          const stored = await transaction.get('categories', request.categoryId);
+          if (stored === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested Category does not exist',
+              { categoryId: request.categoryId }
+            );
+          }
+          const previousValue = Domain.validateCategory(stored);
+          assertExpectedRevision(previousValue.revision, request.expectedCategoryRevision, {
+            entityType: 'Category', entityId: request.categoryId,
+          });
+          assertRealChange(previousValue, request, changedFields, 'category.update', request.categoryId);
+          const nextValue = Domain.validateCategory({
+            ...previousValue,
+            name: request.name,
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = updatedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'category',
+            subjectId: request.categoryId,
+            commandType: 'category.update',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('categories', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ category: nextValue, auditEvent });
+        },
+      });
+    }
+
+    async function deactivateCategory(input) {
+      const request = requireRecord(input, 'category.deactivate');
+      const fields = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'categoryId', 'expectedCategoryRevision',
+      ];
+      validateCommandHeader(request, 'category.deactivate', fields);
+      assertUuid(request.categoryId, { field: 'categoryId' });
+      assertRevision(request.expectedCategoryRevision, { field: 'expectedCategoryRevision' });
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+      return runtime.executeCommand({
+        commandType: 'category.deactivate',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: CATEGORY_STORES,
+        affectedScopes: entityScopes(request.periodId, 'category', request.categoryId),
+        metadata: { periodId: request.periodId, categoryId: request.categoryId },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'category.deactivate');
+          const stored = await transaction.get('categories', request.categoryId);
+          if (stored === undefined) {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'the requested Category does not exist', {
+              categoryId: request.categoryId,
+            });
+          }
+          const previousValue = Domain.validateCategory(stored);
+          assertExpectedRevision(previousValue.revision, request.expectedCategoryRevision, {
+            entityType: 'Category', entityId: request.categoryId,
+          });
+          if (previousValue.status !== 'active') {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'only an active Category can be deactivated', {
+              categoryId: request.categoryId, status: previousValue.status,
+            });
+          }
+          const nextValue = Domain.validateCategory({
+            ...previousValue,
+            status: 'inactive',
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = stateChangedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'category',
+            subjectId: request.categoryId,
+            action: 'deactivated',
+            commandType: 'category.deactivate',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('categories', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ category: nextValue, auditEvent });
+        },
+      });
+    }
+
+    async function createFixedExpenseTemplate(input) {
+      const request = requireRecord(input, 'fixed-expense-template.create');
+      const fields = ['expectedDataRevision', 'expectedWriterEpoch', 'periodId', 'template'];
+      validateCommandHeader(request, 'fixed-expense-template.create', fields);
+      requireOnlyFields(
+        requireRecord(request.template, 'FixedExpenseTemplate'),
+        FIXED_TEMPLATE_FIELDS,
+        'FixedExpenseTemplate'
+      );
+      const template = Domain.validateFixedExpenseTemplate(request.template);
+      if (template.revision !== 1 || template.status !== 'active') {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'a new FixedExpenseTemplate must be active and begin at revision 1',
+          { templateId: template.id, status: template.status, revision: template.revision }
+        );
+      }
+      const occurredAt = canonicalTimestamp(now);
+      const auditEvent = createdAuditEvent({
+        id: createIdentifier(createUuid, 'auditEvent.id', new Set()),
+        periodId: request.periodId,
+        subjectType: 'fixed_expense_template',
+        subjectId: template.id,
+        commandType: 'fixed-expense-template.create',
+        nextValue: template,
+        occurredAt,
+      });
+      return runtime.executeCommand({
+        commandType: 'fixed-expense-template.create',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: FIXED_TEMPLATE_CREATE_STORES,
+        affectedScopes: entityScopes(request.periodId, 'fixed_expense_template', template.id),
+        metadata: { periodId: request.periodId, templateId: template.id },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          const activePeriod = requireActiveOpenPeriod(
+            storedPeriod, context, request.periodId, 'fixed-expense-template.create'
+          );
+          if (await transaction.get('fixedExpenseTemplates', template.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'a FixedExpenseTemplate with the requested ID already exists',
+              { templateId: template.id }
+            );
+          }
+          const instances = await transaction.getAll('fixedExpenseInstances');
+          Domain.assertNoCurrentPeriodFixedExpenseInstance({ template, activePeriod, instances });
+          await transaction.add('fixedExpenseTemplates', template);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ template, auditEvent });
+        },
+      });
+    }
+
+    async function updateFixedExpenseTemplate(input) {
+      const request = requireRecord(input, 'fixed-expense-template.update');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'templateId', 'expectedTemplateRevision',
+      ];
+      const allowed = [...required, ...FIXED_TEMPLATE_EDITABLE_FIELDS];
+      validateCommandHeader(request, 'fixed-expense-template.update', required, allowed);
+      assertUuid(request.templateId, { field: 'templateId' });
+      assertRevision(request.expectedTemplateRevision, { field: 'expectedTemplateRevision' });
+      const changedFields = editableFieldsFrom(
+        request, FIXED_TEMPLATE_EDITABLE_FIELDS, 'fixed-expense-template.update'
+      );
+      if (hasOwn(request, 'referenceAmount')) {
+        assertPositiveMoney(request.referenceAmount, { field: 'referenceAmount' });
+      }
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+      return runtime.executeCommand({
+        commandType: 'fixed-expense-template.update',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: FIXED_TEMPLATE_CHANGE_STORES,
+        affectedScopes: entityScopes(request.periodId, 'fixed_expense_template', request.templateId),
+        metadata: { periodId: request.periodId, templateId: request.templateId, changedFields },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'fixed-expense-template.update');
+          const stored = await transaction.get('fixedExpenseTemplates', request.templateId);
+          if (stored === undefined) {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'the requested FixedExpenseTemplate does not exist', {
+              templateId: request.templateId,
+            });
+          }
+          const previousValue = Domain.validateFixedExpenseTemplate(stored);
+          assertExpectedRevision(previousValue.revision, request.expectedTemplateRevision, {
+            entityType: 'FixedExpenseTemplate', entityId: request.templateId,
+          });
+          if (previousValue.status !== 'active') {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'only an active FixedExpenseTemplate can be updated', {
+              templateId: request.templateId, status: previousValue.status,
+            });
+          }
+          assertRealChange(
+            previousValue, request, changedFields, 'fixed-expense-template.update', request.templateId
+          );
+          const patch = {};
+          for (const field of changedFields) patch[field] = request[field];
+          const nextValue = Domain.validateFixedExpenseTemplate({
+            ...previousValue,
+            ...patch,
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = updatedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'fixed_expense_template',
+            subjectId: request.templateId,
+            commandType: 'fixed-expense-template.update',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('fixedExpenseTemplates', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ template: nextValue, auditEvent });
+        },
+      });
+    }
+
+    async function deactivateFixedExpenseTemplate(input) {
+      const request = requireRecord(input, 'fixed-expense-template.deactivate');
+      const fields = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'templateId', 'expectedTemplateRevision',
+      ];
+      validateCommandHeader(request, 'fixed-expense-template.deactivate', fields);
+      assertUuid(request.templateId, { field: 'templateId' });
+      assertRevision(request.expectedTemplateRevision, { field: 'expectedTemplateRevision' });
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+      return runtime.executeCommand({
+        commandType: 'fixed-expense-template.deactivate',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: FIXED_TEMPLATE_CHANGE_STORES,
+        affectedScopes: entityScopes(request.periodId, 'fixed_expense_template', request.templateId),
+        metadata: { periodId: request.periodId, templateId: request.templateId },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'fixed-expense-template.deactivate');
+          const stored = await transaction.get('fixedExpenseTemplates', request.templateId);
+          if (stored === undefined) {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'the requested FixedExpenseTemplate does not exist', {
+              templateId: request.templateId,
+            });
+          }
+          const previousValue = Domain.validateFixedExpenseTemplate(stored);
+          assertExpectedRevision(previousValue.revision, request.expectedTemplateRevision, {
+            entityType: 'FixedExpenseTemplate', entityId: request.templateId,
+          });
+          if (previousValue.status !== 'active') {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'only an active FixedExpenseTemplate can be deactivated', {
+              templateId: request.templateId, status: previousValue.status,
+            });
+          }
+          const nextValue = Domain.validateFixedExpenseTemplate({
+            ...previousValue,
+            status: 'inactive',
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = stateChangedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'fixed_expense_template',
+            subjectId: request.templateId,
+            action: 'deactivated',
+            commandType: 'fixed-expense-template.deactivate',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('fixedExpenseTemplates', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ template: nextValue, auditEvent });
+        },
+      });
+    }
+
+    async function updateFixedExpenseInstancePlannedAmount(input) {
+      const request = requireRecord(input, 'fixed-expense-instance.update-planned-amount');
+      const fields = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'instanceId', 'expectedInstanceRevision', 'plannedAmount',
+      ];
+      validateCommandHeader(request, 'fixed-expense-instance.update-planned-amount', fields);
+      assertUuid(request.instanceId, { field: 'instanceId' });
+      assertRevision(request.expectedInstanceRevision, { field: 'expectedInstanceRevision' });
+      assertPositiveMoney(request.plannedAmount, { field: 'plannedAmount' });
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+      return runtime.executeCommand({
+        commandType: 'fixed-expense-instance.update-planned-amount',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: FIXED_INSTANCE_CHANGE_STORES,
+        affectedScopes: entityScopes(request.periodId, 'fixed_expense_instance', request.instanceId),
+        metadata: { periodId: request.periodId, instanceId: request.instanceId },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(
+            storedPeriod, context, request.periodId, 'fixed-expense-instance.update-planned-amount'
+          );
+          const stored = await transaction.get('fixedExpenseInstances', request.instanceId);
+          if (stored === undefined) {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'the requested FixedExpenseInstance does not exist', {
+              instanceId: request.instanceId,
+            });
+          }
+          const previousValue = Domain.validateFixedExpenseInstance(stored);
+          if (previousValue.periodId !== request.periodId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'FixedExpenseInstance does not belong to the active Period',
+              {
+                instanceId: request.instanceId,
+                instancePeriodId: previousValue.periodId,
+                activePeriodId: request.periodId,
+              }
+            );
+          }
+          assertExpectedRevision(previousValue.revision, request.expectedInstanceRevision, {
+            entityType: 'FixedExpenseInstance', entityId: request.instanceId,
+          });
+          assertRealChange(
+            previousValue,
+            request,
+            ['plannedAmount'],
+            'fixed-expense-instance.update-planned-amount',
+            request.instanceId
+          );
+          const nextValue = Domain.validateFixedExpenseInstance({
+            ...previousValue,
+            plannedAmount: request.plannedAmount,
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = updatedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'fixed_expense_instance',
+            subjectId: request.instanceId,
+            commandType: 'fixed-expense-instance.update-planned-amount',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('fixedExpenseInstances', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ instance: nextValue, auditEvent });
+        },
+      });
+    }
+
+    async function createSavingsGoal(input) {
+      const request = requireRecord(input, 'savings-goal.create');
+      const fields = ['expectedDataRevision', 'expectedWriterEpoch', 'periodId', 'goal'];
+      validateCommandHeader(request, 'savings-goal.create', fields);
+      requireOnlyFields(
+        requireRecord(request.goal, 'SavingsGoal'),
+        SAVINGS_GOAL_FIELDS,
+        'SavingsGoal'
+      );
+      const goal = Domain.validateSavingsGoal(request.goal);
+      if (
+        goal.revision !== 1 || goal.lifecycleStatus !== 'active' ||
+        goal.progressStatus !== 'in_progress' || goal.closedAt !== null
+      ) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'a new SavingsGoal must use its exact initial active state and revision 1',
+          {
+            goalId: goal.id,
+            revision: goal.revision,
+            lifecycleStatus: goal.lifecycleStatus,
+            progressStatus: goal.progressStatus,
+            closedAt: goal.closedAt,
+          }
+        );
+      }
+      Domain.assertInitialBalancePolicy({
+        targetType: 'savings_goal',
+        duringSetup: false,
+        openingBalance: goal.openingBalance,
+        currentBalance: goal.currentBalance,
+      });
+      const occurredAt = canonicalTimestamp(now);
+      const usedGeneratedIds = new Set();
+      const opening = Domain.validatePeriodOpening({
+        id: createIdentifier(createUuid, 'periodOpening.id', usedGeneratedIds),
+        periodId: request.periodId,
+        targetType: 'savings_goal',
+        targetId: goal.id,
+        openingAmount: 0,
+      });
+      Domain.assertPostSetupSavingsGoalOpening(goal, opening, request.periodId);
+      const auditEvent = createdAuditEvent({
+        id: createIdentifier(createUuid, 'auditEvent.id', usedGeneratedIds),
+        periodId: request.periodId,
+        subjectType: 'savings_goal',
+        subjectId: goal.id,
+        commandType: 'savings-goal.create',
+        nextValue: goal,
+        occurredAt,
+      });
+      return runtime.executeCommand({
+        commandType: 'savings-goal.create',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: SAVINGS_GOAL_CREATE_STORES,
+        affectedScopes: entityScopes(request.periodId, 'savings_goal', goal.id),
+        metadata: { periodId: request.periodId, goalId: goal.id },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'savings-goal.create');
+          if (await transaction.get('savingsGoals', goal.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'a SavingsGoal with the requested ID already exists',
+              { goalId: goal.id }
+            );
+          }
+          await transaction.add('savingsGoals', goal);
+          await transaction.add('periodOpenings', opening);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ goal, periodOpening: opening, auditEvent });
+        },
+      });
+    }
+
+    async function updateSavingsGoal(input) {
+      const request = requireRecord(input, 'savings-goal.update');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'goalId', 'expectedGoalRevision',
+      ];
+      const allowed = [...required, ...SAVINGS_GOAL_EDITABLE_FIELDS];
+      validateCommandHeader(request, 'savings-goal.update', required, allowed);
+      assertUuid(request.goalId, { field: 'goalId' });
+      assertRevision(request.expectedGoalRevision, { field: 'expectedGoalRevision' });
+      const changedFields = editableFieldsFrom(request, SAVINGS_GOAL_EDITABLE_FIELDS, 'savings-goal.update');
+      if (hasOwn(request, 'targetAmount')) {
+        assertPositiveMoney(request.targetAmount, { field: 'targetAmount' });
+      }
+      if (hasOwn(request, 'plannedMonthlyAmount')) {
+        assertMoney(request.plannedMonthlyAmount, { field: 'plannedMonthlyAmount', allowZero: true });
+      }
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+      return runtime.executeCommand({
+        commandType: 'savings-goal.update',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: SAVINGS_GOAL_CHANGE_STORES,
+        affectedScopes: entityScopes(request.periodId, 'savings_goal', request.goalId),
+        metadata: { periodId: request.periodId, goalId: request.goalId, changedFields },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'savings-goal.update');
+          const stored = await transaction.get('savingsGoals', request.goalId);
+          if (stored === undefined) {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'the requested SavingsGoal does not exist', {
+              goalId: request.goalId,
+            });
+          }
+          const previousValue = Domain.validateSavingsGoal(stored);
+          assertExpectedRevision(previousValue.revision, request.expectedGoalRevision, {
+            entityType: 'SavingsGoal', entityId: request.goalId,
+          });
+          if (previousValue.lifecycleStatus !== 'active') {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'a closed SavingsGoal cannot be updated', {
+              goalId: request.goalId, lifecycleStatus: previousValue.lifecycleStatus,
+            });
+          }
+          assertRealChange(previousValue, request, changedFields, 'savings-goal.update', request.goalId);
+          const patch = {};
+          for (const field of changedFields) patch[field] = request[field];
+          const targetAmount = hasOwn(patch, 'targetAmount')
+            ? patch.targetAmount
+            : previousValue.targetAmount;
+          const nextValue = Domain.validateSavingsGoal({
+            ...previousValue,
+            ...patch,
+            progressStatus: previousValue.currentBalance >= targetAmount ? 'completed' : 'in_progress',
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = updatedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'savings_goal',
+            subjectId: request.goalId,
+            commandType: 'savings-goal.update',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('savingsGoals', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ goal: nextValue, auditEvent });
+        },
+      });
+    }
+
+    async function closeSavingsGoal(input) {
+      const request = requireRecord(input, 'savings-goal.close');
+      const fields = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'goalId', 'expectedGoalRevision',
+      ];
+      validateCommandHeader(request, 'savings-goal.close', fields);
+      assertUuid(request.goalId, { field: 'goalId' });
+      assertRevision(request.expectedGoalRevision, { field: 'expectedGoalRevision' });
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+      return runtime.executeCommand({
+        commandType: 'savings-goal.close',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: SAVINGS_GOAL_CHANGE_STORES,
+        affectedScopes: entityScopes(request.periodId, 'savings_goal', request.goalId),
+        metadata: { periodId: request.periodId, goalId: request.goalId },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'savings-goal.close');
+          const stored = await transaction.get('savingsGoals', request.goalId);
+          if (stored === undefined) {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'the requested SavingsGoal does not exist', {
+              goalId: request.goalId,
+            });
+          }
+          const previousValue = Domain.validateSavingsGoal(stored);
+          assertExpectedRevision(previousValue.revision, request.expectedGoalRevision, {
+            entityType: 'SavingsGoal', entityId: request.goalId,
+          });
+          if (previousValue.lifecycleStatus !== 'active') {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'only an active SavingsGoal can be closed', {
+              goalId: request.goalId, lifecycleStatus: previousValue.lifecycleStatus,
+            });
+          }
+          if (previousValue.currentBalance !== 0) {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'SavingsGoal balance must be zero before closing', {
+              goalId: request.goalId, currentBalance: previousValue.currentBalance,
+            });
+          }
+          const nextValue = Domain.validateSavingsGoal({
+            ...previousValue,
+            lifecycleStatus: 'closed',
+            closedAt: occurredAt,
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = stateChangedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'savings_goal',
+            subjectId: request.goalId,
+            action: 'closed',
+            commandType: 'savings-goal.close',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('savingsGoals', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ goal: nextValue, auditEvent });
+        },
+      });
+    }
+
+    async function createDebt(input) {
+      const request = requireRecord(input, 'debt.create');
+      const fields = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'currentCivilDate', 'debt',
+      ];
+      validateCommandHeader(request, 'debt.create', fields);
+      assertCivilDate(request.currentCivilDate, { field: 'currentCivilDate' });
+      requireOnlyFields(requireRecord(request.debt, 'Debt'), DEBT_FIELDS, 'Debt');
+      const debt = Domain.validateDebt(request.debt);
+      const expectedPaymentStatus = debt.dueDate !== null && debt.dueDate < request.currentCivilDate
+        ? 'overdue'
+        : 'active';
+      if (
+        debt.revision !== 1 || debt.lifecycleStatus !== 'active' ||
+        debt.paymentStatus !== expectedPaymentStatus
+      ) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'a new Debt must use its exact initial active state and revision 1',
+          {
+            debtId: debt.id,
+            revision: debt.revision,
+            lifecycleStatus: debt.lifecycleStatus,
+            paymentStatus: debt.paymentStatus,
+            expectedPaymentStatus,
+          }
+        );
+      }
+      const occurredAt = canonicalTimestamp(now);
+      const usedGeneratedIds = new Set();
+      const opening = Domain.validatePeriodOpening({
+        id: createIdentifier(createUuid, 'periodOpening.id', usedGeneratedIds),
+        periodId: request.periodId,
+        targetType: 'debt',
+        targetId: debt.id,
+        openingAmount: debt.totalAmount,
+      });
+      Domain.assertNewDebtOpening(debt, opening, request.periodId);
+      const auditEvent = createdAuditEvent({
+        id: createIdentifier(createUuid, 'auditEvent.id', usedGeneratedIds),
+        periodId: request.periodId,
+        subjectType: 'debt',
+        subjectId: debt.id,
+        commandType: 'debt.create',
+        nextValue: debt,
+        occurredAt,
+      });
+      return runtime.executeCommand({
+        commandType: 'debt.create',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: DEBT_CREATE_STORES,
+        affectedScopes: entityScopes(request.periodId, 'debt', debt.id),
+        metadata: { periodId: request.periodId, debtId: debt.id },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'debt.create');
+          if (await transaction.get('debts', debt.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'a Debt with the requested ID already exists',
+              { debtId: debt.id }
+            );
+          }
+          await transaction.add('debts', debt);
+          await transaction.add('periodOpenings', opening);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ debt, periodOpening: opening, auditEvent });
+        },
+      });
+    }
+
+    async function updateDebtNameAndDueDate(input) {
+      const request = requireRecord(input, 'debt.update-name-and-due-date');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId', 'currentCivilDate',
+        'debtId', 'expectedDebtRevision',
+      ];
+      const allowed = [...required, ...DEBT_EDITABLE_FIELDS];
+      validateCommandHeader(request, 'debt.update-name-and-due-date', required, allowed);
+      assertCivilDate(request.currentCivilDate, { field: 'currentCivilDate' });
+      assertUuid(request.debtId, { field: 'debtId' });
+      assertRevision(request.expectedDebtRevision, { field: 'expectedDebtRevision' });
+      const changedFields = editableFieldsFrom(
+        request, DEBT_EDITABLE_FIELDS, 'debt.update-name-and-due-date'
+      );
+      if (hasOwn(request, 'dueDate') && request.dueDate !== null) {
+        assertCivilDate(request.dueDate, { field: 'dueDate' });
+      }
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+      return runtime.executeCommand({
+        commandType: 'debt.update-name-and-due-date',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: DEBT_CHANGE_STORES,
+        affectedScopes: entityScopes(request.periodId, 'debt', request.debtId),
+        metadata: { periodId: request.periodId, debtId: request.debtId, changedFields },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(
+            storedPeriod, context, request.periodId, 'debt.update-name-and-due-date'
+          );
+          const stored = await transaction.get('debts', request.debtId);
+          if (stored === undefined) {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'the requested Debt does not exist', {
+              debtId: request.debtId,
+            });
+          }
+          const previousValue = Domain.validateDebt(stored);
+          assertExpectedRevision(previousValue.revision, request.expectedDebtRevision, {
+            entityType: 'Debt', entityId: request.debtId,
+          });
+          if (previousValue.lifecycleStatus !== 'active' || previousValue.paymentStatus === 'paid') {
+            throw domainError(ERROR_CODES.DOMAIN_STATE_INVALID, 'only an active unpaid Debt can be updated', {
+              debtId: request.debtId,
+              lifecycleStatus: previousValue.lifecycleStatus,
+              paymentStatus: previousValue.paymentStatus,
+            });
+          }
+          assertRealChange(
+            previousValue,
+            request,
+            changedFields,
+            'debt.update-name-and-due-date',
+            request.debtId
+          );
+          const patch = {};
+          for (const field of changedFields) patch[field] = request[field];
+          const dueDate = hasOwn(patch, 'dueDate') ? patch.dueDate : previousValue.dueDate;
+          const paymentStatus = dueDate !== null && dueDate < request.currentCivilDate
+            ? 'overdue'
+            : 'active';
+          const nextValue = Domain.validateDebt({
+            ...previousValue,
+            ...patch,
+            paymentStatus,
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = updatedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'debt',
+            subjectId: request.debtId,
+            commandType: 'debt.update-name-and-due-date',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('debts', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ debt: nextValue, auditEvent });
+        },
+      });
+    }
+
     return Object.freeze({
       setup: Object.freeze({ complete }),
       financialSettings: Object.freeze({ updateReferenceSalary }),
@@ -898,6 +1797,28 @@
         create: createAccount,
         update: updateAccount,
         deactivate: deactivateAccount,
+      }),
+      category: Object.freeze({
+        create: createCategory,
+        update: updateCategory,
+        deactivate: deactivateCategory,
+      }),
+      fixedExpenseTemplate: Object.freeze({
+        create: createFixedExpenseTemplate,
+        update: updateFixedExpenseTemplate,
+        deactivate: deactivateFixedExpenseTemplate,
+      }),
+      fixedExpenseInstance: Object.freeze({
+        updatePlannedAmount: updateFixedExpenseInstancePlannedAmount,
+      }),
+      savingsGoal: Object.freeze({
+        create: createSavingsGoal,
+        update: updateSavingsGoal,
+        close: closeSavingsGoal,
+      }),
+      debt: Object.freeze({
+        create: createDebt,
+        updateNameAndDueDate: updateDebtNameAndDueDate,
       }),
     });
   }
@@ -911,6 +1832,22 @@
     ACCOUNT_CREATE_STORES,
     ACCOUNT_CHANGE_STORES,
     ACCOUNT_EDITABLE_FIELDS,
+    CATEGORY_STORES,
+    FIXED_TEMPLATE_CREATE_STORES,
+    FIXED_TEMPLATE_CHANGE_STORES,
+    FIXED_INSTANCE_CHANGE_STORES,
+    SAVINGS_GOAL_CREATE_STORES,
+    SAVINGS_GOAL_CHANGE_STORES,
+    DEBT_CREATE_STORES,
+    DEBT_CHANGE_STORES,
+    CATEGORY_EDITABLE_FIELDS,
+    FIXED_TEMPLATE_EDITABLE_FIELDS,
+    SAVINGS_GOAL_EDITABLE_FIELDS,
+    DEBT_EDITABLE_FIELDS,
+    CATEGORY_FIELDS,
+    FIXED_TEMPLATE_FIELDS,
+    SAVINGS_GOAL_FIELDS,
+    DEBT_FIELDS,
     createPeritaDomainCommands,
   });
 });
