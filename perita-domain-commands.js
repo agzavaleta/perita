@@ -50,6 +50,18 @@
     'variableExpenseBudgetAmount',
     'plannedSavingsAmount',
   ]);
+  const ACCOUNT_CREATE_STORES = Object.freeze([
+    'accounts',
+    'periods',
+    'periodOpenings',
+    'auditEvents',
+  ]);
+  const ACCOUNT_CHANGE_STORES = Object.freeze([
+    'accounts',
+    'periods',
+    'auditEvents',
+  ]);
+  const ACCOUNT_EDITABLE_FIELDS = Object.freeze(['name']);
 
   function domainError(code, message, context, cause) {
     return new Domain.DomainError(code, message, context, cause);
@@ -155,7 +167,7 @@
       subjectType: options.subjectType,
       subjectId: options.subjectId,
       action: 'created',
-      commandType: 'setup.complete',
+      commandType: options.commandType || 'setup.complete',
       previousRevision: null,
       nextRevision: 1,
       previousValue: null,
@@ -180,6 +192,56 @@
       reason: null,
       occurredAt: options.occurredAt,
     });
+  }
+
+  function stateChangedAuditEvent(options) {
+    return Domain.validateAuditEvent({
+      id: options.id,
+      periodId: options.periodId,
+      subjectType: options.subjectType,
+      subjectId: options.subjectId,
+      action: options.action,
+      commandType: options.commandType,
+      previousRevision: options.previousValue.revision,
+      nextRevision: options.nextValue.revision,
+      previousValue: options.previousValue,
+      nextValue: options.nextValue,
+      reason: null,
+      occurredAt: options.occurredAt,
+    });
+  }
+
+  function requireActiveOpenPeriod(storedPeriod, context, periodId, commandType) {
+    if (
+      !context || !context.runtime || context.runtime.setupStatus !== 'completed' ||
+      context.runtime.activePeriodId !== periodId
+    ) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_STATE_INVALID,
+        `${commandType} requires completed setup and the active Period`,
+        {
+          periodId,
+          setupStatus: context && context.runtime && context.runtime.setupStatus,
+          activePeriodId: context && context.runtime && context.runtime.activePeriodId,
+        }
+      );
+    }
+    if (storedPeriod === undefined) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_STATE_INVALID,
+        'the active Period does not exist',
+        { periodId, commandType }
+      );
+    }
+    const period = Domain.validatePeriod(storedPeriod);
+    if (period.status !== 'open') {
+      throw domainError(
+        ERROR_CODES.DOMAIN_STATE_INVALID,
+        `${commandType} requires an open Period`,
+        { periodId, status: period.status }
+      );
+    }
+    return period;
   }
 
   function prepareSetup(input, now, createUuid) {
@@ -575,10 +637,268 @@
       });
     }
 
+    async function createAccount(input) {
+      const request = requireRecord(input, 'account.create');
+      const fields = [
+        'expectedDataRevision',
+        'expectedWriterEpoch',
+        'periodId',
+        'account',
+      ];
+      requireFields(request, fields, 'account.create');
+      requireOnlyFields(request, fields, 'account.create');
+      assertRevision(request.expectedDataRevision, {
+        field: 'expectedDataRevision', allowZero: true,
+      });
+      assertRevision(request.expectedWriterEpoch, { field: 'expectedWriterEpoch' });
+      assertUuid(request.periodId, { field: 'periodId' });
+      const account = Domain.validateAccount(request.account);
+      if (account.revision !== 1 || account.status !== 'active') {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'a new Account must be active and begin at revision 1',
+          { accountId: account.id, status: account.status, revision: account.revision }
+        );
+      }
+      Domain.assertInitialBalancePolicy({
+        targetType: 'account',
+        duringSetup: false,
+        openingBalance: account.openingBalance,
+        currentBalance: account.currentBalance,
+      });
+      const occurredAt = canonicalTimestamp(now);
+      const usedGeneratedIds = new Set();
+      const opening = Domain.validatePeriodOpening({
+        id: createIdentifier(createUuid, 'periodOpening.id', usedGeneratedIds),
+        periodId: request.periodId,
+        targetType: 'account',
+        targetId: account.id,
+        openingAmount: 0,
+      });
+      Domain.assertPostSetupAccountOpening(account, opening, request.periodId);
+      const auditEvent = createdAuditEvent({
+        id: createIdentifier(createUuid, 'auditEvent.id', usedGeneratedIds),
+        periodId: request.periodId,
+        subjectType: 'account',
+        subjectId: account.id,
+        commandType: 'account.create',
+        nextValue: account,
+        occurredAt,
+      });
+      const scopes = [
+        Domain.domainScope('period', request.periodId),
+        Domain.domainScope('account', account.id),
+      ];
+
+      return runtime.executeCommand({
+        commandType: 'account.create',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: ACCOUNT_CREATE_STORES,
+        affectedScopes: scopes,
+        metadata: { periodId: request.periodId, accountId: account.id },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'account.create');
+          if (await transaction.get('accounts', account.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'an Account with the requested ID already exists',
+              { accountId: account.id }
+            );
+          }
+          await transaction.add('accounts', account);
+          await transaction.add('periodOpenings', opening);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ account, periodOpening: opening, auditEvent });
+        },
+      });
+    }
+
+    async function updateAccount(input) {
+      const request = requireRecord(input, 'account.update');
+      const requiredFields = [
+        'expectedDataRevision',
+        'expectedWriterEpoch',
+        'periodId',
+        'accountId',
+        'expectedAccountRevision',
+      ];
+      const allowedFields = [...requiredFields, ...ACCOUNT_EDITABLE_FIELDS];
+      requireFields(request, requiredFields, 'account.update');
+      requireOnlyFields(request, allowedFields, 'account.update');
+      assertRevision(request.expectedDataRevision, {
+        field: 'expectedDataRevision', allowZero: true,
+      });
+      assertRevision(request.expectedWriterEpoch, { field: 'expectedWriterEpoch' });
+      assertUuid(request.periodId, { field: 'periodId' });
+      assertUuid(request.accountId, { field: 'accountId' });
+      assertRevision(request.expectedAccountRevision, { field: 'expectedAccountRevision' });
+      const changedFields = ACCOUNT_EDITABLE_FIELDS.filter((field) => hasOwn(request, field));
+      if (changedFields.length === 0) {
+        throw domainError(
+          ERROR_CODES.INVALID_DOMAIN_FIELD,
+          'account.update requires at least one editable field',
+          { editableFields: ACCOUNT_EDITABLE_FIELDS }
+        );
+      }
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+
+      return runtime.executeCommand({
+        commandType: 'account.update',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: ACCOUNT_CHANGE_STORES,
+        affectedScopes: [
+          Domain.domainScope('period', request.periodId),
+          Domain.domainScope('account', request.accountId),
+        ],
+        metadata: { periodId: request.periodId, accountId: request.accountId, changedFields },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'account.update');
+          const stored = await transaction.get('accounts', request.accountId);
+          if (stored === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested Account does not exist',
+              { accountId: request.accountId }
+            );
+          }
+          const previousValue = Domain.validateAccount(stored);
+          assertExpectedRevision(
+            previousValue.revision,
+            request.expectedAccountRevision,
+            { entityType: 'Account', entityId: request.accountId }
+          );
+          if (changedFields.every((field) => request[field] === previousValue[field])) {
+            throw domainError(
+              ERROR_CODES.INVALID_DOMAIN_FIELD,
+              'account.update requires a real descriptive change',
+              { accountId: request.accountId, editableFields: ACCOUNT_EDITABLE_FIELDS }
+            );
+          }
+          const patch = {};
+          for (const field of changedFields) patch[field] = request[field];
+          const nextValue = Domain.validateAccount({
+            ...previousValue,
+            ...patch,
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = updatedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'account',
+            subjectId: request.accountId,
+            commandType: 'account.update',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('accounts', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ account: nextValue, auditEvent });
+        },
+      });
+    }
+
+    async function deactivateAccount(input) {
+      const request = requireRecord(input, 'account.deactivate');
+      const fields = [
+        'expectedDataRevision',
+        'expectedWriterEpoch',
+        'periodId',
+        'accountId',
+        'expectedAccountRevision',
+      ];
+      requireFields(request, fields, 'account.deactivate');
+      requireOnlyFields(request, fields, 'account.deactivate');
+      assertRevision(request.expectedDataRevision, {
+        field: 'expectedDataRevision', allowZero: true,
+      });
+      assertRevision(request.expectedWriterEpoch, { field: 'expectedWriterEpoch' });
+      assertUuid(request.periodId, { field: 'periodId' });
+      assertUuid(request.accountId, { field: 'accountId' });
+      assertRevision(request.expectedAccountRevision, { field: 'expectedAccountRevision' });
+      const occurredAt = canonicalTimestamp(now);
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
+
+      return runtime.executeCommand({
+        commandType: 'account.deactivate',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: ACCOUNT_CHANGE_STORES,
+        affectedScopes: [
+          Domain.domainScope('period', request.periodId),
+          Domain.domainScope('account', request.accountId),
+        ],
+        metadata: { periodId: request.periodId, accountId: request.accountId },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          requireActiveOpenPeriod(storedPeriod, context, request.periodId, 'account.deactivate');
+          const stored = await transaction.get('accounts', request.accountId);
+          if (stored === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested Account does not exist',
+              { accountId: request.accountId }
+            );
+          }
+          const previousValue = Domain.validateAccount(stored);
+          assertExpectedRevision(
+            previousValue.revision,
+            request.expectedAccountRevision,
+            { entityType: 'Account', entityId: request.accountId }
+          );
+          if (previousValue.status !== 'active') {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'only an active Account can be deactivated',
+              { accountId: request.accountId, status: previousValue.status }
+            );
+          }
+          if (previousValue.currentBalance !== 0) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'an Account balance must be zero before deactivation',
+              { accountId: request.accountId, currentBalance: previousValue.currentBalance }
+            );
+          }
+          const nextValue = Domain.validateAccount({
+            ...previousValue,
+            status: 'inactive',
+            revision: nextRevision(previousValue.revision),
+            updatedAt: occurredAt,
+          });
+          const auditEvent = stateChangedAuditEvent({
+            id: auditEventId,
+            periodId: request.periodId,
+            subjectType: 'account',
+            subjectId: request.accountId,
+            action: 'deactivated',
+            commandType: 'account.deactivate',
+            previousValue,
+            nextValue,
+            occurredAt,
+          });
+          await transaction.put('accounts', nextValue);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ account: nextValue, auditEvent });
+        },
+      });
+    }
+
     return Object.freeze({
       setup: Object.freeze({ complete }),
       financialSettings: Object.freeze({ updateReferenceSalary }),
       period: Object.freeze({ updatePlanning }),
+      account: Object.freeze({
+        create: createAccount,
+        update: updateAccount,
+        deactivate: deactivateAccount,
+      }),
     });
   }
 
@@ -588,6 +908,9 @@
     FINANCIAL_SETTINGS_UPDATE_STORES,
     PERIOD_PLANNING_UPDATE_STORES,
     PERIOD_PLANNING_FIELDS,
+    ACCOUNT_CREATE_STORES,
+    ACCOUNT_CHANGE_STORES,
+    ACCOUNT_EDITABLE_FIELDS,
     createPeritaDomainCommands,
   });
 });
