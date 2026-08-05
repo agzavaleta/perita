@@ -35,6 +35,7 @@
     'coordination',
     'commits',
   ]);
+  const PUBLIC_RUNTIME_PATCH_FIELDS = new Set(['setupStatus', 'activePeriodId']);
   const RESERVED_COMMAND_STORES = new Set([
     ...INTERNAL_COMMAND_STORES,
     'pendingIntents',
@@ -273,6 +274,45 @@
     return [...new Set(scopes)];
   }
 
+  function normalizePublicRuntimePatch(value, commandType) {
+    if (value === undefined || value === null) return null;
+    const fields = value && typeof value === 'object' && !Array.isArray(value)
+      ? Object.keys(value)
+      : [];
+    if (fields.length === 0 || fields.some((field) => !PUBLIC_RUNTIME_PATCH_FIELDS.has(field))) {
+      throw runtimeError(
+        ERROR_CODES.COMMAND_FAILED,
+        'runtimePatch contains unsupported or protected runtime fields',
+        { commandType, fields }
+      );
+    }
+    const patch = {};
+    if (fields.includes('setupStatus')) {
+      if (!['not_started', 'in_progress', 'completed', 'deleted'].includes(value.setupStatus)) {
+        throw runtimeError(
+          ERROR_CODES.COMMAND_FAILED,
+          'runtimePatch.setupStatus is invalid',
+          { commandType, setupStatus: value.setupStatus }
+        );
+      }
+      patch.setupStatus = value.setupStatus;
+    }
+    if (fields.includes('activePeriodId')) {
+      if (value.activePeriodId !== null) {
+        assertUuid(value.activePeriodId, { field: 'runtimePatch.activePeriodId' });
+      }
+      patch.activePeriodId = value.activePeriodId;
+    }
+    return Object.freeze(patch);
+  }
+
+  function immutableRuntimeView(runtime) {
+    return Object.freeze({
+      ...runtime,
+      restrictedScopes: Object.freeze(runtime.restrictedScopes.slice()),
+    });
+  }
+
   function assertIntegrityAccess(runtime, command) {
     if (runtime.healthStatus === 'diagnostic_only' && !command.allowDiagnosticOnly) {
       throw runtimeError(
@@ -329,8 +369,18 @@
     return null;
   }
 
+  function unwrapCommandPeritaError(error) {
+    let current = error;
+    while (current) {
+      if (current instanceof RuntimeError) return current;
+      if (current instanceof PeritaError && !(current instanceof StorageError)) return current;
+      current = current.cause;
+    }
+    return null;
+  }
+
   function commandFailure(error, commandType) {
-    const typed = unwrapRuntimeError(error);
+    const typed = unwrapCommandPeritaError(error);
     if (typed) return typed;
     if (error instanceof StorageError && !/transaction callback (failed|rejected)/i.test(error.message)) {
       return error;
@@ -699,7 +749,8 @@
             }
 
             const result = await command.execute(
-              commandTransactionApi(transaction, command.affectedStores)
+              commandTransactionApi(transaction, command.affectedStores),
+              Object.freeze({ runtime: immutableRuntimeView(initialRuntime) })
             );
 
             const finalWriter = assertWriterRecord(
@@ -788,6 +839,7 @@
       const metadata = cloneMetadata(request.metadata, 'metadata');
       const intentOption = normalizeIntentOption(request.intent, metadata);
       const affectedScopes = normalizeAffectedScopes(request.affectedScopes);
+      const publicRuntimePatch = normalizePublicRuntimePatch(request.runtimePatch, commandType);
       const command = {
         commandType,
         expectedDataRevision,
@@ -799,7 +851,9 @@
         intentId: null,
         allowWriteDisabled: Boolean(internalOptions && internalOptions.allowWriteDisabled),
         allowDiagnosticOnly: Boolean(internalOptions && internalOptions.allowDiagnosticOnly),
-        runtimePatch: internalOptions && internalOptions.runtimePatch,
+        runtimePatch: internalOptions && internalOptions.runtimePatch
+          ? internalOptions.runtimePatch
+          : publicRuntimePatch,
       };
 
       await preflight(command);
