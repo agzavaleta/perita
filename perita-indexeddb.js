@@ -727,7 +727,11 @@
         const scheduleExternalWaitGuard = () => {
           if (guardScheduled || workerSettled || pendingRequests !== 0 || completed) return;
           guardScheduled = true;
-          scheduleMicrotask(() => scheduleMicrotask(() => {
+          // An async worker can require three promise-continuation turns after
+          // its final request settles (request -> nested worker -> observer).
+          // Waiting all three avoids mistaking a legitimate rejection/return
+          // for an external wait while still aborting before a timer can run.
+          scheduleMicrotask(() => scheduleMicrotask(() => scheduleMicrotask(() => {
             guardScheduled = false;
             if (!workerSettled && pendingRequests === 0 && !completed) {
               const cause = new Error(
@@ -740,7 +744,7 @@
                 cause
               ));
             }
-          }));
+          })));
         };
 
         const assertStoreAccess = (storeName, operation, write) => {
