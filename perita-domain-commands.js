@@ -26,7 +26,9 @@
     assertMoney,
     assertPositiveMoney,
     assertRevision,
+    assertSafeDelta,
     assertUuid,
+    civilDateInChile,
     nextRevision,
   } = Contracts;
 
@@ -121,6 +123,48 @@
     'id', 'name', 'totalAmount', 'openingOutstanding', 'outstandingAmount',
     'dueDate', 'lifecycleStatus', 'paymentStatus', 'revision', 'createdAt', 'updatedAt',
   ]);
+  const FINANCIAL_OPERATION_CREATE_STORES = Object.freeze([
+    'periods',
+    'accounts',
+    'operations',
+    'movements',
+  ]);
+  const FINANCIAL_OPERATION_CHANGE_STORES = Object.freeze([
+    ...FINANCIAL_OPERATION_CREATE_STORES,
+    'operationRevisions',
+  ]);
+  const BALANCE_ADJUSTMENT_EDITABLE_FIELDS = Object.freeze([
+    'operationDate', 'delta', 'reason',
+  ]);
+  const FINANCIAL_TARGET_POLICIES = Object.freeze({
+    account: Object.freeze({
+      storeName: 'accounts',
+      balanceField: 'currentBalance',
+      openingField: 'openingBalance',
+      statusField: 'status',
+      activeStatus: 'active',
+      effectType: 'asset_balance',
+      validate: Domain.validateAccount,
+    }),
+    savings_goal: Object.freeze({
+      storeName: 'savingsGoals',
+      balanceField: 'currentBalance',
+      openingField: 'openingBalance',
+      statusField: 'lifecycleStatus',
+      activeStatus: 'active',
+      effectType: 'asset_balance',
+      validate: Domain.validateSavingsGoal,
+    }),
+    debt: Object.freeze({
+      storeName: 'debts',
+      balanceField: 'outstandingAmount',
+      openingField: 'openingOutstanding',
+      statusField: 'lifecycleStatus',
+      activeStatus: 'active',
+      effectType: 'debt_outstanding',
+      validate: Domain.validateDebt,
+    }),
+  });
 
   function domainError(code, message, context, cause) {
     return new Domain.DomainError(code, message, context, cause);
@@ -201,6 +245,185 @@
       Domain.domainScope('period', periodId),
       Domain.domainScope(scopeType, entityId),
     ];
+  }
+
+  function requireNonEmptyString(value, field) {
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw domainError(
+        ERROR_CODES.INVALID_DOMAIN_FIELD,
+        `${field} must be a non-empty string`,
+        { field }
+      );
+    }
+    return value;
+  }
+
+  function currentCivilDateFromTimestamp(timestamp) {
+    try {
+      return civilDateInChile(new Date(timestamp));
+    } catch (cause) {
+      if (cause instanceof PeritaError) throw cause;
+      throw domainError(
+        ERROR_CODES.INVALID_DOMAIN_FIELD,
+        'the injected timestamp cannot produce a Chile civil date',
+        { timestamp },
+        cause
+      );
+    }
+  }
+
+  function movementScopes(periodId, movements) {
+    const scopes = [Domain.domainScope('period', periodId)];
+    for (const movement of movements) {
+      scopes.push(Domain.domainScope(movement.targetType, movement.targetId));
+    }
+    return Object.freeze([...new Set(scopes)]);
+  }
+
+  function requireFinancialTarget(targetType, value, targetId, expectedRevision) {
+    const policy = FINANCIAL_TARGET_POLICIES[targetType];
+    if (!policy) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+        'the financial movement target type is not supported',
+        { targetType, targetId }
+      );
+    }
+    if (value === undefined) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_STATE_INVALID,
+        'the financial movement target does not exist',
+        { targetType, targetId }
+      );
+    }
+    const entity = policy.validate(value);
+    if (entity.id !== targetId || entity[policy.statusField] !== policy.activeStatus) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_STATE_INVALID,
+        'the financial movement target must exist and be active',
+        {
+          targetType,
+          targetId,
+          actualId: entity.id,
+          status: entity[policy.statusField],
+        }
+      );
+    }
+    assertExpectedRevision(entity.revision, expectedRevision, {
+      entityType: targetType,
+      entityId: targetId,
+    });
+    return Object.freeze({ entity, policy });
+  }
+
+  function checkedBalanceDelta(balance, delta, context) {
+    assertMoney(balance, {
+      field: context.balanceField,
+      allowZero: true,
+      allowNegative: context.allowCurrentNegative === true,
+    });
+    assertSafeDelta(delta, { field: context.deltaField || 'delta' });
+    const nextBalance = balance + delta;
+    if (!Number.isSafeInteger(nextBalance)) {
+      throw domainError(
+        ERROR_CODES.INVALID_DOMAIN_FIELD,
+        'the resulting balance must be a safe CLP integer',
+        { ...context, balance, delta, nextBalance }
+      );
+    }
+    if (nextBalance < 0) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_STATE_INVALID,
+        'the financial movement would leave an insufficient balance',
+        { ...context, balance, delta, missingAmount: -nextBalance }
+      );
+    }
+    return nextBalance;
+  }
+
+  function simulateTargetChange(target, previousDelta, nextDelta, context) {
+    const balanceField = target.policy.balanceField;
+    let simulated = target.entity[balanceField];
+    if (previousDelta !== null) {
+      simulated = checkedBalanceDelta(simulated, -previousDelta, {
+        ...context,
+        balanceField,
+        deltaField: 'reversalDelta',
+      });
+    }
+    if (nextDelta !== null) {
+      simulated = checkedBalanceDelta(simulated, nextDelta, {
+        ...context,
+        balanceField,
+        deltaField: 'applicationDelta',
+      });
+    }
+    if (simulated === target.entity[balanceField]) return target.entity;
+    return target.policy.validate({
+      ...target.entity,
+      [balanceField]: simulated,
+      revision: nextRevision(target.entity.revision),
+      updatedAt: context.occurredAt,
+    });
+  }
+
+  function balanceAdjustmentDetails(accountId, reason) {
+    return Object.freeze({ accountId, reason });
+  }
+
+  function validateBalanceAdjustmentOperation(operation, movement, accountId) {
+    const validOperation = Domain.validateOperation(operation);
+    const validMovement = Domain.assertMovementMatchesOperation(validOperation, movement);
+    if (
+      validOperation.type !== 'balance_adjustment' ||
+      validMovement.targetType !== 'account' ||
+      validMovement.targetId !== accountId ||
+      validMovement.effectType !== 'asset_balance' ||
+      validOperation.amount !== Math.abs(validMovement.delta)
+    ) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+        'the operation is not a balance adjustment for the requested Account',
+        {
+          operationId: validOperation.id,
+          operationType: validOperation.type,
+          targetType: validMovement.targetType,
+          targetId: validMovement.targetId,
+          accountId,
+          operationAmount: validOperation.amount,
+          movementDelta: validMovement.delta,
+        }
+      );
+    }
+    const details = requireRecord(validOperation.details, 'Operation.details');
+    requireOnlyFields(details, ['accountId', 'reason'], 'Operation.details');
+    assertUuid(details.accountId, { field: 'Operation.details.accountId' });
+    requireNonEmptyString(details.reason, 'Operation.details.reason');
+    if (details.accountId !== accountId) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+        'balance adjustment details do not match its Movement',
+        { operationId: validOperation.id, accountId }
+      );
+    }
+    return Object.freeze({ operation: validOperation, movement: validMovement, details });
+  }
+
+  function requireSingleOperationMovement(operationId, movements) {
+    const related = movements.filter((movement) => movement.operationId === operationId);
+    if (related.length !== 1) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+        'balance_adjustment requires exactly one linked Movement',
+        { operationId, movementCount: related.length }
+      );
+    }
+    return related[0];
+  }
+
+  function assertLogicalRevisionAvailable(existingRevisions, revision) {
+    Domain.assertUniqueOperationRevisions([...existingRevisions, revision]);
+    return revision;
   }
 
   function canonicalTimestamp(now) {
@@ -1789,6 +2012,391 @@
       });
     }
 
+    async function createBalanceAdjustment(input) {
+      const request = requireRecord(input, 'balance-adjustment.create');
+      const fields = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'accountId', 'expectedAccountRevision', 'operationDate', 'delta', 'reason',
+      ];
+      validateCommandHeader(request, 'balance-adjustment.create', fields);
+      assertUuid(request.accountId, { field: 'accountId' });
+      assertRevision(request.expectedAccountRevision, { field: 'expectedAccountRevision' });
+      assertCivilDate(request.operationDate, { field: 'operationDate' });
+      assertSafeDelta(request.delta, { field: 'delta' });
+      requireNonEmptyString(request.reason, 'reason');
+      const occurredAt = canonicalTimestamp(now);
+      const currentCivilDate = currentCivilDateFromTimestamp(occurredAt);
+      const generatedIds = new Set();
+      const operation = Domain.validateOperation({
+        id: createIdentifier(createUuid, 'operation.id', generatedIds),
+        periodId: request.periodId,
+        type: 'balance_adjustment',
+        operationDate: request.operationDate,
+        amount: Math.abs(request.delta),
+        status: 'posted',
+        revision: 1,
+        createdAt: occurredAt,
+        updatedAt: occurredAt,
+        voidedAt: null,
+        voidReason: null,
+        details: balanceAdjustmentDetails(request.accountId, request.reason),
+      });
+      const movement = Domain.validateMovement({
+        id: createIdentifier(createUuid, 'movement.id', generatedIds),
+        operationId: operation.id,
+        periodId: request.periodId,
+        targetType: 'account',
+        targetId: request.accountId,
+        effectType: 'asset_balance',
+        delta: request.delta,
+        status: 'posted',
+        createdAt: occurredAt,
+        updatedAt: occurredAt,
+      });
+      Domain.assertMovementMatchesOperation(operation, movement);
+      return runtime.executeCommand({
+        commandType: 'balance-adjustment.create',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: FINANCIAL_OPERATION_CREATE_STORES,
+        affectedScopes: movementScopes(request.periodId, [movement]),
+        metadata: {
+          periodId: request.periodId,
+          operationId: operation.id,
+          accountId: request.accountId,
+        },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          const period = requireActiveOpenPeriod(
+            storedPeriod, context, request.periodId, 'balance-adjustment.create'
+          );
+          Domain.assertOperationDateContext(operation, period, currentCivilDate);
+          const target = requireFinancialTarget(
+            'account',
+            await transaction.get('accounts', request.accountId),
+            request.accountId,
+            request.expectedAccountRevision
+          );
+          const account = simulateTargetChange(target, null, movement.delta, {
+            operationId: operation.id,
+            targetType: 'account',
+            targetId: request.accountId,
+            occurredAt,
+            allowCurrentNegative: true,
+          });
+          if (
+            await transaction.get('operations', operation.id) !== undefined ||
+            await transaction.get('movements', movement.id) !== undefined
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'generated financial record IDs must be unique',
+              { operationId: operation.id, movementId: movement.id }
+            );
+          }
+          if (account !== target.entity) await transaction.put('accounts', account);
+          await transaction.add('operations', operation);
+          await transaction.add('movements', movement);
+          return Object.freeze({ operation, movement, account });
+        },
+      });
+    }
+
+    async function editBalanceAdjustment(input) {
+      const request = requireRecord(input, 'balance-adjustment.edit');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'accountId', 'expectedAccountRevision', 'operationId', 'expectedOperationRevision',
+      ];
+      const allowed = [...required, ...BALANCE_ADJUSTMENT_EDITABLE_FIELDS];
+      validateCommandHeader(request, 'balance-adjustment.edit', required, allowed);
+      assertUuid(request.accountId, { field: 'accountId' });
+      assertUuid(request.operationId, { field: 'operationId' });
+      assertRevision(request.expectedAccountRevision, { field: 'expectedAccountRevision' });
+      assertRevision(request.expectedOperationRevision, { field: 'expectedOperationRevision' });
+      const changedFields = editableFieldsFrom(
+        request, BALANCE_ADJUSTMENT_EDITABLE_FIELDS, 'balance-adjustment.edit'
+      );
+      if (hasOwn(request, 'operationDate')) {
+        assertCivilDate(request.operationDate, { field: 'operationDate' });
+      }
+      if (hasOwn(request, 'delta')) assertSafeDelta(request.delta, { field: 'delta' });
+      if (hasOwn(request, 'reason')) requireNonEmptyString(request.reason, 'reason');
+      const occurredAt = canonicalTimestamp(now);
+      const currentCivilDate = currentCivilDateFromTimestamp(occurredAt);
+      const revisionId = createIdentifier(createUuid, 'operationRevision.id', new Set());
+      const declaredMovement = {
+        targetType: 'account',
+        targetId: request.accountId,
+      };
+      return runtime.executeCommand({
+        commandType: 'balance-adjustment.edit',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: FINANCIAL_OPERATION_CHANGE_STORES,
+        affectedScopes: movementScopes(request.periodId, [declaredMovement]),
+        metadata: {
+          periodId: request.periodId,
+          operationId: request.operationId,
+          accountId: request.accountId,
+          changedFields,
+        },
+        execute: async (transaction, context) => {
+          const period = requireActiveOpenPeriod(
+            await transaction.get('periods', request.periodId),
+            context,
+            request.periodId,
+            'balance-adjustment.edit'
+          );
+          const storedOperation = await transaction.get('operations', request.operationId);
+          if (storedOperation === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested Operation does not exist',
+              { operationId: request.operationId }
+            );
+          }
+          const previousOperation = Domain.validateOperation(storedOperation);
+          if (previousOperation.periodId !== request.periodId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'the Operation does not belong to the requested Period',
+              {
+                operationId: request.operationId,
+                operationPeriodId: previousOperation.periodId,
+                periodId: request.periodId,
+              }
+            );
+          }
+          if (previousOperation.status !== 'posted') {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'only a posted Operation can be edited',
+              { operationId: request.operationId, status: previousOperation.status }
+            );
+          }
+          assertExpectedRevision(previousOperation.revision, request.expectedOperationRevision, {
+            entityType: 'Operation', entityId: request.operationId,
+          });
+          const allMovements = await transaction.getAll('movements');
+          const previousMovement = requireSingleOperationMovement(request.operationId, allMovements);
+          const previousDetails = validateBalanceAdjustmentOperation(
+            previousOperation, previousMovement, request.accountId
+          ).details;
+          const nextDate = hasOwn(request, 'operationDate')
+            ? request.operationDate
+            : previousOperation.operationDate;
+          const nextDelta = hasOwn(request, 'delta') ? request.delta : previousMovement.delta;
+          const nextReason = hasOwn(request, 'reason') ? request.reason : previousDetails.reason;
+          if (
+            nextDate === previousOperation.operationDate &&
+            nextDelta === previousMovement.delta &&
+            nextReason === previousDetails.reason
+          ) {
+            throw domainError(
+              ERROR_CODES.INVALID_DOMAIN_FIELD,
+              'balance-adjustment.edit requires a real change',
+              { operationId: request.operationId, changedFields }
+            );
+          }
+          const nextOperation = Domain.validateOperation({
+            ...previousOperation,
+            operationDate: nextDate,
+            amount: Math.abs(nextDelta),
+            details: balanceAdjustmentDetails(request.accountId, nextReason),
+            revision: nextRevision(previousOperation.revision),
+            updatedAt: occurredAt,
+          });
+          const nextMovement = Domain.validateMovement({
+            ...previousMovement,
+            delta: nextDelta,
+            updatedAt: occurredAt,
+          });
+          Domain.assertMovementMatchesOperation(nextOperation, nextMovement);
+          Domain.assertOperationDateContext(nextOperation, period, currentCivilDate);
+          const target = requireFinancialTarget(
+            'account',
+            await transaction.get('accounts', request.accountId),
+            request.accountId,
+            request.expectedAccountRevision
+          );
+          const account = simulateTargetChange(target, previousMovement.delta, nextDelta, {
+            operationId: request.operationId,
+            targetType: 'account',
+            targetId: request.accountId,
+            occurredAt,
+            allowCurrentNegative: true,
+          });
+          const revision = Domain.validateOperationRevision({
+            id: revisionId,
+            operationId: request.operationId,
+            periodId: request.periodId,
+            revisionNumber: previousOperation.revision,
+            changeType: 'edit',
+            previousOperation,
+            previousMovements: [previousMovement],
+            reason: null,
+            createdAt: occurredAt,
+          });
+          const existingRevisions = await transaction.getAll('operationRevisions');
+          assertLogicalRevisionAvailable(existingRevisions, revision);
+          if (await transaction.get('operationRevisions', revision.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DUPLICATE_OPERATION_REVISION,
+              'the generated OperationRevision ID already exists',
+              { revisionId: revision.id }
+            );
+          }
+          if (account !== target.entity) await transaction.put('accounts', account);
+          await transaction.put('operations', nextOperation);
+          await transaction.put('movements', nextMovement);
+          await transaction.add('operationRevisions', revision);
+          return Object.freeze({
+            operation: nextOperation,
+            movement: nextMovement,
+            account,
+            operationRevision: revision,
+          });
+        },
+      });
+    }
+
+    async function voidOperation(input) {
+      const request = requireRecord(input, 'operation.void');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'accountId', 'expectedAccountRevision', 'operationId', 'expectedOperationRevision',
+      ];
+      const allowed = [...required, 'reason'];
+      validateCommandHeader(request, 'operation.void', required, allowed);
+      assertUuid(request.accountId, { field: 'accountId' });
+      assertUuid(request.operationId, { field: 'operationId' });
+      assertRevision(request.expectedAccountRevision, { field: 'expectedAccountRevision' });
+      assertRevision(request.expectedOperationRevision, { field: 'expectedOperationRevision' });
+      const reason = hasOwn(request, 'reason')
+        ? requireNonEmptyString(request.reason, 'reason')
+        : null;
+      const occurredAt = canonicalTimestamp(now);
+      const currentCivilDate = currentCivilDateFromTimestamp(occurredAt);
+      const revisionId = createIdentifier(createUuid, 'operationRevision.id', new Set());
+      const declaredMovement = { targetType: 'account', targetId: request.accountId };
+      return runtime.executeCommand({
+        commandType: 'operation.void',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: FINANCIAL_OPERATION_CHANGE_STORES,
+        affectedScopes: movementScopes(request.periodId, [declaredMovement]),
+        metadata: {
+          periodId: request.periodId,
+          operationId: request.operationId,
+          accountId: request.accountId,
+        },
+        execute: async (transaction, context) => {
+          const period = requireActiveOpenPeriod(
+            await transaction.get('periods', request.periodId),
+            context,
+            request.periodId,
+            'operation.void'
+          );
+          const storedOperation = await transaction.get('operations', request.operationId);
+          if (storedOperation === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested Operation does not exist',
+              { operationId: request.operationId }
+            );
+          }
+          const previousOperation = Domain.validateOperation(storedOperation);
+          if (
+            previousOperation.periodId !== request.periodId ||
+            previousOperation.type !== 'balance_adjustment'
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'operation.void only supports a balance_adjustment in the requested Period',
+              {
+                operationId: request.operationId,
+                operationType: previousOperation.type,
+                operationPeriodId: previousOperation.periodId,
+                periodId: request.periodId,
+              }
+            );
+          }
+          if (previousOperation.status !== 'posted') {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'only a posted Operation can be voided',
+              { operationId: request.operationId, status: previousOperation.status }
+            );
+          }
+          Domain.assertOperationDateContext(previousOperation, period, currentCivilDate);
+          assertExpectedRevision(previousOperation.revision, request.expectedOperationRevision, {
+            entityType: 'Operation', entityId: request.operationId,
+          });
+          const allMovements = await transaction.getAll('movements');
+          const previousMovement = requireSingleOperationMovement(request.operationId, allMovements);
+          validateBalanceAdjustmentOperation(previousOperation, previousMovement, request.accountId);
+          const target = requireFinancialTarget(
+            'account',
+            await transaction.get('accounts', request.accountId),
+            request.accountId,
+            request.expectedAccountRevision
+          );
+          const account = simulateTargetChange(target, previousMovement.delta, null, {
+            operationId: request.operationId,
+            targetType: 'account',
+            targetId: request.accountId,
+            occurredAt,
+            allowCurrentNegative: true,
+          });
+          const nextOperation = Domain.validateOperation({
+            ...previousOperation,
+            status: 'voided',
+            voidedAt: occurredAt,
+            voidReason: reason,
+            revision: nextRevision(previousOperation.revision),
+            updatedAt: occurredAt,
+          });
+          const nextMovement = Domain.validateMovement({
+            ...previousMovement,
+            status: 'voided',
+            updatedAt: occurredAt,
+          });
+          Domain.assertMovementMatchesOperation(nextOperation, nextMovement);
+          const revision = Domain.validateOperationRevision({
+            id: revisionId,
+            operationId: request.operationId,
+            periodId: request.periodId,
+            revisionNumber: previousOperation.revision,
+            changeType: 'void',
+            previousOperation,
+            previousMovements: [previousMovement],
+            reason,
+            createdAt: occurredAt,
+          });
+          const existingRevisions = await transaction.getAll('operationRevisions');
+          assertLogicalRevisionAvailable(existingRevisions, revision);
+          if (await transaction.get('operationRevisions', revision.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DUPLICATE_OPERATION_REVISION,
+              'the generated OperationRevision ID already exists',
+              { revisionId: revision.id }
+            );
+          }
+          if (account !== target.entity) await transaction.put('accounts', account);
+          await transaction.put('operations', nextOperation);
+          await transaction.put('movements', nextMovement);
+          await transaction.add('operationRevisions', revision);
+          return Object.freeze({
+            operation: nextOperation,
+            movement: nextMovement,
+            account,
+            operationRevision: revision,
+          });
+        },
+      });
+    }
+
     return Object.freeze({
       setup: Object.freeze({ complete }),
       financialSettings: Object.freeze({ updateReferenceSalary }),
@@ -1820,6 +2428,13 @@
         create: createDebt,
         updateNameAndDueDate: updateDebtNameAndDueDate,
       }),
+      balanceAdjustment: Object.freeze({
+        create: createBalanceAdjustment,
+        edit: editBalanceAdjustment,
+      }),
+      operation: Object.freeze({
+        void: voidOperation,
+      }),
     });
   }
 
@@ -1848,6 +2463,10 @@
     FIXED_TEMPLATE_FIELDS,
     SAVINGS_GOAL_FIELDS,
     DEBT_FIELDS,
+    FINANCIAL_OPERATION_CREATE_STORES,
+    FINANCIAL_OPERATION_CHANGE_STORES,
+    BALANCE_ADJUSTMENT_EDITABLE_FIELDS,
+    FINANCIAL_TARGET_POLICIES,
     createPeritaDomainCommands,
   });
 });

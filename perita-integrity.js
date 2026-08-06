@@ -50,6 +50,7 @@
     'fixedExpenseInstances',
     'operations',
     'movements',
+    'operationRevisions',
     'periodSnapshots',
     'legacyEntries',
     'migrations',
@@ -555,6 +556,19 @@
           message: 'movement period does not match its operation',
           context: { movementPeriodId: movement.periodId, operationPeriodId: operation.periodId },
         });
+      } else if (
+        operation.type === 'balance_adjustment' &&
+        movement.status !== operation.status
+      ) {
+        missingRelation(issues, {
+          code: 'MOVEMENT_OPERATION_STATUS_MISMATCH',
+          scopeType: movement.targetType,
+          scopeId: movement.targetId,
+          storeName: 'movements',
+          recordId: movement.id,
+          message: 'movement status does not match its operation',
+          context: { movementStatus: movement.status, operationStatus: operation.status },
+        });
       }
       const definition = TARGETS[movement.targetType];
       if (!definition || !targets[movement.targetType].has(movement.targetId)) {
@@ -578,6 +592,56 @@
           message: 'movement effectType is incompatible with its target',
           context: { expected: definition.effectType, actual: movement.effectType },
         });
+      }
+    });
+
+    snapshot.operations.forEach((operation) => {
+      if (operation.type !== 'balance_adjustment') return;
+      const related = snapshot.movements.filter((movement) => movement.operationId === operation.id);
+      if (related.length !== 1) {
+        missingRelation(issues, {
+          code: 'BALANCE_ADJUSTMENT_MOVEMENT_CARDINALITY',
+          scopeType: 'period',
+          scopeId: operation.periodId,
+          storeName: 'operations',
+          recordId: operation.id,
+          message: 'balance_adjustment must have exactly one movement',
+          context: { movementCount: related.length },
+        });
+        return;
+      }
+      const movement = related[0];
+      if (movement.targetType !== 'account' || movement.effectType !== 'asset_balance') {
+        missingRelation(issues, {
+          code: 'BALANCE_ADJUSTMENT_TARGET_INVALID',
+          scopeType: movement.targetType,
+          scopeId: movement.targetId,
+          storeName: 'movements',
+          recordId: movement.id,
+          message: 'balance_adjustment movement must target an account balance',
+          context: { targetType: movement.targetType, effectType: movement.effectType },
+        });
+      }
+    });
+
+    const logicalRevisions = new Set();
+    snapshot.operationRevisions.forEach((revision) => {
+      const logicalKey = `${revision.operationId}:${revision.revisionNumber}`;
+      if (logicalRevisions.has(logicalKey)) {
+        missingRelation(issues, {
+          code: 'OPERATION_REVISION_LOGICAL_DUPLICATE',
+          scopeType: 'period',
+          scopeId: revision.periodId,
+          storeName: 'operationRevisions',
+          recordId: revision.id,
+          message: 'operationId and revisionNumber must be logically unique',
+          context: {
+            operationId: revision.operationId,
+            revisionNumber: revision.revisionNumber,
+          },
+        });
+      } else {
+        logicalRevisions.add(logicalKey);
       }
     });
 
