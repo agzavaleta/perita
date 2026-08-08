@@ -399,13 +399,13 @@ test('V1.1.0 runtime integrity restrictions', async (t) => {
 });
 
 test('V1.1.0 integrity remains isolated', async (t) => {
-  await t.test('source has no UI, legacy storage, migration, domain commands, or repair integration', () => {
+  await t.test('source has no UI, legacy storage, migration execution, domain commands, or repair integration', () => {
     const source = fs.readFileSync(path.join(__dirname, '..', 'perita-integrity.js'), 'utf8');
     for (const [label, pattern] of [
       ['Perita.jsx', /Perita\.jsx/],
       ['index.html', /index\.html/],
       ['localStorage API', /\blocalStorage\s*[.(]/],
-      ['perita_v1', /perita_v1/],
+      ['migration execution', /perita-(?:legacy|migration)(?:\.js)?|Perita(?:Legacy|Migration)/],
       ['BroadcastChannel', /\bBroadcastChannel\s*\(/],
       ['automatic timer', /\bset(?:Interval|Timeout)\s*\(/],
       [

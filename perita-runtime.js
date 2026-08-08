@@ -35,7 +35,7 @@
     'coordination',
     'commits',
   ]);
-  const PUBLIC_RUNTIME_PATCH_FIELDS = new Set(['setupStatus', 'activePeriodId']);
+  const PUBLIC_RUNTIME_PATCH_FIELDS = new Set(['setupStatus', 'activePeriodId', 'writeEnabled']);
   const RESERVED_COMMAND_STORES = new Set([
     ...INTERNAL_COMMAND_STORES,
     'pendingIntents',
@@ -302,6 +302,16 @@
         assertUuid(value.activePeriodId, { field: 'runtimePatch.activePeriodId' });
       }
       patch.activePeriodId = value.activePeriodId;
+    }
+    if (fields.includes('writeEnabled')) {
+      if (value.writeEnabled !== false) {
+        throw runtimeError(
+          ERROR_CODES.COMMAND_FAILED,
+          'runtimePatch.writeEnabled can only disable writes',
+          { commandType, writeEnabled: value.writeEnabled }
+        );
+      }
+      patch.writeEnabled = false;
     }
     return Object.freeze(patch);
   }
@@ -748,9 +758,13 @@
               }
             }
 
+            const commitId = newUuid('commitId');
             const result = await command.execute(
               commandTransactionApi(transaction, command.affectedStores),
-              Object.freeze({ runtime: immutableRuntimeView(initialRuntime) })
+              Object.freeze({
+                runtime: immutableRuntimeView(initialRuntime),
+                commitId,
+              })
             );
 
             const finalWriter = assertWriterRecord(
@@ -780,7 +794,6 @@
 
             const sequence = nextRevision(finalRuntime.commitSequence, { allowZero: true });
             const dataRevision = nextRevision(finalRuntime.dataRevision, { allowZero: true });
-            const commitId = newUuid('commitId');
             const commit = {
               sequence,
               commitId,

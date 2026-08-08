@@ -48,6 +48,7 @@
     'accounts',
     'savingsGoals',
     'debts',
+    'categories',
     'fixedExpenseTemplates',
     'fixedExpenseInstances',
     'operations',
@@ -56,6 +57,7 @@
     'periodSnapshots',
     'legacyEntries',
     'migrations',
+    'legacyIdMap',
     'pendingIntents',
     'commits',
   ]);
@@ -185,6 +187,11 @@
 
   function validNonNegativeRevision(value) {
     return Number.isSafeInteger(value) && value >= 0;
+  }
+
+  function validIsoTimestamp(value) {
+    const parsed = typeof value === 'string' ? new Date(value) : null;
+    return Boolean(parsed && Number.isFinite(parsed.getTime()) && parsed.toISOString() === value);
   }
 
   function canonicalJsonValue(value) {
@@ -586,6 +593,221 @@
         },
       });
     }
+  }
+
+  function checkMigrationSnapshot(snapshot, issues) {
+    const migrationsById = mapById(snapshot.migrations);
+    const commitsById = new Map(snapshot.commits.map((record) => [record.commitId, record]));
+    const periods = mapById(snapshot.periods);
+    const targets = Object.fromEntries(Object.entries(TARGETS).map(([targetType, definition]) => [
+      targetType,
+      mapById(snapshot[definition.storeName]),
+    ]));
+    const mappedTargets = {
+      ...targets,
+      period: mapById(snapshot.periods),
+      category: mapById(snapshot.categories),
+      fixed_expense_template: mapById(snapshot.fixedExpenseTemplates),
+    };
+    const seenSources = new Set();
+    const seenMappings = new Set();
+    const seenLegacyEntries = new Set();
+
+    snapshot.migrations.forEach((migration) => {
+      const sourceKey = `${migration.sourceKey}:${migration.sourceHash}:${migration.mapperVersion}`;
+      const valid = (
+        catchesValidation(() => assertUuid(migration.id, { field: 'migration.id', version: 4 })) &&
+        migration.sourceKey === 'perita_v1' &&
+        normalizedSha256(migration.sourceHash) !== null &&
+        typeof migration.mapperVersion === 'string' && migration.mapperVersion.trim() !== '' &&
+        migration.status === 'completed' &&
+        validIsoTimestamp(migration.startedAt) &&
+        validIsoTimestamp(migration.completedAt) &&
+        validIsoTimestamp(migration.cutoverAt) &&
+        migration.startedAt === migration.completedAt &&
+        migration.completedAt === migration.cutoverAt &&
+        Array.isArray(migration.warnings) &&
+        Number.isSafeInteger(migration.targetDataRevision) && migration.targetDataRevision > 0 &&
+        catchesValidation(() => assertUuid(migration.cutoverPeriodId, { field: 'cutoverPeriodId' })) &&
+        catchesValidation(() => assertUuid(migration.baselineCommitId, {
+          field: 'baselineCommitId', version: 4,
+        }))
+      );
+      if (!valid || seenSources.has(sourceKey)) {
+        addIssue(issues, {
+          code: seenSources.has(sourceKey)
+            ? 'MIGRATION_SOURCE_DUPLICATE'
+            : 'MIGRATION_RECORD_INVALID',
+          severity: 'diagnostic_only',
+          scopeType: 'migration',
+          scopeId: migration.id,
+          storeName: 'migrations',
+          recordId: migration.id,
+          message: seenSources.has(sourceKey)
+            ? 'the same legacy source was migrated more than once'
+            : 'migration record shape or cutover metadata is invalid',
+        });
+      }
+      seenSources.add(sourceKey);
+
+      const baselineCommit = commitsById.get(migration.baselineCommitId);
+      if (
+        !baselineCommit ||
+        baselineCommit.commandType !== 'migration.confirm' ||
+        baselineCommit.dataRevision !== migration.targetDataRevision
+      ) {
+        addIssue(issues, {
+          code: 'MIGRATION_BASELINE_COMMIT_INVALID',
+          severity: 'diagnostic_only',
+          scopeType: 'migration',
+          scopeId: migration.id,
+          storeName: 'migrations',
+          recordId: migration.id,
+          message: 'baselineCommitId does not identify the confirmed migration commit',
+          context: { baselineCommitId: migration.baselineCommitId },
+        });
+      }
+      const period = periods.get(migration.cutoverPeriodId);
+      if (
+        !period || period.status !== 'open' ||
+        !snapshot.runtime || snapshot.runtime.activePeriodId !== migration.cutoverPeriodId
+      ) {
+        addIssue(issues, {
+          code: 'MIGRATION_CUTOVER_PERIOD_INVALID',
+          severity: 'diagnostic_only',
+          scopeType: 'period',
+          scopeId: migration.cutoverPeriodId,
+          storeName: 'migrations',
+          recordId: migration.id,
+          message: 'cutoverPeriodId must identify the active open hybrid period',
+        });
+      }
+      if (migration.warnings && migration.warnings.length > 0) {
+        addIssue(issues, {
+          code: 'MIGRATION_RESTRICTED_LEGACY',
+          severity: 'warning',
+          scopeType: 'migration',
+          scopeId: migration.id,
+          storeName: 'migrations',
+          recordId: migration.id,
+          message: 'migration preserved restricted legacy diagnostics',
+          context: { warningCount: migration.warnings.length },
+        });
+      }
+      snapshot.operations.forEach((operation) => {
+        if (operation.createdAt < migration.cutoverAt) {
+          addIssue(issues, {
+            code: 'MIGRATION_PRE_CUTOVER_OPERATION',
+            severity: 'diagnostic_only',
+            scopeType: 'period',
+            scopeId: operation.periodId,
+            storeName: 'operations',
+            recordId: operation.id,
+            message: 'canonical Operation predates the confirmed cutover',
+          });
+        }
+      });
+      snapshot.movements.forEach((movement) => {
+        if (movement.createdAt < migration.cutoverAt) {
+          addIssue(issues, {
+            code: 'MIGRATION_PRE_CUTOVER_MOVEMENT',
+            severity: 'diagnostic_only',
+            scopeType: movement.targetType,
+            scopeId: movement.targetId,
+            storeName: 'movements',
+            recordId: movement.id,
+            message: 'canonical Movement predates the confirmed cutover',
+          });
+        }
+      });
+    });
+
+    snapshot.legacyIdMap.forEach((mapping) => {
+      const logicalKey = `${mapping.sourceHash}:${mapping.entityKind}:${mapping.legacyPath}`;
+      const migration = snapshot.migrations.find((record) => record.sourceHash === mapping.sourceHash);
+      if (
+        seenMappings.has(logicalKey) || !migration ||
+        !catchesValidation(() => assertUuid(mapping.id, { field: 'legacyIdMap.id' })) ||
+        !catchesValidation(() => assertUuid(mapping.targetId, { field: 'legacyIdMap.targetId' })) ||
+        typeof mapping.entityKind !== 'string' || mapping.entityKind.trim() === '' ||
+        typeof mapping.legacyPath !== 'string' || mapping.legacyPath.trim() === '' ||
+        typeof mapping.stableKey !== 'string'
+      ) {
+        addIssue(issues, {
+          code: seenMappings.has(logicalKey)
+            ? 'LEGACY_ID_MAP_DUPLICATE'
+            : 'LEGACY_ID_MAP_INVALID',
+          severity: 'restricted',
+          scopeType: 'migration',
+          scopeId: migration ? migration.id : null,
+          storeName: 'legacyIdMap',
+          recordId: mapping.id,
+          message: 'legacy ID mapping is duplicated or inconsistent with its migration',
+        });
+      }
+      seenMappings.add(logicalKey);
+      if (hasOwn(TARGETS, mapping.entityKind)) {
+        const entity = targets[mapping.entityKind].get(mapping.targetId);
+        const opening = migration && snapshot.periodOpenings.filter((record) => (
+          record.periodId === migration.cutoverPeriodId &&
+          record.targetType === mapping.entityKind &&
+          record.targetId === mapping.targetId
+        ));
+        const definition = TARGETS[mapping.entityKind];
+        if (
+          !entity || !opening || opening.length !== 1 ||
+          opening[0].openingAmount !== entity[definition.openingField]
+        ) {
+          addIssue(issues, {
+            code: 'MIGRATION_OPENING_INVALID',
+            severity: 'restricted',
+            scopeType: mapping.entityKind,
+            scopeId: mapping.targetId,
+            storeName: 'periodOpenings',
+            recordId: opening && opening[0] ? opening[0].id : null,
+            message: 'migrated entity lacks its exact authoritative cutover opening',
+          });
+        }
+      } else if (!hasOwn(mappedTargets, mapping.entityKind) || !mappedTargets[mapping.entityKind].has(mapping.targetId)) {
+        addIssue(issues, {
+          code: 'LEGACY_ID_MAP_TARGET_MISSING',
+          severity: 'restricted',
+          scopeType: 'migration',
+          scopeId: migration ? migration.id : null,
+          storeName: 'legacyIdMap',
+          recordId: mapping.id,
+          message: 'legacy ID mapping references a missing or unsupported target',
+          context: { entityKind: mapping.entityKind, targetId: mapping.targetId },
+        });
+      }
+    });
+
+    snapshot.legacyEntries.forEach((entry) => {
+      const logicalKey = `${entry.periodId}:${entry.legacyPath}`;
+      if (seenLegacyEntries.has(logicalKey)) {
+        addIssue(issues, {
+          code: 'LEGACY_ENTRY_DUPLICATE',
+          severity: 'restricted',
+          scopeType: 'migration',
+          scopeId: entry.migrationId,
+          storeName: 'legacyEntries',
+          recordId: entry.id,
+          message: 'legacy entry path is duplicated within its period',
+        });
+      }
+      seenLegacyEntries.add(logicalKey);
+      if (entry.migrationId && !migrationsById.has(entry.migrationId)) {
+        addIssue(issues, {
+          code: 'LEGACY_ENTRY_MIGRATION_MISSING',
+          severity: 'restricted',
+          scopeType: 'migration',
+          scopeId: entry.migrationId,
+          storeName: 'legacyEntries',
+          recordId: entry.id,
+          message: 'legacy entry references a missing migration',
+        });
+      }
+    });
   }
 
   function missingRelation(issues, details) {
@@ -1758,6 +1980,7 @@
     [
       checkRuntimeSnapshot,
       checkCommitSnapshot,
+      checkMigrationSnapshot,
       checkRelationshipSnapshot,
       checkBalanceSnapshot,
     ].forEach((check) => check(snapshot, issues, checkedAt, { sha256: settings.sha256 }));
@@ -1888,6 +2111,7 @@
       return runCheck(CHECK_TYPES.FULL, [
         checkRuntimeSnapshot,
         checkCommitSnapshot,
+        checkMigrationSnapshot,
         checkRelationshipSnapshot,
         checkBalanceSnapshot,
       ], true);
