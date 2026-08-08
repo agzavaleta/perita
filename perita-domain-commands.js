@@ -165,6 +165,26 @@
       validate: Domain.validateDebt,
     }),
   });
+  const ACCOUNT_OPERATION_POLICIES = Object.freeze({
+    salary_receipt: Object.freeze({ deltaSign: 1 }),
+    additional_income: Object.freeze({ deltaSign: 1 }),
+    variable_expense: Object.freeze({ deltaSign: -1 }),
+    fixed_expense_payment: Object.freeze({ deltaSign: -1 }),
+  });
+  const ACCOUNT_OPERATION_CREATE_STORES = FINANCIAL_OPERATION_CREATE_STORES;
+  const ACCOUNT_OPERATION_CHANGE_STORES = FINANCIAL_OPERATION_CHANGE_STORES;
+  const VARIABLE_EXPENSE_CREATE_STORES = Object.freeze([
+    ...ACCOUNT_OPERATION_CREATE_STORES, 'categories',
+  ]);
+  const VARIABLE_EXPENSE_CHANGE_STORES = Object.freeze([
+    ...ACCOUNT_OPERATION_CHANGE_STORES, 'categories',
+  ]);
+  const FIXED_EXPENSE_PAYMENT_CREATE_STORES = Object.freeze([
+    ...ACCOUNT_OPERATION_CREATE_STORES, 'fixedExpenseInstances',
+  ]);
+  const FIXED_EXPENSE_PAYMENT_CHANGE_STORES = Object.freeze([
+    ...ACCOUNT_OPERATION_CHANGE_STORES, 'fixedExpenseInstances',
+  ]);
 
   function domainError(code, message, context, cause) {
     return new Domain.DomainError(code, message, context, cause);
@@ -256,6 +276,11 @@
       );
     }
     return value;
+  }
+
+  function nullableNonEmptyString(value, field) {
+    if (value === null) return null;
+    return requireNonEmptyString(value, field);
   }
 
   function currentCivilDateFromTimestamp(timestamp) {
@@ -407,6 +432,67 @@
       );
     }
     return Object.freeze({ operation: validOperation, movement: validMovement, details });
+  }
+
+  function validateAccountOperation(operation, movement, operationType, accountId) {
+    const policy = ACCOUNT_OPERATION_POLICIES[operationType];
+    if (!policy) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_STATE_INVALID,
+        'the requested account operation type is not enabled',
+        { operationType }
+      );
+    }
+    const validOperation = Domain.validateOperation(operation);
+    const validMovement = Domain.assertMovementMatchesOperation(validOperation, movement);
+    const expectedDelta = policy.deltaSign * validOperation.amount;
+    if (
+      validOperation.type !== operationType ||
+      validMovement.targetType !== 'account' ||
+      validMovement.targetId !== accountId ||
+      validMovement.effectType !== 'asset_balance' ||
+      validMovement.delta !== expectedDelta
+    ) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+        'the account Operation and Movement are inconsistent',
+        {
+          operationId: validOperation.id,
+          expectedType: operationType,
+          actualType: validOperation.type,
+          accountId,
+          movementTargetId: validMovement.targetId,
+          expectedDelta,
+          actualDelta: validMovement.delta,
+        }
+      );
+    }
+    return Object.freeze({ operation: validOperation, movement: validMovement });
+  }
+
+  function accountOperationScopes(periodId, previousAccountId, nextAccountId, relatedScopes) {
+    const movements = [
+      { targetType: 'account', targetId: previousAccountId },
+      { targetType: 'account', targetId: nextAccountId },
+    ];
+    const scopes = [...movementScopes(periodId, movements), ...(relatedScopes || [])];
+    return Object.freeze([...new Set(scopes)]);
+  }
+
+  function operationDetails(operation, fields) {
+    const details = requireRecord(operation.details, 'Operation.details');
+    requireOnlyFields(details, fields, 'Operation.details');
+    return details;
+  }
+
+  function sameJsonValue(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  async function applyPreparedWrites(transaction, writes) {
+    for (const write of writes || []) {
+      await transaction.put(write.storeName, write.value);
+    }
   }
 
   function requireSingleOperationMovement(operationId, movements) {
@@ -2012,6 +2098,496 @@
       });
     }
 
+    async function executeAccountOperationCreate(options) {
+      const request = options.request;
+      const policy = ACCOUNT_OPERATION_POLICIES[options.operationType];
+      const occurredAt = canonicalTimestamp(now);
+      const currentCivilDate = currentCivilDateFromTimestamp(occurredAt);
+      const generatedIds = new Set();
+      let operation = Domain.validateOperation({
+        id: createIdentifier(createUuid, 'operation.id', generatedIds),
+        periodId: request.periodId,
+        type: options.operationType,
+        operationDate: request.operationDate,
+        amount: request.amount,
+        status: 'posted',
+        revision: 1,
+        createdAt: occurredAt,
+        updatedAt: occurredAt,
+        voidedAt: null,
+        voidReason: null,
+        details: options.details,
+      });
+      const movement = Domain.validateMovement({
+        id: createIdentifier(createUuid, 'movement.id', generatedIds),
+        operationId: operation.id,
+        periodId: request.periodId,
+        targetType: 'account',
+        targetId: request.accountId,
+        effectType: 'asset_balance',
+        delta: policy.deltaSign * request.amount,
+        status: 'posted',
+        createdAt: occurredAt,
+        updatedAt: occurredAt,
+      });
+      validateAccountOperation(operation, movement, options.operationType, request.accountId);
+      return runtime.executeCommand({
+        commandType: options.commandType,
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: options.stores,
+        affectedScopes: accountOperationScopes(
+          request.periodId, request.accountId, request.accountId, options.relatedScopes
+        ),
+        metadata: {
+          periodId: request.periodId,
+          operationId: operation.id,
+          accountId: request.accountId,
+          ...(options.metadata || {}),
+        },
+        execute: async (transaction, context) => {
+          const period = requireActiveOpenPeriod(
+            await transaction.get('periods', request.periodId),
+            context,
+            request.periodId,
+            options.commandType
+          );
+          Domain.assertOperationDateContext(operation, period, currentCivilDate);
+          const target = requireFinancialTarget(
+            'account',
+            await transaction.get('accounts', request.accountId),
+            request.accountId,
+            request.expectedAccountRevision
+          );
+          const account = simulateTargetChange(target, null, movement.delta, {
+            operationId: operation.id,
+            targetType: 'account',
+            targetId: request.accountId,
+            occurredAt,
+            allowCurrentNegative: true,
+          });
+          const relatedData = {};
+          for (const read of options.relatedReads || []) {
+            relatedData[read.key] = read.all
+              ? await transaction.getAll(read.storeName)
+              : await transaction.get(read.storeName, read.id);
+          }
+          const related = options.prepareRelated
+            ? options.prepareRelated({
+              request, operation, movement, period, occurredAt, relatedData,
+            })
+            : Object.freeze({ writes: [], result: {} });
+          if (related.details) {
+            operation = Domain.validateOperation({ ...operation, details: related.details });
+            validateAccountOperation(operation, movement, options.operationType, request.accountId);
+          }
+          if (
+            await transaction.get('operations', operation.id) !== undefined ||
+            await transaction.get('movements', movement.id) !== undefined
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'generated financial record IDs must be unique',
+              { operationId: operation.id, movementId: movement.id }
+            );
+          }
+          if (account !== target.entity) await transaction.put('accounts', account);
+          await applyPreparedWrites(transaction, related.writes);
+          await transaction.add('operations', operation);
+          await transaction.add('movements', movement);
+          return Object.freeze({
+            operation, movement, account, ...(related.result || {}),
+          });
+        },
+      });
+    }
+
+    async function executeAccountOperationEdit(options) {
+      const request = options.request;
+      const occurredAt = canonicalTimestamp(now);
+      const currentCivilDate = currentCivilDateFromTimestamp(occurredAt);
+      const revisionId = createIdentifier(createUuid, 'operationRevision.id', new Set());
+      return runtime.executeCommand({
+        commandType: options.commandType,
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: options.stores,
+        affectedScopes: accountOperationScopes(
+          request.periodId,
+          request.previousAccountId,
+          request.accountId,
+          options.relatedScopes
+        ),
+        metadata: {
+          periodId: request.periodId,
+          operationId: request.operationId,
+          previousAccountId: request.previousAccountId,
+          accountId: request.accountId,
+          ...(options.metadata || {}),
+        },
+        execute: async (transaction, context) => {
+          const period = requireActiveOpenPeriod(
+            await transaction.get('periods', request.periodId),
+            context,
+            request.periodId,
+            options.commandType
+          );
+          const storedOperation = await transaction.get('operations', request.operationId);
+          if (storedOperation === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested Operation does not exist',
+              { operationId: request.operationId }
+            );
+          }
+          const previousOperation = Domain.validateOperation(storedOperation);
+          if (
+            previousOperation.periodId !== request.periodId ||
+            previousOperation.type !== options.operationType ||
+            previousOperation.status !== 'posted'
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested posted Operation has an incompatible type or Period',
+              {
+                operationId: request.operationId,
+                expectedType: options.operationType,
+                actualType: previousOperation.type,
+                status: previousOperation.status,
+                operationPeriodId: previousOperation.periodId,
+                periodId: request.periodId,
+              }
+            );
+          }
+          assertExpectedRevision(previousOperation.revision, request.expectedOperationRevision, {
+            entityType: 'Operation', entityId: request.operationId,
+          });
+          const previousMovement = requireSingleOperationMovement(
+            request.operationId, await transaction.getAll('movements')
+          );
+          validateAccountOperation(
+            previousOperation,
+            previousMovement,
+            options.operationType,
+            request.previousAccountId
+          );
+          const previousDetails = options.validateDetails(previousOperation);
+          if (previousDetails.accountId !== request.previousAccountId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'previousAccountId does not match Operation.details',
+              { operationId: request.operationId, previousAccountId: request.previousAccountId }
+            );
+          }
+          const nextDate = hasOwn(request, 'operationDate')
+            ? request.operationDate
+            : previousOperation.operationDate;
+          const nextAmount = hasOwn(request, 'amount') ? request.amount : previousOperation.amount;
+          const relatedData = {};
+          for (const read of options.relatedReads || []) {
+            relatedData[read.key] = read.all
+              ? await transaction.getAll(read.storeName)
+              : await transaction.get(read.storeName, read.id);
+          }
+          const related = options.prepareRelated
+            ? options.prepareRelated({
+              request,
+              previousOperation,
+              previousMovement,
+              previousDetails,
+              period,
+              occurredAt,
+              relatedData,
+            })
+            : Object.freeze({ details: previousDetails, writes: [], result: {} });
+          const nextDetails = related.details || previousDetails;
+          if (nextDetails.accountId !== request.accountId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'the edited Operation details do not match its Account',
+              { operationId: request.operationId, accountId: request.accountId }
+            );
+          }
+          if (
+            request.accountId === request.previousAccountId &&
+            nextDate === previousOperation.operationDate &&
+            nextAmount === previousOperation.amount &&
+            sameJsonValue(nextDetails, previousDetails)
+          ) {
+            throw domainError(
+              ERROR_CODES.INVALID_DOMAIN_FIELD,
+              `${options.commandType} requires a real change`,
+              { operationId: request.operationId }
+            );
+          }
+          const nextOperation = Domain.validateOperation({
+            ...previousOperation,
+            operationDate: nextDate,
+            amount: nextAmount,
+            details: nextDetails,
+            revision: nextRevision(previousOperation.revision),
+            updatedAt: occurredAt,
+          });
+          const policy = ACCOUNT_OPERATION_POLICIES[options.operationType];
+          const nextMovement = Domain.validateMovement({
+            ...previousMovement,
+            targetId: request.accountId,
+            delta: policy.deltaSign * nextAmount,
+            updatedAt: occurredAt,
+          });
+          validateAccountOperation(nextOperation, nextMovement, options.operationType, request.accountId);
+          Domain.assertOperationDateContext(nextOperation, period, currentCivilDate);
+
+          const previousTarget = requireFinancialTarget(
+            'account',
+            await transaction.get('accounts', request.previousAccountId),
+            request.previousAccountId,
+            request.expectedPreviousAccountRevision
+          );
+          const accountUpdates = [];
+          let previousAccount;
+          let account;
+          if (request.previousAccountId === request.accountId) {
+            assertExpectedRevision(
+              previousTarget.entity.revision,
+              request.expectedAccountRevision,
+              { entityType: 'account', entityId: request.accountId }
+            );
+            account = simulateTargetChange(
+              previousTarget, previousMovement.delta, nextMovement.delta,
+              {
+                operationId: request.operationId,
+                targetType: 'account',
+                targetId: request.accountId,
+                occurredAt,
+                allowCurrentNegative: true,
+              }
+            );
+            previousAccount = account;
+            if (account !== previousTarget.entity) accountUpdates.push(account);
+          } else {
+            const nextTarget = requireFinancialTarget(
+              'account',
+              await transaction.get('accounts', request.accountId),
+              request.accountId,
+              request.expectedAccountRevision
+            );
+            previousAccount = simulateTargetChange(
+              previousTarget, previousMovement.delta, null,
+              {
+                operationId: request.operationId,
+                targetType: 'account',
+                targetId: request.previousAccountId,
+                occurredAt,
+                allowCurrentNegative: true,
+              }
+            );
+            account = simulateTargetChange(
+              nextTarget, null, nextMovement.delta,
+              {
+                operationId: request.operationId,
+                targetType: 'account',
+                targetId: request.accountId,
+                occurredAt,
+                allowCurrentNegative: true,
+              }
+            );
+            if (previousAccount !== previousTarget.entity) accountUpdates.push(previousAccount);
+            if (account !== nextTarget.entity) accountUpdates.push(account);
+          }
+          const revision = Domain.validateOperationRevision({
+            id: revisionId,
+            operationId: request.operationId,
+            periodId: request.periodId,
+            revisionNumber: previousOperation.revision,
+            changeType: 'edit',
+            previousOperation,
+            previousMovements: [previousMovement],
+            reason: null,
+            createdAt: occurredAt,
+          });
+          assertLogicalRevisionAvailable(
+            await transaction.getAll('operationRevisions'), revision
+          );
+          if (await transaction.get('operationRevisions', revision.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DUPLICATE_OPERATION_REVISION,
+              'the generated OperationRevision ID already exists',
+              { revisionId: revision.id }
+            );
+          }
+          for (const updatedAccount of accountUpdates) {
+            await transaction.put('accounts', updatedAccount);
+          }
+          await applyPreparedWrites(transaction, related.writes);
+          await transaction.put('operations', nextOperation);
+          await transaction.put('movements', nextMovement);
+          await transaction.add('operationRevisions', revision);
+          return Object.freeze({
+            operation: nextOperation,
+            movement: nextMovement,
+            account,
+            previousAccount,
+            operationRevision: revision,
+            ...(related.result || {}),
+          });
+        },
+      });
+    }
+
+    async function executeAccountOperationVoid(options) {
+      const request = options.request;
+      const occurredAt = canonicalTimestamp(now);
+      const currentCivilDate = currentCivilDateFromTimestamp(occurredAt);
+      const revisionId = createIdentifier(createUuid, 'operationRevision.id', new Set());
+      const reason = hasOwn(request, 'reason')
+        ? requireNonEmptyString(request.reason, 'reason')
+        : null;
+      return runtime.executeCommand({
+        commandType: options.commandType,
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: options.stores,
+        affectedScopes: accountOperationScopes(
+          request.periodId, request.accountId, request.accountId, options.relatedScopes
+        ),
+        metadata: {
+          periodId: request.periodId,
+          operationId: request.operationId,
+          accountId: request.accountId,
+          ...(options.metadata || {}),
+        },
+        execute: async (transaction, context) => {
+          const period = requireActiveOpenPeriod(
+            await transaction.get('periods', request.periodId),
+            context,
+            request.periodId,
+            options.commandType
+          );
+          const storedOperation = await transaction.get('operations', request.operationId);
+          if (storedOperation === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested Operation does not exist',
+              { operationId: request.operationId }
+            );
+          }
+          const previousOperation = Domain.validateOperation(storedOperation);
+          if (
+            previousOperation.periodId !== request.periodId ||
+            previousOperation.type !== options.operationType ||
+            previousOperation.status !== 'posted'
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested posted Operation has an incompatible type or Period',
+              {
+                operationId: request.operationId,
+                expectedType: options.operationType,
+                actualType: previousOperation.type,
+                status: previousOperation.status,
+              }
+            );
+          }
+          Domain.assertOperationDateContext(previousOperation, period, currentCivilDate);
+          assertExpectedRevision(previousOperation.revision, request.expectedOperationRevision, {
+            entityType: 'Operation', entityId: request.operationId,
+          });
+          const previousMovement = requireSingleOperationMovement(
+            request.operationId, await transaction.getAll('movements')
+          );
+          validateAccountOperation(
+            previousOperation, previousMovement, options.operationType, request.accountId
+          );
+          const previousDetails = options.validateDetails(previousOperation);
+          if (previousDetails.accountId !== request.accountId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'accountId does not match Operation.details',
+              { operationId: request.operationId, accountId: request.accountId }
+            );
+          }
+          const target = requireFinancialTarget(
+            'account',
+            await transaction.get('accounts', request.accountId),
+            request.accountId,
+            request.expectedAccountRevision
+          );
+          const account = simulateTargetChange(target, previousMovement.delta, null, {
+            operationId: request.operationId,
+            targetType: 'account',
+            targetId: request.accountId,
+            occurredAt,
+            allowCurrentNegative: true,
+          });
+          const relatedData = {};
+          for (const read of options.relatedReads || []) {
+            relatedData[read.key] = read.all
+              ? await transaction.getAll(read.storeName)
+              : await transaction.get(read.storeName, read.id);
+          }
+          const related = options.prepareRelated
+            ? options.prepareRelated({
+              request,
+              previousOperation,
+              previousMovement,
+              previousDetails,
+              period,
+              occurredAt,
+              relatedData,
+            })
+            : Object.freeze({ writes: [], result: {} });
+          const nextOperation = Domain.validateOperation({
+            ...previousOperation,
+            status: 'voided',
+            voidedAt: occurredAt,
+            voidReason: reason,
+            revision: nextRevision(previousOperation.revision),
+            updatedAt: occurredAt,
+          });
+          const nextMovement = Domain.validateMovement({
+            ...previousMovement,
+            status: 'voided',
+            updatedAt: occurredAt,
+          });
+          Domain.assertMovementMatchesOperation(nextOperation, nextMovement);
+          const revision = Domain.validateOperationRevision({
+            id: revisionId,
+            operationId: request.operationId,
+            periodId: request.periodId,
+            revisionNumber: previousOperation.revision,
+            changeType: 'void',
+            previousOperation,
+            previousMovements: [previousMovement],
+            reason,
+            createdAt: occurredAt,
+          });
+          assertLogicalRevisionAvailable(
+            await transaction.getAll('operationRevisions'), revision
+          );
+          if (await transaction.get('operationRevisions', revision.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DUPLICATE_OPERATION_REVISION,
+              'the generated OperationRevision ID already exists',
+              { revisionId: revision.id }
+            );
+          }
+          if (account !== target.entity) await transaction.put('accounts', account);
+          await applyPreparedWrites(transaction, related.writes);
+          await transaction.put('operations', nextOperation);
+          await transaction.put('movements', nextMovement);
+          await transaction.add('operationRevisions', revision);
+          return Object.freeze({
+            operation: nextOperation,
+            movement: nextMovement,
+            account,
+            operationRevision: revision,
+            ...(related.result || {}),
+          });
+        },
+      });
+    }
+
     async function createBalanceAdjustment(input) {
       const request = requireRecord(input, 'balance-adjustment.create');
       const fields = [
@@ -2397,6 +2973,579 @@
       });
     }
 
+    function validateSalaryDetails(operation) {
+      const details = operationDetails(operation, ['accountId']);
+      assertUuid(details.accountId, { field: 'Operation.details.accountId' });
+      return details;
+    }
+
+    function validateAdditionalIncomeDetails(operation) {
+      const details = operationDetails(operation, ['accountId', 'concept', 'observation']);
+      assertUuid(details.accountId, { field: 'Operation.details.accountId' });
+      nullableNonEmptyString(details.concept, 'Operation.details.concept');
+      nullableNonEmptyString(details.observation, 'Operation.details.observation');
+      return details;
+    }
+
+    function validateVariableExpenseDetails(operation) {
+      const details = operationDetails(operation, [
+        'accountId', 'categoryId', 'categoryName', 'concept', 'observation',
+      ]);
+      assertUuid(details.accountId, { field: 'Operation.details.accountId' });
+      assertUuid(details.categoryId, { field: 'Operation.details.categoryId' });
+      requireNonEmptyString(details.categoryName, 'Operation.details.categoryName');
+      requireNonEmptyString(details.concept, 'Operation.details.concept');
+      nullableNonEmptyString(details.observation, 'Operation.details.observation');
+      return details;
+    }
+
+    function validateFixedExpensePaymentDetails(operation) {
+      const details = operationDetails(operation, ['accountId', 'fixedExpenseInstanceId']);
+      assertUuid(details.accountId, { field: 'Operation.details.accountId' });
+      assertUuid(details.fixedExpenseInstanceId, {
+        field: 'Operation.details.fixedExpenseInstanceId',
+      });
+      return details;
+    }
+
+    function validateAccountCreateRequest(input, commandType, additionalRequired, additionalAllowed) {
+      const request = requireRecord(input, commandType);
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'accountId', 'expectedAccountRevision', 'operationDate', 'amount',
+        ...(additionalRequired || []),
+      ];
+      validateCommandHeader(request, commandType, required, [
+        ...required, ...(additionalAllowed || []),
+      ]);
+      assertUuid(request.accountId, { field: 'accountId' });
+      assertRevision(request.expectedAccountRevision, { field: 'expectedAccountRevision' });
+      assertCivilDate(request.operationDate, { field: 'operationDate' });
+      assertPositiveMoney(request.amount, { field: 'amount' });
+      return request;
+    }
+
+    function validateAccountEditRequest(input, commandType, additionalRequired, editableFields) {
+      const request = requireRecord(input, commandType);
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'operationId', 'expectedOperationRevision',
+        'previousAccountId', 'expectedPreviousAccountRevision',
+        'accountId', 'expectedAccountRevision',
+        ...(additionalRequired || []),
+      ];
+      validateCommandHeader(request, commandType, required, [...required, ...editableFields]);
+      for (const field of ['operationId', 'previousAccountId', 'accountId']) {
+        assertUuid(request[field], { field });
+      }
+      for (const field of [
+        'expectedOperationRevision', 'expectedPreviousAccountRevision', 'expectedAccountRevision',
+      ]) {
+        assertRevision(request[field], { field });
+      }
+      if (hasOwn(request, 'operationDate')) {
+        assertCivilDate(request.operationDate, { field: 'operationDate' });
+      }
+      if (hasOwn(request, 'amount')) assertPositiveMoney(request.amount, { field: 'amount' });
+      return request;
+    }
+
+    function validateAccountVoidRequest(input, commandType, additionalRequired) {
+      const request = requireRecord(input, commandType);
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'operationId', 'expectedOperationRevision', 'accountId', 'expectedAccountRevision',
+        ...(additionalRequired || []),
+      ];
+      validateCommandHeader(request, commandType, required, [...required, 'reason']);
+      assertUuid(request.operationId, { field: 'operationId' });
+      assertUuid(request.accountId, { field: 'accountId' });
+      assertRevision(request.expectedOperationRevision, { field: 'expectedOperationRevision' });
+      assertRevision(request.expectedAccountRevision, { field: 'expectedAccountRevision' });
+      if (hasOwn(request, 'reason')) requireNonEmptyString(request.reason, 'reason');
+      return request;
+    }
+
+    async function createSalaryReceipt(input) {
+      const request = validateAccountCreateRequest(input, 'salary-receipt.create');
+      return executeAccountOperationCreate({
+        request,
+        commandType: 'salary-receipt.create',
+        operationType: 'salary_receipt',
+        stores: ACCOUNT_OPERATION_CREATE_STORES,
+        details: Object.freeze({ accountId: request.accountId }),
+        relatedReads: [{ key: 'operations', storeName: 'operations', all: true }],
+        prepareRelated: (context) => {
+          const duplicate = context.relatedData.operations.some((operation) => (
+            operation.periodId === request.periodId &&
+            operation.type === 'salary_receipt' &&
+            operation.status === 'posted'
+          ));
+          if (duplicate) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'only one posted salary receipt is allowed per Period',
+              { periodId: request.periodId }
+            );
+          }
+          return Object.freeze({ writes: [], result: {} });
+        },
+      });
+    }
+
+    async function editSalaryReceipt(input) {
+      const request = validateAccountEditRequest(
+        input, 'salary-receipt.edit', [], ['operationDate', 'amount']
+      );
+      return executeAccountOperationEdit({
+        request,
+        commandType: 'salary-receipt.edit',
+        operationType: 'salary_receipt',
+        stores: ACCOUNT_OPERATION_CHANGE_STORES,
+        validateDetails: validateSalaryDetails,
+        relatedReads: [{ key: 'operations', storeName: 'operations', all: true }],
+        prepareRelated: (context) => {
+          const duplicate = context.relatedData.operations.some((operation) => (
+            operation.id !== request.operationId &&
+            operation.periodId === request.periodId &&
+            operation.type === 'salary_receipt' &&
+            operation.status === 'posted'
+          ));
+          if (duplicate) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'only one posted salary receipt is allowed per Period',
+              { periodId: request.periodId }
+            );
+          }
+          return Object.freeze({
+            details: Object.freeze({ accountId: request.accountId }),
+            writes: [],
+            result: {},
+          });
+        },
+      });
+    }
+
+    async function voidSalaryReceipt(input) {
+      const request = validateAccountVoidRequest(input, 'salary-receipt.void');
+      return executeAccountOperationVoid({
+        request,
+        commandType: 'salary-receipt.void',
+        operationType: 'salary_receipt',
+        stores: ACCOUNT_OPERATION_CHANGE_STORES,
+        validateDetails: validateSalaryDetails,
+      });
+    }
+
+    async function createAdditionalIncome(input) {
+      const request = validateAccountCreateRequest(
+        input, 'additional-income.create', [], ['concept', 'observation']
+      );
+      const concept = hasOwn(request, 'concept')
+        ? nullableNonEmptyString(request.concept, 'concept')
+        : null;
+      const observation = hasOwn(request, 'observation')
+        ? nullableNonEmptyString(request.observation, 'observation')
+        : null;
+      return executeAccountOperationCreate({
+        request,
+        commandType: 'additional-income.create',
+        operationType: 'additional_income',
+        stores: ACCOUNT_OPERATION_CREATE_STORES,
+        details: Object.freeze({ accountId: request.accountId, concept, observation }),
+      });
+    }
+
+    async function editAdditionalIncome(input) {
+      const request = validateAccountEditRequest(
+        input,
+        'additional-income.edit',
+        [],
+        ['operationDate', 'amount', 'concept', 'observation']
+      );
+      if (hasOwn(request, 'concept')) nullableNonEmptyString(request.concept, 'concept');
+      if (hasOwn(request, 'observation')) nullableNonEmptyString(request.observation, 'observation');
+      return executeAccountOperationEdit({
+        request,
+        commandType: 'additional-income.edit',
+        operationType: 'additional_income',
+        stores: ACCOUNT_OPERATION_CHANGE_STORES,
+        validateDetails: validateAdditionalIncomeDetails,
+        prepareRelated: (context) => Object.freeze({
+          details: Object.freeze({
+            accountId: request.accountId,
+            concept: hasOwn(request, 'concept') ? request.concept : context.previousDetails.concept,
+            observation: hasOwn(request, 'observation')
+              ? request.observation
+              : context.previousDetails.observation,
+          }),
+          writes: [],
+          result: {},
+        }),
+      });
+    }
+
+    async function voidAdditionalIncome(input) {
+      const request = validateAccountVoidRequest(input, 'additional-income.void');
+      return executeAccountOperationVoid({
+        request,
+        commandType: 'additional-income.void',
+        operationType: 'additional_income',
+        stores: ACCOUNT_OPERATION_CHANGE_STORES,
+        validateDetails: validateAdditionalIncomeDetails,
+      });
+    }
+
+    function requireCategoryForVariableExpense(stored, categoryId, expectedRevision, allowInactive) {
+      if (stored === undefined) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'the requested Category does not exist',
+          { categoryId }
+        );
+      }
+      const category = Domain.validateCategory(stored);
+      assertExpectedRevision(category.revision, expectedRevision, {
+        entityType: 'Category', entityId: categoryId,
+      });
+      if (!allowInactive && category.status !== 'active') {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'a new variable expense requires an active Category',
+          { categoryId, status: category.status }
+        );
+      }
+      return category;
+    }
+
+    async function createVariableExpense(input) {
+      const request = validateAccountCreateRequest(
+        input,
+        'variable-expense.create',
+        ['categoryId', 'expectedCategoryRevision', 'concept'],
+        ['observation']
+      );
+      assertUuid(request.categoryId, { field: 'categoryId' });
+      assertRevision(request.expectedCategoryRevision, { field: 'expectedCategoryRevision' });
+      requireNonEmptyString(request.concept, 'concept');
+      const observation = hasOwn(request, 'observation')
+        ? nullableNonEmptyString(request.observation, 'observation')
+        : null;
+      return executeAccountOperationCreate({
+        request,
+        commandType: 'variable-expense.create',
+        operationType: 'variable_expense',
+        stores: VARIABLE_EXPENSE_CREATE_STORES,
+        relatedScopes: [Domain.domainScope('category', request.categoryId)],
+        metadata: { categoryId: request.categoryId },
+        details: Object.freeze({
+          accountId: request.accountId,
+          categoryId: request.categoryId,
+          categoryName: '',
+          concept: request.concept,
+          observation,
+        }),
+        relatedReads: [{
+          key: 'category', storeName: 'categories', id: request.categoryId,
+        }],
+        prepareRelated: (context) => {
+          const category = requireCategoryForVariableExpense(
+            context.relatedData.category, request.categoryId, request.expectedCategoryRevision, false
+          );
+          return Object.freeze({
+            details: Object.freeze({
+              ...context.operation.details,
+              categoryName: category.name,
+            }),
+            writes: [],
+            result: { category },
+          });
+        },
+      });
+    }
+
+    async function editVariableExpense(input) {
+      const request = validateAccountEditRequest(
+        input,
+        'variable-expense.edit',
+        ['previousCategoryId', 'categoryId', 'expectedCategoryRevision'],
+        ['operationDate', 'amount', 'concept', 'observation']
+      );
+      assertUuid(request.previousCategoryId, { field: 'previousCategoryId' });
+      assertUuid(request.categoryId, { field: 'categoryId' });
+      assertRevision(request.expectedCategoryRevision, { field: 'expectedCategoryRevision' });
+      if (hasOwn(request, 'concept')) requireNonEmptyString(request.concept, 'concept');
+      if (hasOwn(request, 'observation')) nullableNonEmptyString(request.observation, 'observation');
+      return executeAccountOperationEdit({
+        request,
+        commandType: 'variable-expense.edit',
+        operationType: 'variable_expense',
+        stores: VARIABLE_EXPENSE_CHANGE_STORES,
+        relatedScopes: [
+          Domain.domainScope('category', request.previousCategoryId),
+          Domain.domainScope('category', request.categoryId),
+        ],
+        metadata: {
+          previousCategoryId: request.previousCategoryId,
+          categoryId: request.categoryId,
+        },
+        validateDetails: validateVariableExpenseDetails,
+        relatedReads: [{
+          key: 'category', storeName: 'categories', id: request.categoryId,
+        }],
+        prepareRelated: (context) => {
+          if (context.previousDetails.categoryId !== request.previousCategoryId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'previousCategoryId does not match the historical Operation',
+              { operationId: request.operationId, previousCategoryId: request.previousCategoryId }
+            );
+          }
+          const category = requireCategoryForVariableExpense(
+            context.relatedData.category,
+            request.categoryId,
+            request.expectedCategoryRevision,
+            request.categoryId === request.previousCategoryId
+          );
+          return Object.freeze({
+            details: Object.freeze({
+              accountId: request.accountId,
+              categoryId: request.categoryId,
+              categoryName: request.categoryId === request.previousCategoryId
+                ? context.previousDetails.categoryName
+                : category.name,
+              concept: hasOwn(request, 'concept')
+                ? request.concept
+                : context.previousDetails.concept,
+              observation: hasOwn(request, 'observation')
+                ? request.observation
+                : context.previousDetails.observation,
+            }),
+            writes: [],
+            result: { category },
+          });
+        },
+      });
+    }
+
+    async function voidVariableExpense(input) {
+      const request = validateAccountVoidRequest(
+        input, 'variable-expense.void', ['categoryId']
+      );
+      assertUuid(request.categoryId, { field: 'categoryId' });
+      return executeAccountOperationVoid({
+        request,
+        commandType: 'variable-expense.void',
+        operationType: 'variable_expense',
+        stores: VARIABLE_EXPENSE_CHANGE_STORES,
+        relatedScopes: [Domain.domainScope('category', request.categoryId)],
+        metadata: { categoryId: request.categoryId },
+        validateDetails: validateVariableExpenseDetails,
+        relatedReads: [{
+          key: 'category', storeName: 'categories', id: request.categoryId,
+        }],
+        prepareRelated: (context) => {
+          if (context.previousDetails.categoryId !== request.categoryId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'categoryId does not match the historical Operation',
+              { operationId: request.operationId, categoryId: request.categoryId }
+            );
+          }
+          const stored = context.relatedData.category;
+          if (stored !== undefined) Domain.validateCategory(stored);
+          return Object.freeze({ writes: [], result: {} });
+        },
+      });
+    }
+
+    function requireFixedExpenseInstance(stored, request, operationId, state) {
+      if (stored === undefined) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'the requested FixedExpenseInstance does not exist',
+          { fixedExpenseInstanceId: request.fixedExpenseInstanceId }
+        );
+      }
+      const instance = Domain.validateFixedExpenseInstance(stored);
+      assertExpectedRevision(instance.revision, request.expectedInstanceRevision, {
+        entityType: 'FixedExpenseInstance', entityId: instance.id,
+      });
+      if (instance.periodId !== request.periodId) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'FixedExpenseInstance does not belong to the active Period',
+          { instanceId: instance.id, instancePeriodId: instance.periodId, periodId: request.periodId }
+        );
+      }
+      if (state === 'pending' && (instance.status !== 'pending' || instance.activePaymentOperationId !== null)) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'only a pending FixedExpenseInstance can be paid',
+          { instanceId: instance.id, status: instance.status }
+        );
+      }
+      if (state === 'paid' && (
+        instance.status !== 'paid' || instance.activePaymentOperationId !== operationId
+      )) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'FixedExpenseInstance is not linked to the requested posted payment',
+          {
+            instanceId: instance.id,
+            status: instance.status,
+            activePaymentOperationId: instance.activePaymentOperationId,
+            operationId,
+          }
+        );
+      }
+      return instance;
+    }
+
+    async function createFixedExpensePayment(input) {
+      const request = validateAccountCreateRequest(
+        input,
+        'fixed-expense-payment.create',
+        ['fixedExpenseInstanceId', 'expectedInstanceRevision']
+      );
+      assertUuid(request.fixedExpenseInstanceId, { field: 'fixedExpenseInstanceId' });
+      assertRevision(request.expectedInstanceRevision, { field: 'expectedInstanceRevision' });
+      return executeAccountOperationCreate({
+        request,
+        commandType: 'fixed-expense-payment.create',
+        operationType: 'fixed_expense_payment',
+        stores: FIXED_EXPENSE_PAYMENT_CREATE_STORES,
+        relatedScopes: [Domain.domainScope('fixed_expense_instance', request.fixedExpenseInstanceId)],
+        metadata: { fixedExpenseInstanceId: request.fixedExpenseInstanceId },
+        details: Object.freeze({
+          accountId: request.accountId,
+          fixedExpenseInstanceId: request.fixedExpenseInstanceId,
+        }),
+        relatedReads: [
+          { key: 'instance', storeName: 'fixedExpenseInstances', id: request.fixedExpenseInstanceId },
+          { key: 'operations', storeName: 'operations', all: true },
+        ],
+        prepareRelated: (context) => {
+          const instance = requireFixedExpenseInstance(
+            context.relatedData.instance, request, context.operation.id, 'pending'
+          );
+          const duplicate = context.relatedData.operations.some((operation) => (
+            operation.type === 'fixed_expense_payment' &&
+            operation.status === 'posted' &&
+            operation.details &&
+            operation.details.fixedExpenseInstanceId === request.fixedExpenseInstanceId
+          ));
+          if (duplicate) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'only one posted payment is allowed per FixedExpenseInstance',
+              { fixedExpenseInstanceId: request.fixedExpenseInstanceId }
+            );
+          }
+          const nextInstance = Domain.validateFixedExpenseInstance({
+            ...instance,
+            status: 'paid',
+            activePaymentOperationId: context.operation.id,
+            revision: nextRevision(instance.revision),
+            updatedAt: context.occurredAt,
+          });
+          return Object.freeze({
+            writes: [{ storeName: 'fixedExpenseInstances', value: nextInstance }],
+            result: { fixedExpenseInstance: nextInstance },
+          });
+        },
+      });
+    }
+
+    async function editFixedExpensePayment(input) {
+      const request = validateAccountEditRequest(
+        input,
+        'fixed-expense-payment.edit',
+        ['fixedExpenseInstanceId', 'expectedInstanceRevision'],
+        ['operationDate', 'amount']
+      );
+      assertUuid(request.fixedExpenseInstanceId, { field: 'fixedExpenseInstanceId' });
+      assertRevision(request.expectedInstanceRevision, { field: 'expectedInstanceRevision' });
+      return executeAccountOperationEdit({
+        request,
+        commandType: 'fixed-expense-payment.edit',
+        operationType: 'fixed_expense_payment',
+        stores: FIXED_EXPENSE_PAYMENT_CHANGE_STORES,
+        relatedScopes: [Domain.domainScope('fixed_expense_instance', request.fixedExpenseInstanceId)],
+        metadata: { fixedExpenseInstanceId: request.fixedExpenseInstanceId },
+        validateDetails: validateFixedExpensePaymentDetails,
+        relatedReads: [{
+          key: 'instance', storeName: 'fixedExpenseInstances', id: request.fixedExpenseInstanceId,
+        }],
+        prepareRelated: (context) => {
+          if (context.previousDetails.fixedExpenseInstanceId !== request.fixedExpenseInstanceId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'FixedExpenseInstance link cannot be changed while editing its payment',
+              { operationId: request.operationId, fixedExpenseInstanceId: request.fixedExpenseInstanceId }
+            );
+          }
+          const instance = requireFixedExpenseInstance(
+            context.relatedData.instance, request, request.operationId, 'paid'
+          );
+          return Object.freeze({
+            details: Object.freeze({
+              accountId: request.accountId,
+              fixedExpenseInstanceId: request.fixedExpenseInstanceId,
+            }),
+            writes: [],
+            result: { fixedExpenseInstance: instance },
+          });
+        },
+      });
+    }
+
+    async function voidFixedExpensePayment(input) {
+      const request = validateAccountVoidRequest(
+        input,
+        'fixed-expense-payment.void',
+        ['fixedExpenseInstanceId', 'expectedInstanceRevision']
+      );
+      assertUuid(request.fixedExpenseInstanceId, { field: 'fixedExpenseInstanceId' });
+      assertRevision(request.expectedInstanceRevision, { field: 'expectedInstanceRevision' });
+      return executeAccountOperationVoid({
+        request,
+        commandType: 'fixed-expense-payment.void',
+        operationType: 'fixed_expense_payment',
+        stores: FIXED_EXPENSE_PAYMENT_CHANGE_STORES,
+        relatedScopes: [Domain.domainScope('fixed_expense_instance', request.fixedExpenseInstanceId)],
+        metadata: { fixedExpenseInstanceId: request.fixedExpenseInstanceId },
+        validateDetails: validateFixedExpensePaymentDetails,
+        relatedReads: [{
+          key: 'instance', storeName: 'fixedExpenseInstances', id: request.fixedExpenseInstanceId,
+        }],
+        prepareRelated: (context) => {
+          if (context.previousDetails.fixedExpenseInstanceId !== request.fixedExpenseInstanceId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'FixedExpenseInstance does not match the historical payment',
+              { operationId: request.operationId, fixedExpenseInstanceId: request.fixedExpenseInstanceId }
+            );
+          }
+          const instance = requireFixedExpenseInstance(
+            context.relatedData.instance, request, request.operationId, 'paid'
+          );
+          const nextInstance = Domain.validateFixedExpenseInstance({
+            ...instance,
+            status: 'pending',
+            activePaymentOperationId: null,
+            revision: nextRevision(instance.revision),
+            updatedAt: context.occurredAt,
+          });
+          return Object.freeze({
+            writes: [{ storeName: 'fixedExpenseInstances', value: nextInstance }],
+            result: { fixedExpenseInstance: nextInstance },
+          });
+        },
+      });
+    }
+
     return Object.freeze({
       setup: Object.freeze({ complete }),
       financialSettings: Object.freeze({ updateReferenceSalary }),
@@ -2435,6 +3584,26 @@
       operation: Object.freeze({
         void: voidOperation,
       }),
+      salaryReceipt: Object.freeze({
+        create: createSalaryReceipt,
+        edit: editSalaryReceipt,
+        void: voidSalaryReceipt,
+      }),
+      additionalIncome: Object.freeze({
+        create: createAdditionalIncome,
+        edit: editAdditionalIncome,
+        void: voidAdditionalIncome,
+      }),
+      variableExpense: Object.freeze({
+        create: createVariableExpense,
+        edit: editVariableExpense,
+        void: voidVariableExpense,
+      }),
+      fixedExpensePayment: Object.freeze({
+        create: createFixedExpensePayment,
+        edit: editFixedExpensePayment,
+        void: voidFixedExpensePayment,
+      }),
     });
   }
 
@@ -2467,6 +3636,13 @@
     FINANCIAL_OPERATION_CHANGE_STORES,
     BALANCE_ADJUSTMENT_EDITABLE_FIELDS,
     FINANCIAL_TARGET_POLICIES,
+    ACCOUNT_OPERATION_POLICIES,
+    ACCOUNT_OPERATION_CREATE_STORES,
+    ACCOUNT_OPERATION_CHANGE_STORES,
+    VARIABLE_EXPENSE_CREATE_STORES,
+    VARIABLE_EXPENSE_CHANGE_STORES,
+    FIXED_EXPENSE_PAYMENT_CREATE_STORES,
+    FIXED_EXPENSE_PAYMENT_CHANGE_STORES,
     createPeritaDomainCommands,
   });
 });

@@ -408,7 +408,10 @@ test('V1.1.0 integrity remains isolated', async (t) => {
       ['perita_v1', /perita_v1/],
       ['BroadcastChannel', /\bBroadcastChannel\s*\(/],
       ['automatic timer', /\bset(?:Interval|Timeout)\s*\(/],
-      ['financial command', /salary_receipt|debt_payment|savings_deposit/],
+      [
+        'financial command',
+        /perita-domain-commands(?:\.js)?|PeritaDomainCommands|(?:salaryReceipt|additionalIncome|variableExpense|fixedExpensePayment)\s*\.\s*(?:create|edit|void)\s*\(/,
+      ],
     ]) {
       assert.equal(pattern.test(source), false, `unexpected integration: ${label}`);
     }

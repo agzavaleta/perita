@@ -77,6 +77,12 @@
       effectType: 'debt_outstanding',
     }),
   });
+  const ACCOUNT_OPERATION_SIGNS = Object.freeze({
+    salary_receipt: 1,
+    additional_income: 1,
+    variable_expense: -1,
+    fixed_expense_payment: -1,
+  });
 
   class IntegrityError extends PeritaError {}
 
@@ -465,6 +471,7 @@
   function checkRelationshipSnapshot(snapshot, issues) {
     const periods = mapById(snapshot.periods);
     const templates = mapById(snapshot.fixedExpenseTemplates);
+    const fixedInstances = mapById(snapshot.fixedExpenseInstances);
     const operations = mapById(snapshot.operations);
     const snapshots = mapById(snapshot.periodSnapshots);
     const migrations = mapById(snapshot.migrations);
@@ -557,7 +564,7 @@
           context: { movementPeriodId: movement.periodId, operationPeriodId: operation.periodId },
         });
       } else if (
-        operation.type === 'balance_adjustment' &&
+        (operation.type === 'balance_adjustment' || hasOwn(ACCOUNT_OPERATION_SIGNS, operation.type)) &&
         movement.status !== operation.status
       ) {
         missingRelation(issues, {
@@ -620,6 +627,134 @@
           recordId: movement.id,
           message: 'balance_adjustment movement must target an account balance',
           context: { targetType: movement.targetType, effectType: movement.effectType },
+        });
+      }
+    });
+
+    snapshot.operations.forEach((operation) => {
+      if (!hasOwn(ACCOUNT_OPERATION_SIGNS, operation.type)) return;
+      const related = snapshot.movements.filter((movement) => movement.operationId === operation.id);
+      if (related.length !== 1) {
+        missingRelation(issues, {
+          code: 'ACCOUNT_OPERATION_MOVEMENT_CARDINALITY',
+          scopeType: 'period',
+          scopeId: operation.periodId,
+          storeName: 'operations',
+          recordId: operation.id,
+          message: 'income or expense Operation must have exactly one account Movement',
+          context: { operationType: operation.type, movementCount: related.length },
+        });
+        return;
+      }
+      const movement = related[0];
+      const expectedDelta = ACCOUNT_OPERATION_SIGNS[operation.type] * operation.amount;
+      if (
+        movement.targetType !== 'account' ||
+        movement.effectType !== 'asset_balance' ||
+        movement.delta !== expectedDelta
+      ) {
+        missingRelation(issues, {
+          code: 'ACCOUNT_OPERATION_MOVEMENT_INVALID',
+          scopeType: movement.targetType,
+          scopeId: movement.targetId,
+          storeName: 'movements',
+          recordId: movement.id,
+          message: 'income or expense Movement has an invalid account target or sign',
+          context: {
+            operationType: operation.type,
+            operationAmount: operation.amount,
+            targetType: movement.targetType,
+            effectType: movement.effectType,
+            expectedDelta,
+            actualDelta: movement.delta,
+          },
+        });
+      }
+    });
+
+    const postedSalariesByPeriod = new Map();
+    snapshot.operations.forEach((operation) => {
+      if (operation.type !== 'salary_receipt' || operation.status !== 'posted') return;
+      const count = (postedSalariesByPeriod.get(operation.periodId) || 0) + 1;
+      postedSalariesByPeriod.set(operation.periodId, count);
+      if (count > 1) {
+        missingRelation(issues, {
+          code: 'SALARY_RECEIPT_POSTED_DUPLICATE',
+          scopeType: 'period',
+          scopeId: operation.periodId,
+          storeName: 'operations',
+          recordId: operation.id,
+          message: 'only one posted salary receipt is allowed per Period',
+        });
+      }
+    });
+
+    const postedFixedPayments = new Map();
+    snapshot.operations.forEach((operation) => {
+      if (operation.type !== 'fixed_expense_payment') return;
+      const instanceId = operation.details && operation.details.fixedExpenseInstanceId;
+      if (typeof instanceId !== 'string' || !fixedInstances.has(instanceId)) {
+        missingRelation(issues, {
+          code: 'FIXED_PAYMENT_INSTANCE_MISSING',
+          scopeType: 'fixed_expense_instance',
+          scopeId: instanceId,
+          storeName: 'operations',
+          recordId: operation.id,
+          message: 'fixed expense payment references a missing instance',
+          context: { fixedExpenseInstanceId: instanceId },
+        });
+        return;
+      }
+      const instance = fixedInstances.get(instanceId);
+      if (instance.periodId !== operation.periodId) {
+        missingRelation(issues, {
+          code: 'FIXED_PAYMENT_INSTANCE_PERIOD_MISMATCH',
+          scopeType: 'fixed_expense_instance',
+          scopeId: instanceId,
+          storeName: 'operations',
+          recordId: operation.id,
+          message: 'fixed expense payment and instance must share a Period',
+          context: { operationPeriodId: operation.periodId, instancePeriodId: instance.periodId },
+        });
+      }
+      if (operation.status === 'posted') {
+        const prior = postedFixedPayments.get(instanceId);
+        if (prior) {
+          missingRelation(issues, {
+            code: 'FIXED_PAYMENT_POSTED_DUPLICATE',
+            scopeType: 'fixed_expense_instance',
+            scopeId: instanceId,
+            storeName: 'operations',
+            recordId: operation.id,
+            message: 'only one posted payment is allowed per FixedExpenseInstance',
+            context: { previousOperationId: prior, operationId: operation.id },
+          });
+        } else {
+          postedFixedPayments.set(instanceId, operation.id);
+        }
+      }
+    });
+
+    snapshot.fixedExpenseInstances.forEach((instance) => {
+      const postedOperationId = postedFixedPayments.get(instance.id) || null;
+      if (
+        (instance.status === 'paid' && instance.activePaymentOperationId !== postedOperationId) ||
+        (instance.status === 'pending' && (
+          instance.activePaymentOperationId !== null || postedOperationId !== null
+        ))
+      ) {
+        missingRelation(issues, {
+          code: 'FIXED_INSTANCE_PAYMENT_STATE_INCONSISTENT',
+          scopeType: 'fixed_expense_instance',
+          scopeId: instance.id,
+          storeName: 'fixedExpenseInstances',
+          recordId: instance.id,
+          message: 'FixedExpenseInstance state does not match its posted payment',
+          context: {
+            status: instance.status,
+            activePaymentOperationId: instance.activePaymentOperationId,
+            postedOperationId,
+          },
         });
       }
     });
