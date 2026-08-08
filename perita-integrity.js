@@ -25,6 +25,7 @@
     assertUuid,
     civilDateInChile,
     createUuidV4,
+    nextPeriod,
   } = Contracts;
 
   const CHECK_TYPES = Object.freeze({
@@ -184,6 +185,126 @@
 
   function validNonNegativeRevision(value) {
     return Number.isSafeInteger(value) && value >= 0;
+  }
+
+  function canonicalJsonValue(value) {
+    if (Array.isArray(value)) return value.map(canonicalJsonValue);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])])
+    );
+  }
+
+  function canonicalJson(value) {
+    return JSON.stringify(canonicalJsonValue(value));
+  }
+
+  function normalizedSha256(value) {
+    return typeof value === 'string' && /^[0-9a-f]{64}$/i.test(value)
+      ? value.toLowerCase()
+      : null;
+  }
+
+  function snapshotPayload(snapshot) {
+    const payload = { ...snapshot };
+    delete payload.integrity;
+    return payload;
+  }
+
+  function addSnapshotAmount(total, amount) {
+    const next = total + amount;
+    return Number.isSafeInteger(next) ? next : null;
+  }
+
+  function canonicalSnapshotTotals(periodSnapshot) {
+    const data = periodSnapshot && periodSnapshot.data;
+    const plan = data && data.periodPlan;
+    const operations = data && data.operations;
+    const fixedExpenses = data && data.fixedExpenses;
+    if (!plan || !Array.isArray(operations) || !Array.isArray(fixedExpenses)) return null;
+    const totals = {
+      receivedSalaryAmount: 0,
+      additionalIncomeAmount: 0,
+      fixedExpensePaidAmount: 0,
+      variableExpenseAmount: 0,
+      debtPaymentAmount: 0,
+      netSavingsAmount: 0,
+    };
+    for (const operation of operations) {
+      if (!operation || operation.status !== 'posted' || !Number.isSafeInteger(operation.amount)) continue;
+      let field = null;
+      let delta = operation.amount;
+      if (operation.type === 'salary_receipt') field = 'receivedSalaryAmount';
+      if (operation.type === 'additional_income') field = 'additionalIncomeAmount';
+      if (operation.type === 'fixed_expense_payment') field = 'fixedExpensePaidAmount';
+      if (operation.type === 'variable_expense') field = 'variableExpenseAmount';
+      if (operation.type === 'debt_payment') field = 'debtPaymentAmount';
+      if (operation.type === 'savings_deposit') field = 'netSavingsAmount';
+      if (operation.type === 'savings_withdrawal') {
+        field = 'netSavingsAmount';
+        delta = -operation.amount;
+      }
+      if (operation.type === 'transfer') {
+        const details = operation.details || {};
+        if (details.sourceType === 'account' && details.destinationType === 'savings_goal') {
+          field = 'netSavingsAmount';
+        } else if (
+          details.sourceType === 'savings_goal' && details.destinationType === 'account'
+        ) {
+          field = 'netSavingsAmount';
+          delta = -operation.amount;
+        }
+      }
+      if (field) {
+        const next = addSnapshotAmount(totals[field], delta);
+        if (next === null) return null;
+        totals[field] = next;
+      }
+    }
+    let fixedExpensePlannedAmount = 0;
+    let fixedExpenseUnpaidAmount = 0;
+    for (const instance of fixedExpenses) {
+      if (!instance || !Number.isSafeInteger(instance.plannedAmount)) return null;
+      fixedExpensePlannedAmount = addSnapshotAmount(
+        fixedExpensePlannedAmount, instance.plannedAmount
+      );
+      if (fixedExpensePlannedAmount === null) return null;
+      if (instance.status !== 'paid') {
+        fixedExpenseUnpaidAmount = addSnapshotAmount(
+          fixedExpenseUnpaidAmount, instance.plannedAmount
+        );
+        if (fixedExpenseUnpaidAmount === null) return null;
+      }
+    }
+    const totalIncomeAmount = addSnapshotAmount(
+      totals.receivedSalaryAmount, totals.additionalIncomeAmount
+    );
+    if (totalIncomeAmount === null) return null;
+    let availableAmount = totalIncomeAmount;
+    for (const amount of [
+      -totals.fixedExpensePaidAmount,
+      -totals.variableExpenseAmount,
+      -totals.debtPaymentAmount,
+      -totals.netSavingsAmount,
+    ]) {
+      availableAmount = addSnapshotAmount(availableAmount, amount);
+      if (availableAmount === null) return null;
+    }
+    return {
+      plannedSalaryAmount: plan.plannedSalaryAmount,
+      receivedSalaryAmount: totals.receivedSalaryAmount,
+      additionalIncomeAmount: totals.additionalIncomeAmount,
+      totalIncomeAmount,
+      variableExpenseBudgetAmount: plan.variableExpenseBudgetAmount,
+      fixedExpensePlannedAmount,
+      fixedExpensePaidAmount: totals.fixedExpensePaidAmount,
+      fixedExpenseUnpaidAmount,
+      variableExpenseAmount: totals.variableExpenseAmount,
+      debtPaymentAmount: totals.debtPaymentAmount,
+      plannedSavingsAmount: plan.plannedSavingsAmount,
+      netSavingsAmount: totals.netSavingsAmount,
+      availableAmount,
+    };
   }
 
   function checkRuntimeSnapshot(snapshot, issues) {
@@ -480,7 +601,7 @@
     });
   }
 
-  function checkRelationshipSnapshot(snapshot, issues, checkedAt) {
+  function checkRelationshipSnapshot(snapshot, issues, checkedAt, options) {
     const currentCivilDate = civilDateInChile(new Date(checkedAt));
     const periods = mapById(snapshot.periods);
     const templates = mapById(snapshot.fixedExpenseTemplates);
@@ -1083,6 +1204,287 @@
         });
       }
     });
+
+    const snapshotsByPeriod = new Map();
+    snapshot.periodSnapshots.forEach((periodSnapshot) => {
+      const records = snapshotsByPeriod.get(periodSnapshot.periodId) || [];
+      records.push(periodSnapshot);
+      snapshotsByPeriod.set(periodSnapshot.periodId, records);
+    });
+    for (const [periodId, records] of snapshotsByPeriod) {
+      if (records.length > 1) {
+        missingRelation(issues, {
+          code: 'PERIOD_SNAPSHOT_DUPLICATE',
+          scopeType: 'period',
+          scopeId: periodId,
+          storeName: 'periodSnapshots',
+          recordId: records[1].id,
+          message: 'a Period can have only one close snapshot',
+          context: { snapshotIds: records.map((record) => record.id) },
+        });
+      }
+    }
+
+    snapshot.periods.forEach((period) => {
+      const linked = snapshotsByPeriod.get(period.id) || [];
+      if (period.status === 'closed' && linked.length === 0) {
+        missingRelation(issues, {
+          code: 'CLOSED_PERIOD_SNAPSHOT_MISSING',
+          scopeType: 'period',
+          scopeId: period.id,
+          storeName: 'periodSnapshots',
+          recordId: period.id,
+          message: 'a closed Period requires exactly one PeriodSnapshot',
+        });
+      }
+      if (period.status === 'open' && linked.length > 0) {
+        missingRelation(issues, {
+          code: 'OPEN_PERIOD_HAS_SNAPSHOT',
+          scopeType: 'period',
+          scopeId: period.id,
+          storeName: 'periodSnapshots',
+          recordId: linked[0].id,
+          message: 'an open Period cannot already have a close snapshot',
+        });
+      }
+      if (period.status === 'closed' && typeof period.closedAt === 'string') {
+        snapshot.operations
+          .filter((operation) => operation.periodId === period.id)
+          .forEach((operation) => {
+            if (
+              (typeof operation.createdAt === 'string' && operation.createdAt > period.closedAt) ||
+              (typeof operation.updatedAt === 'string' && operation.updatedAt > period.closedAt)
+            ) {
+              missingRelation(issues, {
+                code: 'CLOSED_PERIOD_OPERATION_AFTER_CLOSE',
+                scopeType: 'period',
+                scopeId: period.id,
+                storeName: 'operations',
+                recordId: operation.id,
+                message: 'a closed Period contains an Operation created or modified after close',
+                context: { closedAt: period.closedAt, createdAt: operation.createdAt, updatedAt: operation.updatedAt },
+              });
+            }
+          });
+      }
+    });
+
+    const orderedPeriods = snapshot.periods
+      .filter((period) => typeof period.periodKey === 'string' && /^\d{4}-\d{2}$/.test(period.periodKey))
+      .slice()
+      .sort((left, right) => left.periodKey.localeCompare(right.periodKey));
+    for (let index = 1; index < orderedPeriods.length; index += 1) {
+      const previous = orderedPeriods[index - 1];
+      const current = orderedPeriods[index];
+      let expected;
+      try {
+        expected = nextPeriod(previous.periodKey);
+      } catch (_) {
+        expected = null;
+      }
+      if (expected !== current.periodKey) {
+        missingRelation(issues, {
+          code: 'PERIOD_SEQUENCE_INVALID',
+          scopeType: 'period',
+          scopeId: current.id,
+          storeName: 'periods',
+          recordId: current.id,
+          message: 'persisted Periods must form a consecutive monthly sequence',
+          context: { previousPeriodKey: previous.periodKey, expectedPeriodKey: expected, actualPeriodKey: current.periodKey },
+        });
+      }
+    }
+
+    const logicalOpenings = new Set();
+    snapshot.periodOpenings.forEach((opening) => {
+      const key = `${opening.periodId}:${opening.targetType}:${opening.targetId}`;
+      if (logicalOpenings.has(key)) {
+        missingRelation(issues, {
+          code: 'PERIOD_OPENING_DUPLICATE',
+          scopeType: opening.targetType,
+          scopeId: opening.targetId,
+          storeName: 'periodOpenings',
+          recordId: opening.id,
+          message: 'PeriodOpening must be unique per Period and financial target',
+          context: { periodId: opening.periodId },
+        });
+      }
+      logicalOpenings.add(key);
+    });
+
+    for (let index = 1; index < orderedPeriods.length; index += 1) {
+      const previous = orderedPeriods[index - 1];
+      const current = orderedPeriods[index];
+      const previousSnapshots = snapshotsByPeriod.get(previous.id) || [];
+      if (previousSnapshots.length !== 1) continue;
+      const balances = previousSnapshots[0].data && previousSnapshots[0].data.closingBalances;
+      if (!balances || typeof balances !== 'object') continue;
+      snapshot.periodOpenings
+        .filter((opening) => opening.periodId === current.id)
+        .forEach((opening) => {
+          const key = `${opening.targetType}:${opening.targetId}`;
+          if (hasOwn(balances, key) && balances[key] !== opening.openingAmount) {
+            missingRelation(issues, {
+              code: 'PERIOD_OPENING_CONTINUITY_INVALID',
+              scopeType: opening.targetType,
+              scopeId: opening.targetId,
+              storeName: 'periodOpenings',
+              recordId: opening.id,
+              message: 'next Period opening must match the preceding verified closing balance',
+              context: {
+                previousPeriodId: previous.id,
+                periodId: current.id,
+                expectedOpeningAmount: balances[key],
+                actualOpeningAmount: opening.openingAmount,
+              },
+            });
+          }
+        });
+    }
+
+    const logicalInstances = new Set();
+    snapshot.fixedExpenseInstances.forEach((instance) => {
+      const key = `${instance.periodId}:${instance.templateId}`;
+      if (logicalInstances.has(key)) {
+        missingRelation(issues, {
+          code: 'FIXED_INSTANCE_PERIOD_TEMPLATE_DUPLICATE',
+          scopeType: 'fixed_expense_template',
+          scopeId: instance.templateId,
+          storeName: 'fixedExpenseInstances',
+          recordId: instance.id,
+          message: 'only one FixedExpenseInstance is allowed per Period and Template',
+          context: { periodId: instance.periodId },
+        });
+      }
+      logicalInstances.add(key);
+      if (
+        instance.status !== undefined &&
+        !['pending', 'paid', 'unpaid'].includes(instance.status)
+      ) {
+        missingRelation(issues, {
+          code: 'FIXED_INSTANCE_STATUS_INVALID',
+          scopeType: 'fixed_expense_instance',
+          scopeId: instance.id,
+          storeName: 'fixedExpenseInstances',
+          recordId: instance.id,
+          message: 'FixedExpenseInstance status is invalid',
+          context: { status: instance.status },
+        });
+      }
+      const template = templates.get(instance.templateId);
+      if (
+        template && template.status === 'inactive' &&
+        typeof instance.createdAt === 'string' && typeof template.updatedAt === 'string' &&
+        instance.createdAt >= template.updatedAt
+      ) {
+        missingRelation(issues, {
+          code: 'INACTIVE_FIXED_TEMPLATE_COPIED',
+          scopeType: 'fixed_expense_template',
+          scopeId: template.id,
+          storeName: 'fixedExpenseInstances',
+          recordId: instance.id,
+          message: 'a FixedExpenseInstance was created after its Template became inactive',
+          context: { instanceCreatedAt: instance.createdAt, templateUpdatedAt: template.updatedAt },
+        });
+      }
+    });
+
+    snapshot.periodSnapshots.forEach((periodSnapshot) => {
+      if (periodSnapshot.snapshotKind !== 'canonical') return;
+      const period = periods.get(periodSnapshot.periodId);
+      const data = periodSnapshot.data;
+      const shapeValid = period && period.status === 'closed' &&
+        periodSnapshot.periodKey === period.periodKey &&
+        periodSnapshot.schemaVersion === IndexedDb.SCHEMA_VERSION &&
+        periodSnapshot.closedAt === period.closedAt &&
+        data && typeof data === 'object' &&
+        Array.isArray(data.operations) && Array.isArray(data.movements) &&
+        Array.isArray(data.fixedExpenses) && Array.isArray(data.periodOpenings) &&
+        data.totals && typeof data.totals === 'object' &&
+        periodSnapshot.integrity && periodSnapshot.integrity.algorithm === 'SHA-256';
+      if (!shapeValid) {
+        missingRelation(issues, {
+          code: 'CANONICAL_SNAPSHOT_SHAPE_INVALID',
+          scopeType: 'period',
+          scopeId: periodSnapshot.periodId,
+          storeName: 'periodSnapshots',
+          recordId: periodSnapshot.id,
+          message: 'canonical PeriodSnapshot shape or Period metadata is invalid',
+        });
+        return;
+      }
+      const liveOperations = snapshot.operations.filter(
+        (operation) => operation.periodId === periodSnapshot.periodId
+      );
+      const liveMovements = snapshot.movements.filter(
+        (movement) => movement.periodId === periodSnapshot.periodId
+      );
+      const liveOpenings = snapshot.periodOpenings.filter(
+        (opening) => opening.periodId === periodSnapshot.periodId
+      );
+      const liveInstances = snapshot.fixedExpenseInstances.filter(
+        (instance) => instance.periodId === periodSnapshot.periodId
+      );
+      if (
+        canonicalJson(data.operations) !== canonicalJson(liveOperations) ||
+        canonicalJson(data.movements) !== canonicalJson(liveMovements) ||
+        canonicalJson(data.periodOpenings) !== canonicalJson(liveOpenings) ||
+        canonicalJson(data.fixedExpenses) !== canonicalJson(liveInstances)
+      ) {
+        missingRelation(issues, {
+          code: 'CANONICAL_SNAPSHOT_CONTENT_DIVERGENCE',
+          scopeType: 'period',
+          scopeId: periodSnapshot.periodId,
+          storeName: 'periodSnapshots',
+          recordId: periodSnapshot.id,
+          message: 'canonical snapshot history differs from persisted closed-Period records',
+        });
+      }
+      const recalculated = canonicalSnapshotTotals(periodSnapshot);
+      if (!recalculated || Object.entries(recalculated).some(
+        ([field, value]) => data.totals[field] !== value
+      )) {
+        missingRelation(issues, {
+          code: 'CANONICAL_SNAPSHOT_TOTALS_INVALID',
+          scopeType: 'period',
+          scopeId: periodSnapshot.periodId,
+          storeName: 'periodSnapshots',
+          recordId: periodSnapshot.id,
+          message: 'canonical snapshot totals do not match its posted Operations',
+        });
+      }
+      const expectedHash = periodSnapshot.integrity.payloadHash;
+      if (!options || typeof options.sha256 !== 'function') {
+        addIssue(issues, {
+          code: 'CANONICAL_SNAPSHOT_HASH_UNVERIFIED',
+          severity: 'warning',
+          scopeType: 'period',
+          scopeId: periodSnapshot.periodId,
+          storeName: 'periodSnapshots',
+          recordId: periodSnapshot.id,
+          message: 'canonical snapshot hash cannot be verified without SHA-256 capability',
+        });
+      } else {
+        let actualHash = null;
+        try {
+          const result = options.sha256(canonicalJson(snapshotPayload(periodSnapshot)));
+          if (!result || typeof result.then !== 'function') actualHash = normalizedSha256(result);
+        } catch (_) {
+          actualHash = null;
+        }
+        if (!actualHash || actualHash !== expectedHash) {
+          missingRelation(issues, {
+            code: 'CANONICAL_SNAPSHOT_HASH_INVALID',
+            scopeType: 'period',
+            scopeId: periodSnapshot.periodId,
+            storeName: 'periodSnapshots',
+            recordId: periodSnapshot.id,
+            message: 'canonical snapshot SHA-256 does not match its payload',
+            context: { expectedHash, actualHash },
+          });
+        }
+      }
+    });
   }
 
   function safeAmount(value) {
@@ -1343,6 +1745,7 @@
     const storage = settings.storage;
     const now = settings.now || (() => new Date().toISOString());
     const createUuid = settings.createUuid || (() => createUuidV4());
+    const sha256 = settings.sha256;
     if (!storage || typeof storage.open !== 'function' || typeof storage.runTransaction !== 'function') {
       throw integrityError('a Perita IndexedDB storage instance is required', { field: 'storage' });
     }
@@ -1430,7 +1833,7 @@
       const startedAt = timestampFromNow(now);
       const snapshot = await readSnapshot();
       const issues = [];
-      checks.forEach((check) => check(snapshot, issues, startedAt));
+      checks.forEach((check) => check(snapshot, issues, startedAt, { sha256 }));
       const completedAt = timestampFromNow(now);
       const report = {
         id: newReportId(),

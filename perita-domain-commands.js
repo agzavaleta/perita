@@ -29,6 +29,7 @@
     assertSafeDelta,
     assertUuid,
     civilDateInChile,
+    nextPeriod,
     nextRevision,
   } = Contracts;
 
@@ -196,6 +197,38 @@
     savings_goal: 'savingsGoals',
     debt: 'debts',
   });
+  const MONTHLY_CLOSE_STORES = Object.freeze([
+    'financialSettings',
+    'periods',
+    'periodOpenings',
+    'accounts',
+    'savingsGoals',
+    'debts',
+    'categories',
+    'fixedExpenseTemplates',
+    'fixedExpenseInstances',
+    'operations',
+    'movements',
+    'auditEvents',
+    'periodSnapshots',
+  ]);
+  const MONTHLY_SUMMARY_FIELDS = Object.freeze([
+    'periodId',
+    'periodKey',
+    'plannedSalaryAmount',
+    'receivedSalaryAmount',
+    'additionalIncomeAmount',
+    'totalIncomeAmount',
+    'variableExpenseBudgetAmount',
+    'fixedExpensePlannedAmount',
+    'fixedExpensePaidAmount',
+    'fixedExpenseUnpaidAmount',
+    'variableExpenseAmount',
+    'debtPaymentAmount',
+    'plannedSavingsAmount',
+    'netSavingsAmount',
+    'availableAmount',
+  ]);
 
   function domainError(code, message, context, cause) {
     return new Domain.DomainError(code, message, context, cause);
@@ -585,6 +618,575 @@
     return JSON.stringify(left) === JSON.stringify(right);
   }
 
+  function deepFreezeJson(value) {
+    if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+    Object.freeze(value);
+    Object.values(value).forEach(deepFreezeJson);
+    return value;
+  }
+
+  function immutableJsonCopy(value) {
+    return deepFreezeJson(JSON.parse(JSON.stringify(value)));
+  }
+
+  function canonicalJsonValue(value) {
+    if (Array.isArray(value)) return value.map(canonicalJsonValue);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])])
+    );
+  }
+
+  function canonicalJson(value) {
+    return JSON.stringify(canonicalJsonValue(value));
+  }
+
+  function normalizeSha256(value) {
+    if (typeof value !== 'string' || !/^[0-9a-f]{64}$/i.test(value)) {
+      throw domainError(
+        ERROR_CODES.HASH_FAILED,
+        'snapshot SHA-256 must be a 64-character hexadecimal string',
+        { algorithm: 'SHA-256' }
+      );
+    }
+    return value.toLowerCase();
+  }
+
+  function hashSnapshotPayload(payload, sha256) {
+    if (typeof sha256 !== 'function') {
+      throw domainError(
+        ERROR_CODES.HASH_FAILED,
+        'period.close-and-open-next requires an injected synchronous SHA-256 function',
+        { algorithm: 'SHA-256' }
+      );
+    }
+    let digest;
+    try {
+      digest = sha256(canonicalJson(payload));
+    } catch (cause) {
+      throw domainError(
+        ERROR_CODES.HASH_FAILED,
+        'the canonical PeriodSnapshot payload could not be hashed',
+        { algorithm: 'SHA-256' },
+        cause
+      );
+    }
+    if (digest && typeof digest.then === 'function') {
+      throw domainError(
+        ERROR_CODES.HASH_FAILED,
+        'snapshot SHA-256 must complete synchronously inside the close transaction',
+        { algorithm: 'SHA-256' }
+      );
+    }
+    return normalizeSha256(digest);
+  }
+
+  function checkedMonthlyTotal(current, amount, field) {
+    const next = current + amount;
+    if (!Number.isSafeInteger(next)) {
+      throw domainError(
+        ERROR_CODES.INVALID_DOMAIN_FIELD,
+        `${field} exceeds the CLP safe-integer range`,
+        { field, current, amount }
+      );
+    }
+    return next;
+  }
+
+  function requireOperationDetails(operation, fields) {
+    const details = requireRecord(operation.details, 'Operation.details');
+    requireOnlyFields(details, fields, 'Operation.details');
+    return details;
+  }
+
+  function validateMonthlyOperationShape(operation, movements) {
+    const validOperation = Domain.validateOperation(operation);
+    const related = movements.map(Domain.validateMovement);
+    related.forEach((movement) => Domain.assertMovementMatchesOperation(validOperation, movement));
+    const amount = validOperation.amount;
+    const exactSingle = (targetType, delta, targetId) => (
+      related.length === 1 &&
+      related[0].targetType === targetType &&
+      related[0].targetId === targetId &&
+      related[0].delta === delta
+    );
+    let valid = false;
+    switch (validOperation.type) {
+      case 'balance_adjustment': {
+        const details = requireOperationDetails(validOperation, ['accountId', 'reason']);
+        valid = related.length === 1 && related[0].targetType === 'account' &&
+          related[0].targetId === details.accountId && Math.abs(related[0].delta) === amount;
+        break;
+      }
+      case 'salary_receipt': {
+        const details = requireOperationDetails(validOperation, ['accountId']);
+        valid = exactSingle('account', amount, details.accountId);
+        break;
+      }
+      case 'additional_income': {
+        const details = requireOperationDetails(
+          validOperation, ['accountId', 'concept', 'observation']
+        );
+        valid = exactSingle('account', amount, details.accountId);
+        break;
+      }
+      case 'variable_expense': {
+        const details = requireOperationDetails(
+          validOperation,
+          ['accountId', 'categoryId', 'categoryName', 'concept', 'observation']
+        );
+        valid = exactSingle('account', -amount, details.accountId);
+        break;
+      }
+      case 'fixed_expense_payment': {
+        const details = requireOperationDetails(
+          validOperation, ['accountId', 'fixedExpenseInstanceId']
+        );
+        valid = exactSingle('account', -amount, details.accountId);
+        break;
+      }
+      case 'debt_payment': {
+        const details = requireOperationDetails(
+          validOperation, ['accountId', 'debtId', 'concept', 'observation']
+        );
+        valid = related.length === 2 && related.some((movement) => (
+          movement.targetType === 'account' && movement.targetId === details.accountId &&
+          movement.delta === -amount
+        )) && related.some((movement) => (
+          movement.targetType === 'debt' && movement.targetId === details.debtId &&
+          movement.delta === -amount
+        ));
+        break;
+      }
+      case 'debt_total_adjustment': {
+        const details = requireOperationDetails(validOperation, [
+          'debtId', 'previousTotalAmount', 'newTotalAmount',
+          'previousOutstandingAmount', 'newOutstandingAmount', 'validPostedPaymentsTotal',
+        ]);
+        const delta = details.newOutstandingAmount - details.previousOutstandingAmount;
+        valid = Number.isSafeInteger(delta) && delta !== 0 && amount === Math.abs(delta) &&
+          exactSingle('debt', delta, details.debtId);
+        break;
+      }
+      case 'savings_deposit':
+      case 'savings_withdrawal': {
+        const details = requireOperationDetails(
+          validOperation, ['goalId', 'concept', 'observation']
+        );
+        const delta = validOperation.type === 'savings_deposit' ? amount : -amount;
+        valid = exactSingle('savings_goal', delta, details.goalId);
+        break;
+      }
+      case 'transfer': {
+        const details = requireOperationDetails(validOperation, [
+          'sourceType', 'sourceId', 'destinationType', 'destinationId',
+          'concept', 'observation',
+        ]);
+        const distinct = details.sourceType !== details.destinationType ||
+          details.sourceId !== details.destinationId;
+        valid = distinct && related.length === 2 && related.some((movement) => (
+          movement.targetType === details.sourceType && movement.targetId === details.sourceId &&
+          movement.delta === -amount
+        )) && related.some((movement) => (
+          movement.targetType === details.destinationType &&
+          movement.targetId === details.destinationId && movement.delta === amount
+        ));
+        break;
+      }
+      default:
+        valid = false;
+    }
+    if (!valid) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+        'monthly close found an Operation with incompatible Movement cardinality or signs',
+        { operationId: validOperation.id, operationType: validOperation.type, movementCount: related.length }
+      );
+    }
+    return Object.freeze({ operation: validOperation, movements: Object.freeze(related) });
+  }
+
+  function deriveMonthlySummary(input) {
+    const request = requireRecord(input, 'MonthlySummaryInput');
+    requireOnlyFields(
+      request,
+      ['period', 'operations', 'movements', 'fixedExpenseInstances'],
+      'MonthlySummaryInput'
+    );
+    const period = Domain.validatePeriod(request.period);
+    for (const field of ['operations', 'movements', 'fixedExpenseInstances']) {
+      if (!Array.isArray(request[field])) {
+        throw domainError(
+          ERROR_CODES.INVALID_DOMAIN_FIELD,
+          `MonthlySummaryInput.${field} must be an array`,
+          { field }
+        );
+      }
+    }
+    const operations = request.operations
+      .map(Domain.validateOperation)
+      .filter((operation) => operation.periodId === period.id);
+    const operationIds = new Set(operations.map((operation) => operation.id));
+    const movements = request.movements
+      .map(Domain.validateMovement)
+      .filter((movement) => movement.periodId === period.id);
+    const orphan = movements.find((movement) => !operationIds.has(movement.operationId));
+    if (orphan) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+        'monthly close found a Movement without an Operation in the same Period',
+        { movementId: orphan.id, operationId: orphan.operationId, periodId: period.id }
+      );
+    }
+    const instances = request.fixedExpenseInstances
+      .map(Domain.validateFixedExpenseInstance)
+      .filter((instance) => instance.periodId === period.id);
+    const postedSalaryIds = [];
+    const postedFixedPayments = new Map();
+    const totals = {
+      receivedSalaryAmount: 0,
+      additionalIncomeAmount: 0,
+      fixedExpensePaidAmount: 0,
+      variableExpenseAmount: 0,
+      debtPaymentAmount: 0,
+      netSavingsAmount: 0,
+    };
+    for (const operation of operations) {
+      const related = movements.filter((movement) => movement.operationId === operation.id);
+      const validated = validateMonthlyOperationShape(operation, related);
+      if (validated.operation.status !== 'posted') continue;
+      switch (validated.operation.type) {
+        case 'salary_receipt':
+          postedSalaryIds.push(validated.operation.id);
+          totals.receivedSalaryAmount = checkedMonthlyTotal(
+            totals.receivedSalaryAmount, validated.operation.amount, 'receivedSalaryAmount'
+          );
+          break;
+        case 'additional_income':
+          totals.additionalIncomeAmount = checkedMonthlyTotal(
+            totals.additionalIncomeAmount, validated.operation.amount, 'additionalIncomeAmount'
+          );
+          break;
+        case 'variable_expense':
+          totals.variableExpenseAmount = checkedMonthlyTotal(
+            totals.variableExpenseAmount, validated.operation.amount, 'variableExpenseAmount'
+          );
+          break;
+        case 'fixed_expense_payment': {
+          const details = validated.operation.details;
+          if (postedFixedPayments.has(details.fixedExpenseInstanceId)) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'monthly close found more than one posted payment for a FixedExpenseInstance',
+              {
+                fixedExpenseInstanceId: details.fixedExpenseInstanceId,
+                operationIds: [postedFixedPayments.get(details.fixedExpenseInstanceId), validated.operation.id],
+              }
+            );
+          }
+          postedFixedPayments.set(details.fixedExpenseInstanceId, validated.operation.id);
+          totals.fixedExpensePaidAmount = checkedMonthlyTotal(
+            totals.fixedExpensePaidAmount, validated.operation.amount, 'fixedExpensePaidAmount'
+          );
+          break;
+        }
+        case 'debt_payment':
+          totals.debtPaymentAmount = checkedMonthlyTotal(
+            totals.debtPaymentAmount, validated.operation.amount, 'debtPaymentAmount'
+          );
+          break;
+        case 'savings_deposit':
+          totals.netSavingsAmount = checkedMonthlyTotal(
+            totals.netSavingsAmount, validated.operation.amount, 'netSavingsAmount'
+          );
+          break;
+        case 'savings_withdrawal':
+          totals.netSavingsAmount = checkedMonthlyTotal(
+            totals.netSavingsAmount, -validated.operation.amount, 'netSavingsAmount'
+          );
+          break;
+        case 'transfer': {
+          const details = validated.operation.details;
+          const delta = details.sourceType === 'account' && details.destinationType === 'savings_goal'
+            ? validated.operation.amount
+            : details.sourceType === 'savings_goal' && details.destinationType === 'account'
+              ? -validated.operation.amount
+              : 0;
+          totals.netSavingsAmount = checkedMonthlyTotal(
+            totals.netSavingsAmount, delta, 'netSavingsAmount'
+          );
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    if (postedSalaryIds.length > 1) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_STATE_INVALID,
+        'monthly close found more than one posted salary receipt',
+        { periodId: period.id, operationIds: postedSalaryIds }
+      );
+    }
+    let fixedExpensePlannedAmount = 0;
+    let fixedExpenseUnpaidAmount = 0;
+    for (const instance of instances) {
+      fixedExpensePlannedAmount = checkedMonthlyTotal(
+        fixedExpensePlannedAmount, instance.plannedAmount, 'fixedExpensePlannedAmount'
+      );
+      const postedPaymentId = postedFixedPayments.get(instance.id) || null;
+      if (
+        (instance.status === 'paid' && instance.activePaymentOperationId !== postedPaymentId) ||
+        (instance.status !== 'paid' && (
+          instance.activePaymentOperationId !== null || postedPaymentId !== null
+        ))
+      ) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'FixedExpenseInstance state does not match its posted payment at monthly close',
+          { instanceId: instance.id, status: instance.status, postedPaymentId }
+        );
+      }
+      if (instance.status !== 'paid') {
+        fixedExpenseUnpaidAmount = checkedMonthlyTotal(
+          fixedExpenseUnpaidAmount, instance.plannedAmount, 'fixedExpenseUnpaidAmount'
+        );
+      }
+    }
+    const totalIncomeAmount = checkedMonthlyTotal(
+      totals.receivedSalaryAmount, totals.additionalIncomeAmount, 'totalIncomeAmount'
+    );
+    let availableAmount = totalIncomeAmount;
+    for (const amount of [
+      -totals.fixedExpensePaidAmount,
+      -totals.variableExpenseAmount,
+      -totals.debtPaymentAmount,
+      -totals.netSavingsAmount,
+    ]) {
+      availableAmount = checkedMonthlyTotal(availableAmount, amount, 'availableAmount');
+    }
+    const summary = {
+      periodId: period.id,
+      periodKey: period.periodKey,
+      plannedSalaryAmount: period.plannedSalaryAmount,
+      receivedSalaryAmount: totals.receivedSalaryAmount,
+      additionalIncomeAmount: totals.additionalIncomeAmount,
+      totalIncomeAmount,
+      variableExpenseBudgetAmount: period.variableExpenseBudgetAmount,
+      fixedExpensePlannedAmount,
+      fixedExpensePaidAmount: totals.fixedExpensePaidAmount,
+      fixedExpenseUnpaidAmount,
+      variableExpenseAmount: totals.variableExpenseAmount,
+      debtPaymentAmount: totals.debtPaymentAmount,
+      plannedSavingsAmount: period.plannedSavingsAmount,
+      netSavingsAmount: totals.netSavingsAmount,
+      availableAmount,
+    };
+    if (!MONTHLY_SUMMARY_FIELDS.every((field) => hasOwn(summary, field))) {
+      throw domainError(ERROR_CODES.INVALID_DOMAIN_RECORD, 'monthly summary is incomplete');
+    }
+    return immutableJsonCopy(summary);
+  }
+
+  function revisionExpectationList(value, name, idField, typeField) {
+    if (!Array.isArray(value)) {
+      throw domainError(
+        ERROR_CODES.INVALID_DOMAIN_FIELD,
+        `${name} must be an array`,
+        { field: name }
+      );
+    }
+    const seen = new Set();
+    return Object.freeze(value.map((item, index) => {
+      const record = requireRecord(item, `${name}[${index}]`);
+      const fields = typeField
+        ? [typeField, idField, 'expectedRevision']
+        : [idField, 'expectedRevision'];
+      requireOnlyFields(record, fields, `${name}[${index}]`);
+      if (typeField && !hasOwn(TARGET_STORE_NAMES, record[typeField])) {
+        throw domainError(
+          ERROR_CODES.INVALID_DOMAIN_FIELD,
+          `${name}[${index}].${typeField} is unsupported`,
+          { field: `${name}[${index}].${typeField}`, value: record[typeField] }
+        );
+      }
+      assertUuid(record[idField], { field: `${name}[${index}].${idField}` });
+      assertRevision(record.expectedRevision, {
+        field: `${name}[${index}].expectedRevision`,
+      });
+      const key = typeField ? `${record[typeField]}:${record[idField]}` : record[idField];
+      if (seen.has(key)) {
+        throw domainError(
+          ERROR_CODES.INVALID_DOMAIN_FIELD,
+          `${name} contains a duplicate expectation`,
+          { field: name, key }
+        );
+      }
+      seen.add(key);
+      return Object.freeze({ ...record });
+    }));
+  }
+
+  function assertExactExpectedRevisions(actual, expected, options) {
+    const actualMap = new Map(actual.map((record) => [options.actualKey(record), record]));
+    const expectedMap = new Map(expected.map((record) => [options.expectedKey(record), record]));
+    const actualKeys = [...actualMap.keys()].sort();
+    const expectedKeys = [...expectedMap.keys()].sort();
+    if (!sameJsonValue(actualKeys, expectedKeys)) {
+      throw domainError(
+        ERROR_CODES.REVISION_CONFLICT,
+        `${options.name} expectations do not match the records participating in monthly close`,
+        { expectedKeys, actualKeys }
+      );
+    }
+    for (const [key, expectation] of expectedMap) {
+      assertExpectedRevision(actualMap.get(key).revision, expectation.expectedRevision, {
+        entityType: options.name,
+        entityId: key,
+      });
+    }
+  }
+
+  function targetDefinition(targetType) {
+    const policy = FINANCIAL_TARGET_POLICIES[targetType];
+    if (!policy) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+        'monthly close found an unsupported financial target',
+        { targetType }
+      );
+    }
+    return policy;
+  }
+
+  function reconcileMonthlyBalances(options) {
+    const entities = options.entities;
+    const operations = new Map(options.operations.map((operation) => [operation.id, operation]));
+    const entityMaps = new Map();
+    for (const [targetType, records] of Object.entries(entities)) {
+      entityMaps.set(targetType, new Map(records.map((record) => [record.id, record])));
+    }
+    const globalDeltas = new Map();
+    const periodDeltas = new Map();
+    for (const rawMovement of options.movements) {
+      const movement = Domain.validateMovement(rawMovement);
+      const operation = operations.get(movement.operationId);
+      if (!operation || operation.status !== movement.status) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'monthly close found a Movement with a missing or incompatible Operation',
+          { movementId: movement.id, operationId: movement.operationId }
+        );
+      }
+      const targets = entityMaps.get(movement.targetType);
+      if (!targets || !targets.has(movement.targetId)) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'monthly close found a Movement with a missing financial target',
+          { movementId: movement.id, targetType: movement.targetType, targetId: movement.targetId }
+        );
+      }
+      if (movement.status !== 'posted') continue;
+      const key = financialTargetKey(movement.targetType, movement.targetId);
+      globalDeltas.set(
+        key,
+        checkedMonthlyTotal(globalDeltas.get(key) || 0, movement.delta, 'entityMovementDelta')
+      );
+      if (movement.periodId === options.periodId) {
+        periodDeltas.set(
+          key,
+          checkedMonthlyTotal(periodDeltas.get(key) || 0, movement.delta, 'periodMovementDelta')
+        );
+      }
+    }
+    for (const [targetType, records] of Object.entries(entities)) {
+      const policy = targetDefinition(targetType);
+      for (const entity of records) {
+        const key = financialTargetKey(targetType, entity.id);
+        const calculated = checkedMonthlyTotal(
+          entity[policy.openingField], globalDeltas.get(key) || 0, 'entityBalance'
+        );
+        if (calculated !== entity[policy.balanceField]) {
+          throw domainError(
+            ERROR_CODES.DOMAIN_STATE_INVALID,
+            'cached financial entity balance is not reconciliable at monthly close',
+            {
+              targetType,
+              targetId: entity.id,
+              openingAmount: entity[policy.openingField],
+              movementDelta: globalDeltas.get(key) || 0,
+              calculated,
+              cached: entity[policy.balanceField],
+            }
+          );
+        }
+      }
+    }
+    const openingMap = new Map();
+    const openingBalances = {};
+    const closingBalances = {};
+    for (const rawOpening of options.periodOpenings) {
+      const opening = Domain.validatePeriodOpening(rawOpening);
+      if (opening.periodId !== options.periodId) continue;
+      const key = financialTargetKey(opening.targetType, opening.targetId);
+      if (openingMap.has(key)) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'monthly close found duplicate PeriodOpening records',
+          { periodId: options.periodId, targetType: opening.targetType, targetId: opening.targetId }
+        );
+      }
+      const targets = entityMaps.get(opening.targetType);
+      const entity = targets && targets.get(opening.targetId);
+      if (!entity) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'monthly close found a PeriodOpening with no financial entity',
+          { openingId: opening.id, targetType: opening.targetType, targetId: opening.targetId }
+        );
+      }
+      const policy = targetDefinition(opening.targetType);
+      const calculated = checkedMonthlyTotal(
+        opening.openingAmount, periodDeltas.get(key) || 0, 'periodClosingBalance'
+      );
+      if (calculated !== entity[policy.balanceField]) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'PeriodOpening plus posted Period Movements does not match the closing balance',
+          {
+            periodId: options.periodId,
+            targetType: opening.targetType,
+            targetId: opening.targetId,
+            openingAmount: opening.openingAmount,
+            movementDelta: periodDeltas.get(key) || 0,
+            calculated,
+            cached: entity[policy.balanceField],
+          }
+        );
+      }
+      openingMap.set(key, opening);
+      openingBalances[key] = opening.openingAmount;
+      closingBalances[key] = calculated;
+    }
+    for (const [targetType, records] of Object.entries(entities)) {
+      for (const entity of records) {
+        const key = financialTargetKey(targetType, entity.id);
+        const hasCurrentMovement = periodDeltas.has(key);
+        if (hasCurrentMovement && !openingMap.has(key)) {
+          throw domainError(
+            ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+            'a financial target used in the Period has no PeriodOpening',
+            { periodId: options.periodId, targetType, targetId: entity.id }
+          );
+        }
+      }
+    }
+    return Object.freeze({
+      openingBalances: immutableJsonCopy(openingBalances),
+      closingBalances: immutableJsonCopy(closingBalances),
+    });
+  }
+
   async function applyPreparedWrites(transaction, writes) {
     for (const write of writes || []) {
       await transaction.put(write.storeName, write.value);
@@ -899,6 +1501,7 @@
     const runtime = settings.runtime;
     const now = settings.now;
     const createUuid = settings.createUuid;
+    const sha256 = settings.sha256;
     if (!runtime || typeof runtime.executeCommand !== 'function') {
       throw domainError(
         ERROR_CODES.INVALID_DOMAIN_FIELD,
@@ -5006,10 +5609,427 @@
       });
     }
 
+    function monthlyCloseRequest(input) {
+      const request = requireRecord(input, 'period.close-and-open-next');
+      const fields = [
+        'expectedDataRevision',
+        'expectedWriterEpoch',
+        'periodId',
+        'expectedPeriodRevision',
+        'expectedSettingsRevision',
+        'entityRevisions',
+        'activeTemplateRevisions',
+        'currentInstanceRevisions',
+      ];
+      validateCommandHeader(request, 'period.close-and-open-next', fields);
+      assertRevision(request.expectedPeriodRevision, { field: 'expectedPeriodRevision' });
+      assertRevision(request.expectedSettingsRevision, { field: 'expectedSettingsRevision' });
+      return Object.freeze({
+        ...request,
+        entityRevisions: revisionExpectationList(
+          request.entityRevisions, 'entityRevisions', 'targetId', 'targetType'
+        ),
+        activeTemplateRevisions: revisionExpectationList(
+          request.activeTemplateRevisions,
+          'activeTemplateRevisions',
+          'templateId'
+        ),
+        currentInstanceRevisions: revisionExpectationList(
+          request.currentInstanceRevisions,
+          'currentInstanceRevisions',
+          'instanceId'
+        ),
+      });
+    }
+
+    async function closeAndOpenNext(input) {
+      const request = monthlyCloseRequest(input);
+      const occurredAt = canonicalTimestamp(now);
+      const generatedIds = new Set();
+      const snapshotId = createIdentifier(createUuid, 'periodSnapshot.id', generatedIds);
+      const nextPeriodId = createIdentifier(createUuid, 'nextPeriod.id', generatedIds);
+      const activeTemplateInstanceIds = new Map(request.activeTemplateRevisions.map((expectation) => [
+        expectation.templateId,
+        createIdentifier(createUuid, 'nextFixedExpenseInstance.id', generatedIds),
+      ]));
+      const scopes = [
+        Domain.domainScope('financial_settings', 'current'),
+        Domain.domainScope('period', request.periodId),
+        Domain.domainScope('period', nextPeriodId),
+        ...request.entityRevisions.map((expectation) => (
+          Domain.domainScope(expectation.targetType, expectation.targetId)
+        )),
+        ...request.activeTemplateRevisions.map((expectation) => (
+          Domain.domainScope('fixed_expense_template', expectation.templateId)
+        )),
+        ...request.currentInstanceRevisions.map((expectation) => (
+          Domain.domainScope('fixed_expense_instance', expectation.instanceId)
+        )),
+        ...[...activeTemplateInstanceIds.values()].map((instanceId) => (
+          Domain.domainScope('fixed_expense_instance', instanceId)
+        )),
+      ];
+      return runtime.executeCommand({
+        commandType: 'period.close-and-open-next',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: MONTHLY_CLOSE_STORES,
+        affectedScopes: Object.freeze([...new Set(scopes)]),
+        runtimePatch: { activePeriodId: nextPeriodId },
+        intent: true,
+        metadata: {
+          periodId: request.periodId,
+          nextPeriodId,
+          snapshotId,
+        },
+        execute: async (transaction, context) => {
+          const settingsRecord = await transaction.get('financialSettings', 'current');
+          if (settingsRecord === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'monthly close requires completed financial settings',
+              { periodId: request.periodId }
+            );
+          }
+          const financialSettings = Domain.validateFinancialSettings(settingsRecord);
+          assertExpectedRevision(
+            financialSettings.revision,
+            request.expectedSettingsRevision,
+            { entityType: 'FinancialSettings', entityId: 'current' }
+          );
+
+          const rawPeriods = await transaction.getAll('periods');
+          const periods = rawPeriods.map(Domain.validatePeriod);
+          const periodRecord = periods.find((period) => period.id === request.periodId);
+          const period = requireActiveOpenPeriod(
+            periodRecord, context, request.periodId, 'period.close-and-open-next'
+          );
+          assertExpectedRevision(period.revision, request.expectedPeriodRevision, {
+            entityType: 'Period', entityId: period.id,
+          });
+          const openPeriods = periods.filter((candidate) => candidate.status === 'open');
+          if (openPeriods.length !== 1 || openPeriods[0].id !== period.id) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'monthly close requires exactly one active open Period',
+              { openPeriodIds: openPeriods.map((candidate) => candidate.id) }
+            );
+          }
+          const nextPeriodKey = nextPeriod(period.periodKey);
+          if (
+            periods.some((candidate) => (
+              candidate.id === nextPeriodId || candidate.periodKey === nextPeriodKey
+            ))
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the next Period already exists',
+              { nextPeriodId, nextPeriodKey }
+            );
+          }
+
+          const rawAccounts = await transaction.getAll('accounts');
+          const rawGoals = await transaction.getAll('savingsGoals');
+          const rawDebts = await transaction.getAll('debts');
+          const accounts = rawAccounts.map(Domain.validateAccount);
+          const goals = rawGoals.map(Domain.validateSavingsGoal);
+          const debts = rawDebts.map(Domain.validateDebt);
+          const allEntities = [
+            ...accounts.map((entity) => ({ ...entity, targetType: 'account' })),
+            ...goals.map((entity) => ({ ...entity, targetType: 'savings_goal' })),
+            ...debts.map((entity) => ({ ...entity, targetType: 'debt' })),
+          ];
+          assertExactExpectedRevisions(allEntities, request.entityRevisions, {
+            name: 'FinancialEntity',
+            actualKey: (record) => financialTargetKey(record.targetType, record.id),
+            expectedKey: (record) => financialTargetKey(record.targetType, record.targetId),
+          });
+
+          const rawTemplates = await transaction.getAll('fixedExpenseTemplates');
+          const templates = rawTemplates.map(Domain.validateFixedExpenseTemplate);
+          const activeTemplates = templates.filter((template) => template.status === 'active');
+          const categories = (await transaction.getAll('categories')).map(Domain.validateCategory);
+          assertExactExpectedRevisions(activeTemplates, request.activeTemplateRevisions, {
+            name: 'FixedExpenseTemplate',
+            actualKey: (record) => record.id,
+            expectedKey: (record) => record.templateId,
+          });
+
+          const rawInstances = await transaction.getAll('fixedExpenseInstances');
+          const instances = rawInstances.map(Domain.validateFixedExpenseInstance);
+          const currentInstances = instances.filter((instance) => instance.periodId === period.id);
+          assertExactExpectedRevisions(currentInstances, request.currentInstanceRevisions, {
+            name: 'FixedExpenseInstance',
+            actualKey: (record) => record.id,
+            expectedKey: (record) => record.instanceId,
+          });
+          if (currentInstances.some((instance) => instance.status === 'unpaid')) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'an open Period cannot already contain an unpaid FixedExpenseInstance',
+              { periodId: period.id }
+            );
+          }
+          const templateIds = new Set(templates.map((template) => template.id));
+          const missingTemplateInstance = currentInstances.find(
+            (instance) => !templateIds.has(instance.templateId)
+          );
+          if (missingTemplateInstance) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'monthly close found a FixedExpenseInstance without its Template',
+              {
+                instanceId: missingTemplateInstance.id,
+                templateId: missingTemplateInstance.templateId,
+              }
+            );
+          }
+
+          const operations = (await transaction.getAll('operations')).map(Domain.validateOperation);
+          const movements = (await transaction.getAll('movements')).map(Domain.validateMovement);
+          const periodOpenings = (await transaction.getAll('periodOpenings'))
+            .map(Domain.validatePeriodOpening);
+          const existingSnapshots = await transaction.getAll('periodSnapshots');
+          if (
+            period.snapshotId !== null ||
+            existingSnapshots.some((snapshot) => (
+              snapshot.id === snapshotId || snapshot.periodId === period.id
+            ))
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the Period already has a confirmed or conflicting close snapshot',
+              { periodId: period.id, snapshotId: period.snapshotId }
+            );
+          }
+
+          const summary = deriveMonthlySummary({
+            period,
+            operations,
+            movements,
+            fixedExpenseInstances: currentInstances,
+          });
+          if (period.plannedSalaryAmount > 0 && summary.receivedSalaryAmount === 0) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'a positive planned salary must be received before monthly close',
+              { periodId: period.id, plannedSalaryAmount: period.plannedSalaryAmount }
+            );
+          }
+
+          const reconciled = reconcileMonthlyBalances({
+            periodId: period.id,
+            entities: {
+              account: accounts,
+              savings_goal: goals,
+              debt: debts,
+            },
+            operations,
+            movements,
+            periodOpenings,
+          });
+
+          const closedPeriod = Domain.validatePeriod({
+            ...period,
+            status: 'closed',
+            closedAt: occurredAt,
+            snapshotId,
+            revision: nextRevision(period.revision),
+          });
+          const nextPeriodRecord = Domain.validatePeriod({
+            id: nextPeriodId,
+            periodKey: nextPeriodKey,
+            status: 'open',
+            plannedSalaryAmount: financialSettings.salaryReferenceAmount,
+            variableExpenseBudgetAmount: 0,
+            plannedSavingsAmount: 0,
+            openedAt: occurredAt,
+            closedAt: null,
+            snapshotId: null,
+            revision: 1,
+          });
+
+          const finalizedInstances = currentInstances.map((instance) => (
+            instance.status === 'pending'
+              ? Domain.validateFixedExpenseInstance({
+                ...instance,
+                status: 'unpaid',
+                revision: nextRevision(instance.revision),
+                updatedAt: occurredAt,
+              })
+              : instance
+          ));
+          const continuingTargets = [
+            ...accounts.filter((account) => account.status === 'active').map((account) => ({
+              targetType: 'account', targetId: account.id, openingAmount: account.currentBalance,
+            })),
+            ...goals.filter((goal) => goal.lifecycleStatus === 'active').map((goal) => ({
+              targetType: 'savings_goal', targetId: goal.id, openingAmount: goal.currentBalance,
+            })),
+            ...debts.filter((debt) => (
+              debt.lifecycleStatus === 'active' && debt.outstandingAmount > 0
+            )).map((debt) => ({
+              targetType: 'debt', targetId: debt.id, openingAmount: debt.outstandingAmount,
+            })),
+          ];
+          for (const target of continuingTargets) {
+            const key = financialTargetKey(target.targetType, target.targetId);
+            if (!hasOwn(reconciled.closingBalances, key)) {
+              throw domainError(
+                ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+                'a continuing financial target has no PeriodOpening in the closing Period',
+                {
+                  periodId: period.id,
+                  targetType: target.targetType,
+                  targetId: target.targetId,
+                }
+              );
+            }
+          }
+          const nextOpenings = continuingTargets.map((target) => Domain.validatePeriodOpening({
+            id: createIdentifier(createUuid, 'nextPeriodOpening.id', generatedIds),
+            periodId: nextPeriodId,
+            ...target,
+          }));
+          const nextInstances = activeTemplates.map((template) => Domain.validateFixedExpenseInstance({
+            id: activeTemplateInstanceIds.get(template.id),
+            periodId: nextPeriodId,
+            templateId: template.id,
+            nameSnapshot: template.name,
+            plannedAmount: template.referenceAmount,
+            status: 'pending',
+            activePaymentOperationId: null,
+            revision: 1,
+            createdAt: occurredAt,
+            updatedAt: occurredAt,
+          }));
+
+          const currentAuditEvents = (await transaction.getAll('auditEvents'))
+            .filter((event) => event.periodId === period.id)
+            .map(Domain.validateAuditEvent);
+          const closeAudit = stateChangedAuditEvent({
+            id: createIdentifier(createUuid, 'auditEvent.periodClose.id', generatedIds),
+            periodId: period.id,
+            subjectType: 'period',
+            subjectId: period.id,
+            action: 'closed',
+            commandType: 'period.close-and-open-next',
+            previousValue: period,
+            nextValue: closedPeriod,
+            occurredAt,
+          });
+          const finalizedInstanceAudits = finalizedInstances
+            .filter((instance, index) => instance !== currentInstances[index])
+            .map((instance) => {
+              const previousValue = currentInstances.find((current) => current.id === instance.id);
+              return updatedAuditEvent({
+                id: createIdentifier(createUuid, 'auditEvent.fixedInstanceUnpaid.id', generatedIds),
+                periodId: period.id,
+                subjectType: 'fixed_expense_instance',
+                subjectId: instance.id,
+                commandType: 'period.close-and-open-next',
+                previousValue,
+                nextValue: instance,
+                occurredAt,
+              });
+            });
+          const nextPeriodAudit = createdAuditEvent({
+            id: createIdentifier(createUuid, 'auditEvent.nextPeriod.id', generatedIds),
+            periodId: nextPeriodId,
+            subjectType: 'period',
+            subjectId: nextPeriodId,
+            commandType: 'period.close-and-open-next',
+            nextValue: nextPeriodRecord,
+            occurredAt,
+          });
+          const nextInstanceAudits = nextInstances.map((instance) => createdAuditEvent({
+            id: createIdentifier(createUuid, 'auditEvent.nextFixedInstance.id', generatedIds),
+            periodId: nextPeriodId,
+            subjectType: 'fixed_expense_instance',
+            subjectId: instance.id,
+            commandType: 'period.close-and-open-next',
+            nextValue: instance,
+            occurredAt,
+          }));
+
+          const periodOperations = operations.filter((operation) => operation.periodId === period.id);
+          const periodMovements = movements.filter((movement) => movement.periodId === period.id);
+          const currentPeriodOpenings = periodOpenings.filter((opening) => opening.periodId === period.id);
+          const snapshotPayload = immutableJsonCopy({
+            id: snapshotId,
+            periodId: period.id,
+            periodKey: period.periodKey,
+            schemaVersion: '1.1.0',
+            snapshotKind: 'canonical',
+            closedAt: occurredAt,
+            data: {
+              periodPlan: {
+                plannedSalaryAmount: period.plannedSalaryAmount,
+                variableExpenseBudgetAmount: period.variableExpenseBudgetAmount,
+                plannedSavingsAmount: period.plannedSavingsAmount,
+              },
+              operations: periodOperations,
+              movements: periodMovements,
+              fixedExpenses: finalizedInstances,
+              periodOpenings: currentPeriodOpenings,
+              auditEvents: [...currentAuditEvents, closeAudit, ...finalizedInstanceAudits],
+              entitySnapshots: {
+                accounts,
+                savingsGoals: goals,
+                debts,
+                categories,
+              },
+              openingBalances: reconciled.openingBalances,
+              closingBalances: reconciled.closingBalances,
+              totals: summary,
+              warnings: [],
+            },
+          });
+          const periodSnapshot = immutableJsonCopy({
+            ...snapshotPayload,
+            integrity: {
+              algorithm: 'SHA-256',
+              payloadHash: hashSnapshotPayload(snapshotPayload, sha256),
+            },
+          });
+
+          await transaction.put('periods', closedPeriod);
+          await transaction.add('periodSnapshots', periodSnapshot);
+          for (const instance of finalizedInstances) {
+            const previous = currentInstances.find((current) => current.id === instance.id);
+            if (instance !== previous) await transaction.put('fixedExpenseInstances', instance);
+          }
+          await transaction.add('periods', nextPeriodRecord);
+          for (const opening of nextOpenings) await transaction.add('periodOpenings', opening);
+          for (const instance of nextInstances) await transaction.add('fixedExpenseInstances', instance);
+          await transaction.add('auditEvents', closeAudit);
+          for (const event of finalizedInstanceAudits) await transaction.add('auditEvents', event);
+          await transaction.add('auditEvents', nextPeriodAudit);
+          for (const event of nextInstanceAudits) await transaction.add('auditEvents', event);
+
+          return immutableJsonCopy({
+            summary,
+            closedPeriod,
+            periodSnapshot,
+            nextPeriod: nextPeriodRecord,
+            periodOpenings: nextOpenings,
+            fixedExpenseInstances: nextInstances,
+            finalizedFixedExpenseInstances: finalizedInstances,
+            auditEvents: [
+              closeAudit,
+              ...finalizedInstanceAudits,
+              nextPeriodAudit,
+              ...nextInstanceAudits,
+            ],
+          });
+        },
+      });
+    }
+
     return Object.freeze({
       setup: Object.freeze({ complete }),
       financialSettings: Object.freeze({ updateReferenceSalary }),
-      period: Object.freeze({ updatePlanning }),
+      period: Object.freeze({ updatePlanning, closeAndOpenNext }),
       account: Object.freeze({
         create: createAccount,
         update: updateAccount,
@@ -5129,6 +6149,10 @@
     MULTI_TARGET_CREATE_BASE_STORES,
     MULTI_TARGET_CHANGE_BASE_STORES,
     TARGET_STORE_NAMES,
+    MONTHLY_CLOSE_STORES,
+    MONTHLY_SUMMARY_FIELDS,
+    canonicalJson,
+    deriveMonthlySummary,
     createPeritaDomainCommands,
   });
 });
