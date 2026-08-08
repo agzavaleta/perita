@@ -114,7 +114,7 @@ async function addValidFinancialFixture(storage) {
   await storage.add('accounts', {
     id: 'account-1',
     openingBalance: 100,
-    currentBalance: 150,
+    currentBalance: 50,
     status: 'active',
   });
   await storage.add('savingsGoals', {
@@ -137,6 +137,7 @@ async function addValidFinancialFixture(storage) {
     operationDate: '2026-08-05',
     amount: 30,
     status: 'posted',
+    details: { goalId: 'goal-1', concept: null, observation: null },
   });
   await storage.add('operations', {
     id: 'operation-3',
@@ -145,6 +146,9 @@ async function addValidFinancialFixture(storage) {
     operationDate: '2026-08-05',
     amount: 100,
     status: 'posted',
+    details: {
+      accountId: 'account-1', debtId: 'debt-1', concept: null, observation: null,
+    },
   });
   await addMovement(storage);
   await storage.add('movements', {
@@ -155,6 +159,16 @@ async function addValidFinancialFixture(storage) {
     targetId: 'goal-1',
     effectType: 'asset_balance',
     delta: 30,
+    status: 'posted',
+  });
+  await storage.add('movements', {
+    id: 'movement-3-account',
+    operationId: 'operation-3',
+    periodId: 'period-1',
+    targetType: 'account',
+    targetId: 'account-1',
+    effectType: 'asset_balance',
+    delta: -100,
     status: 'posted',
   });
   await storage.add('movements', {

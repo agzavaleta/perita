@@ -185,6 +185,17 @@
   const FIXED_EXPENSE_PAYMENT_CHANGE_STORES = Object.freeze([
     ...ACCOUNT_OPERATION_CHANGE_STORES, 'fixedExpenseInstances',
   ]);
+  const MULTI_TARGET_CREATE_BASE_STORES = Object.freeze([
+    'periods', 'operations', 'movements',
+  ]);
+  const MULTI_TARGET_CHANGE_BASE_STORES = Object.freeze([
+    ...MULTI_TARGET_CREATE_BASE_STORES, 'operationRevisions',
+  ]);
+  const TARGET_STORE_NAMES = Object.freeze({
+    account: 'accounts',
+    savings_goal: 'savingsGoals',
+    debt: 'debts',
+  });
 
   function domainError(code, message, context, cause) {
     return new Domain.DomainError(code, message, context, cause);
@@ -305,7 +316,7 @@
     return Object.freeze([...new Set(scopes)]);
   }
 
-  function requireFinancialTarget(targetType, value, targetId, expectedRevision) {
+  function requireFinancialTarget(targetType, value, targetId, expectedRevision, options) {
     const policy = FINANCIAL_TARGET_POLICIES[targetType];
     if (!policy) {
       throw domainError(
@@ -322,7 +333,11 @@
       );
     }
     const entity = policy.validate(value);
-    if (entity.id !== targetId || entity[policy.statusField] !== policy.activeStatus) {
+    const allowInactive = options && options.allowInactive === true;
+    if (
+      entity.id !== targetId ||
+      (!allowInactive && entity[policy.statusField] !== policy.activeStatus)
+    ) {
       throw domainError(
         ERROR_CODES.DOMAIN_STATE_INVALID,
         'the financial movement target must exist and be active',
@@ -338,7 +353,7 @@
       entityType: targetType,
       entityId: targetId,
     });
-    return Object.freeze({ entity, policy });
+    return Object.freeze({ entity, policy, targetType });
   }
 
   function checkedBalanceDelta(balance, delta, context) {
@@ -384,12 +399,93 @@
       });
     }
     if (simulated === target.entity[balanceField]) return target.entity;
+    const derived = {};
+    if (target.targetType === 'savings_goal') {
+      derived.progressStatus = simulated >= target.entity.targetAmount
+        ? 'completed'
+        : 'in_progress';
+    }
+    if (target.targetType === 'debt') {
+      derived.paymentStatus = simulated === 0
+        ? 'paid'
+        : target.entity.dueDate !== null && target.entity.dueDate < context.currentCivilDate
+          ? 'overdue'
+          : 'active';
+    }
     return target.policy.validate({
       ...target.entity,
       [balanceField]: simulated,
+      ...derived,
       revision: nextRevision(target.entity.revision),
       updatedAt: context.occurredAt,
     });
+  }
+
+  function financialTargetKey(targetType, targetId) {
+    return `${targetType}:${targetId}`;
+  }
+
+  function multiTargetScopes(periodId, declarations) {
+    return Object.freeze([
+      Domain.domainScope('period', periodId),
+      ...new Set(declarations.map((target) => (
+        Domain.domainScope(target.targetType, target.targetId)
+      ))),
+    ]);
+  }
+
+  function multiTargetStores(change, declarations) {
+    const stores = change ? MULTI_TARGET_CHANGE_BASE_STORES : MULTI_TARGET_CREATE_BASE_STORES;
+    return Object.freeze([
+      ...stores,
+      ...new Set(declarations.map((target) => TARGET_STORE_NAMES[target.targetType])),
+    ]);
+  }
+
+  function mergeTargetDeclarations(declarations) {
+    const merged = new Map();
+    for (const declaration of declarations) {
+      const key = financialTargetKey(declaration.targetType, declaration.targetId);
+      const previous = merged.get(key);
+      if (previous && previous.expectedRevision !== declaration.expectedRevision) {
+        throw domainError(
+          ERROR_CODES.INVALID_DOMAIN_FIELD,
+          'the same financial target must declare one expected revision',
+          {
+            targetType: declaration.targetType,
+            targetId: declaration.targetId,
+            firstExpectedRevision: previous.expectedRevision,
+            nextExpectedRevision: declaration.expectedRevision,
+          }
+        );
+      }
+      merged.set(key, Object.freeze({
+        targetType: declaration.targetType,
+        targetId: declaration.targetId,
+        expectedRevision: declaration.expectedRevision,
+        requireActive: Boolean(
+          declaration.requireActive || (previous && previous.requireActive)
+        ),
+      }));
+    }
+    return Object.freeze([...merged.values()]);
+  }
+
+  function sumMovementDeltas(movements) {
+    const deltas = new Map();
+    for (const movement of movements) {
+      const key = financialTargetKey(movement.targetType, movement.targetId);
+      const next = (deltas.get(key) || 0) + movement.delta;
+      if (!Number.isSafeInteger(next)) {
+        throw domainError(
+          ERROR_CODES.INVALID_DOMAIN_FIELD,
+          'aggregated financial movement delta must remain a safe integer',
+          { targetType: movement.targetType, targetId: movement.targetId }
+        );
+      }
+      deltas.set(key, next);
+    }
+    return deltas;
   }
 
   function balanceAdjustmentDetails(accountId, reason) {
@@ -3546,6 +3642,1370 @@
       });
     }
 
+    function simulateDeclaredTargets(
+      targets, previousMovements, nextMovements, occurredAt, currentCivilDate, operationId
+    ) {
+      const previousDeltas = sumMovementDeltas(previousMovements || []);
+      const nextDeltas = sumMovementDeltas(nextMovements || []);
+      const updates = new Map();
+      for (const [key, target] of targets) {
+        const previousDelta = previousDeltas.has(key) ? previousDeltas.get(key) : null;
+        const nextDelta = nextDeltas.has(key) ? nextDeltas.get(key) : null;
+        if (previousDelta === null && nextDelta === null) continue;
+        const entity = simulateTargetChange(target, previousDelta, nextDelta, {
+          operationId,
+          targetType: target.targetType,
+          targetId: target.entity.id,
+          occurredAt,
+          currentCivilDate,
+          allowCurrentNegative: target.targetType === 'account',
+        });
+        if (entity !== target.entity) updates.set(key, entity);
+      }
+      return updates;
+    }
+
+    function createFinancialMovements(operation, specs, occurredAt, generatedIds) {
+      return Object.freeze(specs.map((spec) => Domain.validateMovement({
+        id: createIdentifier(createUuid, 'movement.id', generatedIds),
+        operationId: operation.id,
+        periodId: operation.periodId,
+        targetType: spec.targetType,
+        targetId: spec.targetId,
+        effectType: spec.targetType === 'debt' ? 'debt_outstanding' : 'asset_balance',
+        delta: spec.delta,
+        status: operation.status,
+        createdAt: occurredAt,
+        updatedAt: occurredAt,
+      })));
+    }
+
+    async function executeMultiTargetCreate(options) {
+      const request = options.request;
+      const occurredAt = canonicalTimestamp(now);
+      const currentCivilDate = currentCivilDateFromTimestamp(occurredAt);
+      const generatedIds = new Set();
+      const operation = Domain.validateOperation({
+        id: createIdentifier(createUuid, 'operation.id', generatedIds),
+        periodId: request.periodId,
+        type: options.operationType,
+        operationDate: request.operationDate,
+        amount: options.amount,
+        status: 'posted',
+        revision: 1,
+        createdAt: occurredAt,
+        updatedAt: occurredAt,
+        voidedAt: null,
+        voidReason: null,
+        details: options.details,
+      });
+      const movements = createFinancialMovements(
+        operation, options.movementSpecs, occurredAt, generatedIds
+      );
+      options.validateShape(operation, movements);
+      const declarations = mergeTargetDeclarations(options.declarations);
+      return runtime.executeCommand({
+        commandType: options.commandType,
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: multiTargetStores(false, declarations),
+        affectedScopes: multiTargetScopes(request.periodId, declarations),
+        metadata: {
+          periodId: request.periodId,
+          operationId: operation.id,
+          ...(options.metadata || {}),
+        },
+        execute: async (transaction, context) => {
+          const period = requireActiveOpenPeriod(
+            await transaction.get('periods', request.periodId),
+            context,
+            request.periodId,
+            options.commandType
+          );
+          Domain.assertOperationDateContext(operation, period, currentCivilDate);
+          const targets = new Map();
+          for (const declaration of declarations) {
+            const target = requireFinancialTarget(
+              declaration.targetType,
+              await transaction.get(
+                TARGET_STORE_NAMES[declaration.targetType], declaration.targetId
+              ),
+              declaration.targetId,
+              declaration.expectedRevision,
+              { allowInactive: !declaration.requireActive }
+            );
+            targets.set(
+              financialTargetKey(declaration.targetType, declaration.targetId), target
+            );
+          }
+          const updates = simulateDeclaredTargets(
+            targets, [], movements, occurredAt, currentCivilDate, operation.id
+          );
+          if (await transaction.get('operations', operation.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'generated Operation ID must be unique',
+              { operationId: operation.id }
+            );
+          }
+          for (const movement of movements) {
+            if (await transaction.get('movements', movement.id) !== undefined) {
+              throw domainError(
+                ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+                'generated Movement IDs must be unique',
+                { movementId: movement.id }
+              );
+            }
+          }
+          for (const [key, entity] of updates) {
+            const targetType = key.slice(0, key.indexOf(':'));
+            await transaction.put(TARGET_STORE_NAMES[targetType], entity);
+          }
+          await transaction.add('operations', operation);
+          for (const movement of movements) await transaction.add('movements', movement);
+          return Object.freeze({
+            operation,
+            movements,
+            targets: Object.freeze(Object.fromEntries(updates)),
+          });
+        },
+      });
+    }
+
+    async function executeMultiTargetEdit(options) {
+      const request = options.request;
+      const occurredAt = canonicalTimestamp(now);
+      const currentCivilDate = currentCivilDateFromTimestamp(occurredAt);
+      const revisionId = createIdentifier(createUuid, 'operationRevision.id', new Set());
+      const declarations = mergeTargetDeclarations(options.declarations);
+      return runtime.executeCommand({
+        commandType: options.commandType,
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: multiTargetStores(true, declarations),
+        affectedScopes: multiTargetScopes(request.periodId, declarations),
+        metadata: {
+          periodId: request.periodId,
+          operationId: request.operationId,
+          ...(options.metadata || {}),
+        },
+        execute: async (transaction, context) => {
+          const period = requireActiveOpenPeriod(
+            await transaction.get('periods', request.periodId),
+            context,
+            request.periodId,
+            options.commandType
+          );
+          const stored = await transaction.get('operations', request.operationId);
+          if (stored === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested Operation does not exist',
+              { operationId: request.operationId }
+            );
+          }
+          const previousOperation = Domain.validateOperation(stored);
+          if (
+            previousOperation.periodId !== request.periodId ||
+            previousOperation.type !== options.operationType ||
+            previousOperation.status !== 'posted'
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested posted Operation has an incompatible type or Period',
+              {
+                operationId: request.operationId,
+                operationType: previousOperation.type,
+                status: previousOperation.status,
+              }
+            );
+          }
+          assertExpectedRevision(previousOperation.revision, request.expectedOperationRevision, {
+            entityType: 'Operation', entityId: request.operationId,
+          });
+          const related = (await transaction.getAll('movements'))
+            .filter((movement) => movement.operationId === request.operationId);
+          const previous = options.validatePrevious(previousOperation, related);
+          const next = options.buildNext(previousOperation, previous.details);
+          if (
+            next.operationDate === previousOperation.operationDate &&
+            next.amount === previousOperation.amount &&
+            sameJsonValue(next.details, previous.details)
+          ) {
+            throw domainError(
+              ERROR_CODES.INVALID_DOMAIN_FIELD,
+              `${options.commandType} requires a real change`,
+              { operationId: request.operationId }
+            );
+          }
+          const nextOperation = Domain.validateOperation({
+            ...previousOperation,
+            operationDate: next.operationDate,
+            amount: next.amount,
+            details: next.details,
+            revision: nextRevision(previousOperation.revision),
+            updatedAt: occurredAt,
+          });
+          const nextMovements = Object.freeze(next.movementSpecs.map((spec, index) => (
+            Domain.validateMovement({
+              ...previous.orderedMovements[index],
+              targetType: spec.targetType,
+              targetId: spec.targetId,
+              effectType: spec.targetType === 'debt' ? 'debt_outstanding' : 'asset_balance',
+              delta: spec.delta,
+              updatedAt: occurredAt,
+            })
+          )));
+          options.validateShape(nextOperation, nextMovements);
+          Domain.assertOperationDateContext(nextOperation, period, currentCivilDate);
+          const targets = new Map();
+          for (const declaration of declarations) {
+            const target = requireFinancialTarget(
+              declaration.targetType,
+              await transaction.get(
+                TARGET_STORE_NAMES[declaration.targetType], declaration.targetId
+              ),
+              declaration.targetId,
+              declaration.expectedRevision,
+              { allowInactive: !declaration.requireActive }
+            );
+            targets.set(
+              financialTargetKey(declaration.targetType, declaration.targetId), target
+            );
+          }
+          const updates = simulateDeclaredTargets(
+            targets,
+            previous.orderedMovements,
+            nextMovements,
+            occurredAt,
+            currentCivilDate,
+            request.operationId
+          );
+          const revision = Domain.validateOperationRevision({
+            id: revisionId,
+            operationId: request.operationId,
+            periodId: request.periodId,
+            revisionNumber: previousOperation.revision,
+            changeType: 'edit',
+            previousOperation,
+            previousMovements: previous.orderedMovements,
+            reason: null,
+            createdAt: occurredAt,
+          });
+          assertLogicalRevisionAvailable(
+            await transaction.getAll('operationRevisions'), revision
+          );
+          if (await transaction.get('operationRevisions', revision.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DUPLICATE_OPERATION_REVISION,
+              'the generated OperationRevision ID already exists',
+              { revisionId: revision.id }
+            );
+          }
+          for (const [key, entity] of updates) {
+            const targetType = key.slice(0, key.indexOf(':'));
+            await transaction.put(TARGET_STORE_NAMES[targetType], entity);
+          }
+          await transaction.put('operations', nextOperation);
+          for (const movement of nextMovements) await transaction.put('movements', movement);
+          await transaction.add('operationRevisions', revision);
+          return Object.freeze({
+            operation: nextOperation,
+            movements: nextMovements,
+            operationRevision: revision,
+            targets: Object.freeze(Object.fromEntries(updates)),
+          });
+        },
+      });
+    }
+
+    async function executeMultiTargetVoid(options) {
+      const request = options.request;
+      const occurredAt = canonicalTimestamp(now);
+      const currentCivilDate = currentCivilDateFromTimestamp(occurredAt);
+      const revisionId = createIdentifier(createUuid, 'operationRevision.id', new Set());
+      const declarations = mergeTargetDeclarations(options.declarations);
+      const reason = hasOwn(request, 'reason')
+        ? requireNonEmptyString(request.reason, 'reason')
+        : null;
+      return runtime.executeCommand({
+        commandType: options.commandType,
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: multiTargetStores(true, declarations),
+        affectedScopes: multiTargetScopes(request.periodId, declarations),
+        metadata: {
+          periodId: request.periodId,
+          operationId: request.operationId,
+          ...(options.metadata || {}),
+        },
+        execute: async (transaction, context) => {
+          const period = requireActiveOpenPeriod(
+            await transaction.get('periods', request.periodId),
+            context,
+            request.periodId,
+            options.commandType
+          );
+          const stored = await transaction.get('operations', request.operationId);
+          if (stored === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested Operation does not exist',
+              { operationId: request.operationId }
+            );
+          }
+          const previousOperation = Domain.validateOperation(stored);
+          if (
+            previousOperation.periodId !== request.periodId ||
+            previousOperation.type !== options.operationType ||
+            previousOperation.status !== 'posted'
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested posted Operation has an incompatible type or Period',
+              {
+                operationId: request.operationId,
+                operationType: previousOperation.type,
+                status: previousOperation.status,
+              }
+            );
+          }
+          Domain.assertOperationDateContext(previousOperation, period, currentCivilDate);
+          assertExpectedRevision(previousOperation.revision, request.expectedOperationRevision, {
+            entityType: 'Operation', entityId: request.operationId,
+          });
+          const related = (await transaction.getAll('movements'))
+            .filter((movement) => movement.operationId === request.operationId);
+          const previous = options.validatePrevious(previousOperation, related);
+          const targets = new Map();
+          for (const declaration of declarations) {
+            const target = requireFinancialTarget(
+              declaration.targetType,
+              await transaction.get(
+                TARGET_STORE_NAMES[declaration.targetType], declaration.targetId
+              ),
+              declaration.targetId,
+              declaration.expectedRevision,
+              { allowInactive: !declaration.requireActive }
+            );
+            targets.set(
+              financialTargetKey(declaration.targetType, declaration.targetId), target
+            );
+          }
+          const updates = simulateDeclaredTargets(
+            targets,
+            previous.orderedMovements,
+            [],
+            occurredAt,
+            currentCivilDate,
+            request.operationId
+          );
+          const nextOperation = Domain.validateOperation({
+            ...previousOperation,
+            status: 'voided',
+            voidedAt: occurredAt,
+            voidReason: reason,
+            revision: nextRevision(previousOperation.revision),
+            updatedAt: occurredAt,
+          });
+          const nextMovements = Object.freeze(previous.orderedMovements.map((movement) => (
+            Domain.validateMovement({
+              ...movement,
+              status: 'voided',
+              updatedAt: occurredAt,
+            })
+          )));
+          for (const movement of nextMovements) {
+            Domain.assertMovementMatchesOperation(nextOperation, movement);
+          }
+          const revision = Domain.validateOperationRevision({
+            id: revisionId,
+            operationId: request.operationId,
+            periodId: request.periodId,
+            revisionNumber: previousOperation.revision,
+            changeType: 'void',
+            previousOperation,
+            previousMovements: previous.orderedMovements,
+            reason,
+            createdAt: occurredAt,
+          });
+          assertLogicalRevisionAvailable(
+            await transaction.getAll('operationRevisions'), revision
+          );
+          if (await transaction.get('operationRevisions', revision.id) !== undefined) {
+            throw domainError(
+              ERROR_CODES.DUPLICATE_OPERATION_REVISION,
+              'the generated OperationRevision ID already exists',
+              { revisionId: revision.id }
+            );
+          }
+          for (const [key, entity] of updates) {
+            const targetType = key.slice(0, key.indexOf(':'));
+            await transaction.put(TARGET_STORE_NAMES[targetType], entity);
+          }
+          await transaction.put('operations', nextOperation);
+          for (const movement of nextMovements) await transaction.put('movements', movement);
+          await transaction.add('operationRevisions', revision);
+          return Object.freeze({
+            operation: nextOperation,
+            movements: nextMovements,
+            operationRevision: revision,
+            targets: Object.freeze(Object.fromEntries(updates)),
+          });
+        },
+      });
+    }
+
+    function validateDebtPaymentDetails(operation) {
+      const details = operationDetails(operation, [
+        'accountId', 'debtId', 'concept', 'observation',
+      ]);
+      assertUuid(details.accountId, { field: 'Operation.details.accountId' });
+      assertUuid(details.debtId, { field: 'Operation.details.debtId' });
+      nullableNonEmptyString(details.concept, 'Operation.details.concept');
+      nullableNonEmptyString(details.observation, 'Operation.details.observation');
+      return details;
+    }
+
+    function validateDebtPaymentShape(operation, movements) {
+      const validOperation = Domain.validateOperation(operation);
+      const details = validateDebtPaymentDetails(validOperation);
+      if (validOperation.type !== 'debt_payment' || movements.length !== 2) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'debt payment requires exactly two Movements',
+          { operationId: validOperation.id, movementCount: movements.length }
+        );
+      }
+      const accountMovement = movements.find((movement) => movement.targetType === 'account');
+      const debtMovement = movements.find((movement) => movement.targetType === 'debt');
+      for (const movement of movements) {
+        Domain.assertMovementMatchesOperation(validOperation, movement);
+      }
+      if (
+        !accountMovement || !debtMovement ||
+        accountMovement.targetId !== details.accountId ||
+        debtMovement.targetId !== details.debtId ||
+        accountMovement.delta !== -validOperation.amount ||
+        debtMovement.delta !== -validOperation.amount
+      ) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'debt payment Movements do not match their Account, Debt, and amount',
+          { operationId: validOperation.id }
+        );
+      }
+      return Object.freeze({
+        details,
+        orderedMovements: Object.freeze([accountMovement, debtMovement]),
+      });
+    }
+
+    function debtPaymentCreateRequest(input) {
+      const request = requireRecord(input, 'debt-payment.create');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'accountId', 'expectedAccountRevision', 'debtId', 'expectedDebtRevision',
+        'operationDate', 'amount',
+      ];
+      validateCommandHeader(request, 'debt-payment.create', required, [
+        ...required, 'concept', 'observation',
+      ]);
+      assertUuid(request.accountId, { field: 'accountId' });
+      assertRevision(request.expectedAccountRevision, { field: 'expectedAccountRevision' });
+      assertUuid(request.debtId, { field: 'debtId' });
+      assertRevision(request.expectedDebtRevision, { field: 'expectedDebtRevision' });
+      assertCivilDate(request.operationDate, { field: 'operationDate' });
+      assertPositiveMoney(request.amount, { field: 'amount' });
+      if (hasOwn(request, 'concept')) nullableNonEmptyString(request.concept, 'concept');
+      if (hasOwn(request, 'observation')) nullableNonEmptyString(request.observation, 'observation');
+      return request;
+    }
+
+    async function createDebtPayment(input) {
+      const request = debtPaymentCreateRequest(input);
+      const details = Object.freeze({
+        accountId: request.accountId,
+        debtId: request.debtId,
+        concept: hasOwn(request, 'concept') ? request.concept : null,
+        observation: hasOwn(request, 'observation') ? request.observation : null,
+      });
+      return executeMultiTargetCreate({
+        request,
+        commandType: 'debt-payment.create',
+        operationType: 'debt_payment',
+        amount: request.amount,
+        details,
+        movementSpecs: [
+          { targetType: 'account', targetId: request.accountId, delta: -request.amount },
+          { targetType: 'debt', targetId: request.debtId, delta: -request.amount },
+        ],
+        declarations: [
+          {
+            targetType: 'account', targetId: request.accountId,
+            expectedRevision: request.expectedAccountRevision, requireActive: true,
+          },
+          {
+            targetType: 'debt', targetId: request.debtId,
+            expectedRevision: request.expectedDebtRevision, requireActive: true,
+          },
+        ],
+        validateShape: validateDebtPaymentShape,
+        metadata: { accountId: request.accountId, debtId: request.debtId },
+      });
+    }
+
+    function debtPaymentEditRequest(input) {
+      const request = requireRecord(input, 'debt-payment.edit');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'operationId', 'expectedOperationRevision',
+        'previousAccountId', 'expectedPreviousAccountRevision',
+        'accountId', 'expectedAccountRevision',
+        'debtId', 'expectedDebtRevision',
+      ];
+      validateCommandHeader(request, 'debt-payment.edit', required, [
+        ...required, 'operationDate', 'amount',
+      ]);
+      for (const field of ['operationId', 'previousAccountId', 'accountId', 'debtId']) {
+        assertUuid(request[field], { field });
+      }
+      for (const field of [
+        'expectedOperationRevision', 'expectedPreviousAccountRevision',
+        'expectedAccountRevision', 'expectedDebtRevision',
+      ]) {
+        assertRevision(request[field], { field });
+      }
+      if (hasOwn(request, 'operationDate')) assertCivilDate(request.operationDate, { field: 'operationDate' });
+      if (hasOwn(request, 'amount')) assertPositiveMoney(request.amount, { field: 'amount' });
+      return request;
+    }
+
+    async function editDebtPayment(input) {
+      const request = debtPaymentEditRequest(input);
+      return executeMultiTargetEdit({
+        request,
+        commandType: 'debt-payment.edit',
+        operationType: 'debt_payment',
+        declarations: [
+          {
+            targetType: 'account', targetId: request.previousAccountId,
+            expectedRevision: request.expectedPreviousAccountRevision, requireActive: false,
+          },
+          {
+            targetType: 'account', targetId: request.accountId,
+            expectedRevision: request.expectedAccountRevision, requireActive: true,
+          },
+          {
+            targetType: 'debt', targetId: request.debtId,
+            expectedRevision: request.expectedDebtRevision, requireActive: true,
+          },
+        ],
+        validatePrevious: (operation, movements) => {
+          const previous = validateDebtPaymentShape(operation, movements);
+          if (
+            previous.details.accountId !== request.previousAccountId ||
+            previous.details.debtId !== request.debtId
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'declared previous Account or Debt does not match the payment',
+              { operationId: request.operationId }
+            );
+          }
+          return previous;
+        },
+        buildNext: (operation, details) => {
+          const amount = hasOwn(request, 'amount') ? request.amount : operation.amount;
+          return Object.freeze({
+            operationDate: hasOwn(request, 'operationDate')
+              ? request.operationDate
+              : operation.operationDate,
+            amount,
+            details: Object.freeze({ ...details, accountId: request.accountId }),
+            movementSpecs: [
+              { targetType: 'account', targetId: request.accountId, delta: -amount },
+              { targetType: 'debt', targetId: request.debtId, delta: -amount },
+            ],
+          });
+        },
+        validateShape: validateDebtPaymentShape,
+        metadata: {
+          previousAccountId: request.previousAccountId,
+          accountId: request.accountId,
+          debtId: request.debtId,
+        },
+      });
+    }
+
+    function debtPaymentVoidRequest(input) {
+      const request = requireRecord(input, 'debt-payment.void');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'operationId', 'expectedOperationRevision',
+        'accountId', 'expectedAccountRevision', 'debtId', 'expectedDebtRevision',
+      ];
+      validateCommandHeader(request, 'debt-payment.void', required, [...required, 'reason']);
+      for (const field of ['operationId', 'accountId', 'debtId']) assertUuid(request[field], { field });
+      for (const field of [
+        'expectedOperationRevision', 'expectedAccountRevision', 'expectedDebtRevision',
+      ]) assertRevision(request[field], { field });
+      if (hasOwn(request, 'reason')) requireNonEmptyString(request.reason, 'reason');
+      return request;
+    }
+
+    async function voidDebtPayment(input) {
+      const request = debtPaymentVoidRequest(input);
+      return executeMultiTargetVoid({
+        request,
+        commandType: 'debt-payment.void',
+        operationType: 'debt_payment',
+        declarations: [
+          {
+            targetType: 'account', targetId: request.accountId,
+            expectedRevision: request.expectedAccountRevision, requireActive: false,
+          },
+          {
+            targetType: 'debt', targetId: request.debtId,
+            expectedRevision: request.expectedDebtRevision, requireActive: false,
+          },
+        ],
+        validatePrevious: (operation, movements) => {
+          const previous = validateDebtPaymentShape(operation, movements);
+          if (
+            previous.details.accountId !== request.accountId ||
+            previous.details.debtId !== request.debtId
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'declared Account or Debt does not match the payment',
+              { operationId: request.operationId }
+            );
+          }
+          return previous;
+        },
+        metadata: { accountId: request.accountId, debtId: request.debtId },
+      });
+    }
+
+    async function createDebtTotalAdjustment(input) {
+      const request = requireRecord(input, 'debt-total-adjustment.create');
+      const fields = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'debtId', 'expectedDebtRevision', 'operationDate', 'newTotalAmount',
+      ];
+      validateCommandHeader(request, 'debt-total-adjustment.create', fields);
+      assertUuid(request.debtId, { field: 'debtId' });
+      assertRevision(request.expectedDebtRevision, { field: 'expectedDebtRevision' });
+      assertCivilDate(request.operationDate, { field: 'operationDate' });
+      assertPositiveMoney(request.newTotalAmount, { field: 'newTotalAmount' });
+      const occurredAt = canonicalTimestamp(now);
+      const currentCivilDate = currentCivilDateFromTimestamp(occurredAt);
+      const generatedIds = new Set();
+      const operationId = createIdentifier(createUuid, 'operation.id', generatedIds);
+      const movementId = createIdentifier(createUuid, 'movement.id', generatedIds);
+      const declarations = [{
+        targetType: 'debt', targetId: request.debtId,
+        expectedRevision: request.expectedDebtRevision, requireActive: true,
+      }];
+      return runtime.executeCommand({
+        commandType: 'debt-total-adjustment.create',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: Object.freeze([
+          'periods', 'debts', 'operations', 'movements',
+        ]),
+        affectedScopes: multiTargetScopes(request.periodId, declarations),
+        metadata: { periodId: request.periodId, operationId, debtId: request.debtId },
+        execute: async (transaction, context) => {
+          const period = requireActiveOpenPeriod(
+            await transaction.get('periods', request.periodId),
+            context,
+            request.periodId,
+            'debt-total-adjustment.create'
+          );
+          const target = requireFinancialTarget(
+            'debt',
+            await transaction.get('debts', request.debtId),
+            request.debtId,
+            request.expectedDebtRevision
+          );
+          const debt = target.entity;
+          if (debt.paymentStatus === 'paid') {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'a paid Debt is read-only',
+              { debtId: request.debtId }
+            );
+          }
+          let validPostedPaymentsTotal = 0;
+          const allMovements = await transaction.getAll('movements');
+          for (const storedOperation of await transaction.getAll('operations')) {
+            if (storedOperation.type !== 'debt_payment' || storedOperation.status !== 'posted') continue;
+            const validOperation = Domain.validateOperation(storedOperation);
+            const details = validateDebtPaymentDetails(validOperation);
+            if (details.debtId !== request.debtId) continue;
+            validateDebtPaymentShape(
+              validOperation,
+              allMovements.filter((movement) => movement.operationId === validOperation.id)
+            );
+            validPostedPaymentsTotal += validOperation.amount;
+            if (!Number.isSafeInteger(validPostedPaymentsTotal)) {
+              throw domainError(
+                ERROR_CODES.DEBT_ADJUSTMENT_INVALID,
+                'posted Debt payments total must remain a safe CLP integer',
+                { debtId: request.debtId }
+              );
+            }
+          }
+          if (request.newTotalAmount < validPostedPaymentsTotal) {
+            throw domainError(
+              ERROR_CODES.DEBT_ADJUSTMENT_INVALID,
+              'new Debt total cannot be lower than valid posted payments',
+              {
+                debtId: request.debtId,
+                newTotalAmount: request.newTotalAmount,
+                validPostedPaymentsTotal,
+              }
+            );
+          }
+          const newOutstandingAmount = request.newTotalAmount - validPostedPaymentsTotal;
+          const delta = newOutstandingAmount - debt.outstandingAmount;
+          if (delta === 0) {
+            throw domainError(
+              ERROR_CODES.DEBT_ADJUSTMENT_INVALID,
+              'debt-total-adjustment.create requires a real outstanding change',
+              { debtId: request.debtId, newTotalAmount: request.newTotalAmount }
+            );
+          }
+          const operation = Domain.validateOperation({
+            id: operationId,
+            periodId: request.periodId,
+            type: 'debt_total_adjustment',
+            operationDate: request.operationDate,
+            amount: Math.abs(delta),
+            status: 'posted',
+            revision: 1,
+            createdAt: occurredAt,
+            updatedAt: occurredAt,
+            voidedAt: null,
+            voidReason: null,
+            details: Object.freeze({
+              debtId: request.debtId,
+              previousTotalAmount: debt.totalAmount,
+              newTotalAmount: request.newTotalAmount,
+              previousOutstandingAmount: debt.outstandingAmount,
+              newOutstandingAmount,
+              validPostedPaymentsTotal,
+            }),
+          });
+          const movement = Domain.validateMovement({
+            id: movementId,
+            operationId,
+            periodId: request.periodId,
+            targetType: 'debt',
+            targetId: request.debtId,
+            effectType: 'debt_outstanding',
+            delta,
+            status: 'posted',
+            createdAt: occurredAt,
+            updatedAt: occurredAt,
+          });
+          Domain.assertDebtTotalAdjustment({
+            operation,
+            movements: [movement],
+            period,
+            currentCivilDate,
+            previousOutstandingAmount: debt.outstandingAmount,
+            newOutstandingAmount,
+          });
+          const nextDebt = Domain.validateDebt({
+            ...debt,
+            totalAmount: request.newTotalAmount,
+            outstandingAmount: newOutstandingAmount,
+            paymentStatus: newOutstandingAmount === 0
+              ? 'paid'
+              : debt.dueDate !== null && debt.dueDate < currentCivilDate
+                ? 'overdue'
+                : 'active',
+            revision: nextRevision(debt.revision),
+            updatedAt: occurredAt,
+          });
+          if (
+            await transaction.get('operations', operationId) !== undefined ||
+            await transaction.get('movements', movementId) !== undefined
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'generated financial record IDs must be unique',
+              { operationId, movementId }
+            );
+          }
+          await transaction.put('debts', nextDebt);
+          await transaction.add('operations', operation);
+          await transaction.add('movements', movement);
+          return Object.freeze({
+            operation, movement, debt: nextDebt, validPostedPaymentsTotal,
+          });
+        },
+      });
+    }
+
+    function validateSavingsOperationDetails(operation) {
+      const details = operationDetails(operation, ['goalId', 'concept', 'observation']);
+      assertUuid(details.goalId, { field: 'Operation.details.goalId' });
+      nullableNonEmptyString(details.concept, 'Operation.details.concept');
+      nullableNonEmptyString(details.observation, 'Operation.details.observation');
+      return details;
+    }
+
+    function validateSavingsOperationShape(operationType, deltaSign, operation, movements) {
+      const validOperation = Domain.validateOperation(operation);
+      const details = validateSavingsOperationDetails(validOperation);
+      if (validOperation.type !== operationType || movements.length !== 1) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'savings operation requires exactly one SavingsGoal Movement',
+          { operationId: validOperation.id, movementCount: movements.length }
+        );
+      }
+      const movement = movements[0];
+      Domain.assertMovementMatchesOperation(validOperation, movement);
+      if (
+        movement.targetType !== 'savings_goal' ||
+        movement.targetId !== details.goalId ||
+        movement.delta !== deltaSign * validOperation.amount
+      ) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'savings Movement does not match its Goal, type, and amount',
+          { operationId: validOperation.id }
+        );
+      }
+      return Object.freeze({
+        details,
+        orderedMovements: Object.freeze([movement]),
+      });
+    }
+
+    function savingsCreateRequest(input, commandType) {
+      const request = requireRecord(input, commandType);
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'goalId', 'expectedGoalRevision', 'operationDate', 'amount',
+      ];
+      validateCommandHeader(request, commandType, required, [
+        ...required, 'concept', 'observation',
+      ]);
+      assertUuid(request.goalId, { field: 'goalId' });
+      assertRevision(request.expectedGoalRevision, { field: 'expectedGoalRevision' });
+      assertCivilDate(request.operationDate, { field: 'operationDate' });
+      assertPositiveMoney(request.amount, { field: 'amount' });
+      if (hasOwn(request, 'concept')) nullableNonEmptyString(request.concept, 'concept');
+      if (hasOwn(request, 'observation')) nullableNonEmptyString(request.observation, 'observation');
+      return request;
+    }
+
+    function savingsEditRequest(input, commandType) {
+      const request = requireRecord(input, commandType);
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'operationId', 'expectedOperationRevision', 'goalId', 'expectedGoalRevision',
+      ];
+      validateCommandHeader(request, commandType, required, [
+        ...required, 'operationDate', 'amount', 'concept', 'observation',
+      ]);
+      assertUuid(request.operationId, { field: 'operationId' });
+      assertRevision(request.expectedOperationRevision, { field: 'expectedOperationRevision' });
+      assertUuid(request.goalId, { field: 'goalId' });
+      assertRevision(request.expectedGoalRevision, { field: 'expectedGoalRevision' });
+      if (hasOwn(request, 'operationDate')) assertCivilDate(request.operationDate, { field: 'operationDate' });
+      if (hasOwn(request, 'amount')) assertPositiveMoney(request.amount, { field: 'amount' });
+      if (hasOwn(request, 'concept')) nullableNonEmptyString(request.concept, 'concept');
+      if (hasOwn(request, 'observation')) nullableNonEmptyString(request.observation, 'observation');
+      return request;
+    }
+
+    function savingsVoidRequest(input, commandType) {
+      const request = requireRecord(input, commandType);
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'operationId', 'expectedOperationRevision', 'goalId', 'expectedGoalRevision',
+      ];
+      validateCommandHeader(request, commandType, required, [...required, 'reason']);
+      assertUuid(request.operationId, { field: 'operationId' });
+      assertRevision(request.expectedOperationRevision, { field: 'expectedOperationRevision' });
+      assertUuid(request.goalId, { field: 'goalId' });
+      assertRevision(request.expectedGoalRevision, { field: 'expectedGoalRevision' });
+      if (hasOwn(request, 'reason')) requireNonEmptyString(request.reason, 'reason');
+      return request;
+    }
+
+    function savingsOperationOptions(operationType) {
+      const commandPrefix = operationType === 'savings_deposit'
+        ? 'savings-deposit'
+        : 'savings-withdrawal';
+      const deltaSign = operationType === 'savings_deposit' ? 1 : -1;
+      const validateShape = (operation, movements) => (
+        validateSavingsOperationShape(operationType, deltaSign, operation, movements)
+      );
+      return Object.freeze({ commandPrefix, deltaSign, validateShape });
+    }
+
+    async function createSavingsOperation(input, operationType) {
+      const config = savingsOperationOptions(operationType);
+      const request = savingsCreateRequest(input, `${config.commandPrefix}.create`);
+      const details = Object.freeze({
+        goalId: request.goalId,
+        concept: hasOwn(request, 'concept') ? request.concept : null,
+        observation: hasOwn(request, 'observation') ? request.observation : null,
+      });
+      return executeMultiTargetCreate({
+        request,
+        commandType: `${config.commandPrefix}.create`,
+        operationType,
+        amount: request.amount,
+        details,
+        movementSpecs: [{
+          targetType: 'savings_goal',
+          targetId: request.goalId,
+          delta: config.deltaSign * request.amount,
+        }],
+        declarations: [{
+          targetType: 'savings_goal', targetId: request.goalId,
+          expectedRevision: request.expectedGoalRevision, requireActive: true,
+        }],
+        validateShape: config.validateShape,
+        metadata: { goalId: request.goalId },
+      });
+    }
+
+    async function editSavingsOperation(input, operationType) {
+      const config = savingsOperationOptions(operationType);
+      const request = savingsEditRequest(input, `${config.commandPrefix}.edit`);
+      return executeMultiTargetEdit({
+        request,
+        commandType: `${config.commandPrefix}.edit`,
+        operationType,
+        declarations: [{
+          targetType: 'savings_goal', targetId: request.goalId,
+          expectedRevision: request.expectedGoalRevision, requireActive: true,
+        }],
+        validatePrevious: (operation, movements) => {
+          const previous = config.validateShape(operation, movements);
+          if (previous.details.goalId !== request.goalId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'SavingsGoal cannot be changed while editing this operation',
+              { operationId: request.operationId, goalId: request.goalId }
+            );
+          }
+          return previous;
+        },
+        buildNext: (operation, details) => {
+          const amount = hasOwn(request, 'amount') ? request.amount : operation.amount;
+          const nextDetails = Object.freeze({
+            goalId: details.goalId,
+            concept: hasOwn(request, 'concept') ? request.concept : details.concept,
+            observation: hasOwn(request, 'observation')
+              ? request.observation
+              : details.observation,
+          });
+          return Object.freeze({
+            operationDate: hasOwn(request, 'operationDate')
+              ? request.operationDate
+              : operation.operationDate,
+            amount,
+            details: nextDetails,
+            movementSpecs: [{
+              targetType: 'savings_goal',
+              targetId: request.goalId,
+              delta: config.deltaSign * amount,
+            }],
+          });
+        },
+        validateShape: config.validateShape,
+        metadata: { goalId: request.goalId },
+      });
+    }
+
+    async function voidSavingsOperation(input, operationType) {
+      const config = savingsOperationOptions(operationType);
+      const request = savingsVoidRequest(input, `${config.commandPrefix}.void`);
+      return executeMultiTargetVoid({
+        request,
+        commandType: `${config.commandPrefix}.void`,
+        operationType,
+        declarations: [{
+          targetType: 'savings_goal', targetId: request.goalId,
+          expectedRevision: request.expectedGoalRevision, requireActive: false,
+        }],
+        validatePrevious: (operation, movements) => {
+          const previous = config.validateShape(operation, movements);
+          if (previous.details.goalId !== request.goalId) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'declared SavingsGoal does not match the operation',
+              { operationId: request.operationId, goalId: request.goalId }
+            );
+          }
+          return previous;
+        },
+        metadata: { goalId: request.goalId },
+      });
+    }
+
+    const createSavingsDeposit = (input) => createSavingsOperation(input, 'savings_deposit');
+    const editSavingsDeposit = (input) => editSavingsOperation(input, 'savings_deposit');
+    const voidSavingsDeposit = (input) => voidSavingsOperation(input, 'savings_deposit');
+    const createSavingsWithdrawal = (input) => createSavingsOperation(input, 'savings_withdrawal');
+    const editSavingsWithdrawal = (input) => editSavingsOperation(input, 'savings_withdrawal');
+    const voidSavingsWithdrawal = (input) => voidSavingsOperation(input, 'savings_withdrawal');
+
+    function validateTransferEndpoint(targetType, targetId, expectedRevision, prefix) {
+      if (targetType !== 'account' && targetType !== 'savings_goal') {
+        throw domainError(
+          ERROR_CODES.INVALID_DOMAIN_FIELD,
+          `${prefix}Type must be account or savings_goal`,
+          { field: `${prefix}Type`, value: targetType }
+        );
+      }
+      assertUuid(targetId, { field: `${prefix}Id` });
+      assertRevision(expectedRevision, {
+        field: `expected${prefix[0].toUpperCase()}${prefix.slice(1)}Revision`,
+      });
+      return Object.freeze({ targetType, targetId, expectedRevision });
+    }
+
+    function assertDistinctTransferEndpoints(sourceType, sourceId, destinationType, destinationId) {
+      if (sourceType === destinationType && sourceId === destinationId) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_STATE_INVALID,
+          'transfer source and destination must be different entities',
+          { sourceType, sourceId, destinationType, destinationId }
+        );
+      }
+    }
+
+    function validateTransferDetails(operation) {
+      const details = operationDetails(operation, [
+        'sourceType', 'sourceId', 'destinationType', 'destinationId',
+        'concept', 'observation',
+      ]);
+      validateTransferEndpoint(details.sourceType, details.sourceId, 1, 'source');
+      validateTransferEndpoint(details.destinationType, details.destinationId, 1, 'destination');
+      assertDistinctTransferEndpoints(
+        details.sourceType, details.sourceId, details.destinationType, details.destinationId
+      );
+      nullableNonEmptyString(details.concept, 'Operation.details.concept');
+      nullableNonEmptyString(details.observation, 'Operation.details.observation');
+      return details;
+    }
+
+    function validateTransferShape(operation, movements) {
+      const validOperation = Domain.validateOperation(operation);
+      const details = validateTransferDetails(validOperation);
+      if (validOperation.type !== 'transfer' || movements.length !== 2) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'transfer requires exactly two Movements',
+          { operationId: validOperation.id, movementCount: movements.length }
+        );
+      }
+      for (const movement of movements) {
+        Domain.assertMovementMatchesOperation(validOperation, movement);
+      }
+      const sourceMovement = movements.find((movement) => (
+        movement.targetType === details.sourceType &&
+        movement.targetId === details.sourceId &&
+        movement.delta < 0
+      ));
+      const destinationMovement = movements.find((movement) => (
+        movement.targetType === details.destinationType &&
+        movement.targetId === details.destinationId &&
+        movement.delta > 0
+      ));
+      if (
+        !sourceMovement || !destinationMovement ||
+        sourceMovement.delta !== -validOperation.amount ||
+        destinationMovement.delta !== validOperation.amount
+      ) {
+        throw domainError(
+          ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+          'transfer Movements must be balanced and match their endpoints',
+          { operationId: validOperation.id }
+        );
+      }
+      return Object.freeze({
+        details,
+        orderedMovements: Object.freeze([sourceMovement, destinationMovement]),
+      });
+    }
+
+    function transferCreateRequest(input) {
+      const request = requireRecord(input, 'transfer.create');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'sourceType', 'sourceId', 'expectedSourceRevision',
+        'destinationType', 'destinationId', 'expectedDestinationRevision',
+        'operationDate', 'amount',
+      ];
+      validateCommandHeader(request, 'transfer.create', required, [
+        ...required, 'concept', 'observation',
+      ]);
+      validateTransferEndpoint(
+        request.sourceType, request.sourceId, request.expectedSourceRevision, 'source'
+      );
+      validateTransferEndpoint(
+        request.destinationType,
+        request.destinationId,
+        request.expectedDestinationRevision,
+        'destination'
+      );
+      assertDistinctTransferEndpoints(
+        request.sourceType, request.sourceId, request.destinationType, request.destinationId
+      );
+      assertCivilDate(request.operationDate, { field: 'operationDate' });
+      assertPositiveMoney(request.amount, { field: 'amount' });
+      if (hasOwn(request, 'concept')) nullableNonEmptyString(request.concept, 'concept');
+      if (hasOwn(request, 'observation')) nullableNonEmptyString(request.observation, 'observation');
+      return request;
+    }
+
+    async function createTransfer(input) {
+      const request = transferCreateRequest(input);
+      const details = Object.freeze({
+        sourceType: request.sourceType,
+        sourceId: request.sourceId,
+        destinationType: request.destinationType,
+        destinationId: request.destinationId,
+        concept: hasOwn(request, 'concept') ? request.concept : null,
+        observation: hasOwn(request, 'observation') ? request.observation : null,
+      });
+      return executeMultiTargetCreate({
+        request,
+        commandType: 'transfer.create',
+        operationType: 'transfer',
+        amount: request.amount,
+        details,
+        movementSpecs: [
+          { targetType: request.sourceType, targetId: request.sourceId, delta: -request.amount },
+          {
+            targetType: request.destinationType,
+            targetId: request.destinationId,
+            delta: request.amount,
+          },
+        ],
+        declarations: [
+          {
+            targetType: request.sourceType, targetId: request.sourceId,
+            expectedRevision: request.expectedSourceRevision, requireActive: true,
+          },
+          {
+            targetType: request.destinationType, targetId: request.destinationId,
+            expectedRevision: request.expectedDestinationRevision, requireActive: true,
+          },
+        ],
+        validateShape: validateTransferShape,
+        metadata: {
+          sourceType: request.sourceType,
+          sourceId: request.sourceId,
+          destinationType: request.destinationType,
+          destinationId: request.destinationId,
+        },
+      });
+    }
+
+    function transferEditRequest(input) {
+      const request = requireRecord(input, 'transfer.edit');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'operationId', 'expectedOperationRevision',
+        'previousSourceType', 'previousSourceId', 'expectedPreviousSourceRevision',
+        'previousDestinationType', 'previousDestinationId', 'expectedPreviousDestinationRevision',
+        'sourceType', 'sourceId', 'expectedSourceRevision',
+        'destinationType', 'destinationId', 'expectedDestinationRevision',
+      ];
+      validateCommandHeader(request, 'transfer.edit', required, [
+        ...required, 'operationDate', 'amount', 'concept', 'observation',
+      ]);
+      assertUuid(request.operationId, { field: 'operationId' });
+      assertRevision(request.expectedOperationRevision, { field: 'expectedOperationRevision' });
+      for (const prefix of [
+        'previousSource', 'previousDestination', 'source', 'destination',
+      ]) {
+        const capitalized = `${prefix[0].toUpperCase()}${prefix.slice(1)}`;
+        validateTransferEndpoint(
+          request[`${prefix}Type`],
+          request[`${prefix}Id`],
+          request[`expected${capitalized}Revision`],
+          prefix
+        );
+      }
+      assertDistinctTransferEndpoints(
+        request.sourceType, request.sourceId, request.destinationType, request.destinationId
+      );
+      if (hasOwn(request, 'operationDate')) assertCivilDate(request.operationDate, { field: 'operationDate' });
+      if (hasOwn(request, 'amount')) assertPositiveMoney(request.amount, { field: 'amount' });
+      if (hasOwn(request, 'concept')) nullableNonEmptyString(request.concept, 'concept');
+      if (hasOwn(request, 'observation')) nullableNonEmptyString(request.observation, 'observation');
+      return request;
+    }
+
+    async function editTransfer(input) {
+      const request = transferEditRequest(input);
+      return executeMultiTargetEdit({
+        request,
+        commandType: 'transfer.edit',
+        operationType: 'transfer',
+        declarations: [
+          {
+            targetType: request.previousSourceType,
+            targetId: request.previousSourceId,
+            expectedRevision: request.expectedPreviousSourceRevision,
+            requireActive: false,
+          },
+          {
+            targetType: request.previousDestinationType,
+            targetId: request.previousDestinationId,
+            expectedRevision: request.expectedPreviousDestinationRevision,
+            requireActive: false,
+          },
+          {
+            targetType: request.sourceType,
+            targetId: request.sourceId,
+            expectedRevision: request.expectedSourceRevision,
+            requireActive: true,
+          },
+          {
+            targetType: request.destinationType,
+            targetId: request.destinationId,
+            expectedRevision: request.expectedDestinationRevision,
+            requireActive: true,
+          },
+        ],
+        validatePrevious: (operation, movements) => {
+          const previous = validateTransferShape(operation, movements);
+          if (
+            previous.details.sourceType !== request.previousSourceType ||
+            previous.details.sourceId !== request.previousSourceId ||
+            previous.details.destinationType !== request.previousDestinationType ||
+            previous.details.destinationId !== request.previousDestinationId
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'declared previous transfer endpoints do not match the Operation',
+              { operationId: request.operationId }
+            );
+          }
+          return previous;
+        },
+        buildNext: (operation, details) => {
+          const amount = hasOwn(request, 'amount') ? request.amount : operation.amount;
+          return Object.freeze({
+            operationDate: hasOwn(request, 'operationDate')
+              ? request.operationDate
+              : operation.operationDate,
+            amount,
+            details: Object.freeze({
+              sourceType: request.sourceType,
+              sourceId: request.sourceId,
+              destinationType: request.destinationType,
+              destinationId: request.destinationId,
+              concept: hasOwn(request, 'concept') ? request.concept : details.concept,
+              observation: hasOwn(request, 'observation')
+                ? request.observation
+                : details.observation,
+            }),
+            movementSpecs: [
+              { targetType: request.sourceType, targetId: request.sourceId, delta: -amount },
+              {
+                targetType: request.destinationType,
+                targetId: request.destinationId,
+                delta: amount,
+              },
+            ],
+          });
+        },
+        validateShape: validateTransferShape,
+        metadata: {
+          previousSourceType: request.previousSourceType,
+          previousSourceId: request.previousSourceId,
+          previousDestinationType: request.previousDestinationType,
+          previousDestinationId: request.previousDestinationId,
+          sourceType: request.sourceType,
+          sourceId: request.sourceId,
+          destinationType: request.destinationType,
+          destinationId: request.destinationId,
+        },
+      });
+    }
+
+    function transferVoidRequest(input) {
+      const request = requireRecord(input, 'transfer.void');
+      const required = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'operationId', 'expectedOperationRevision',
+        'sourceType', 'sourceId', 'expectedSourceRevision',
+        'destinationType', 'destinationId', 'expectedDestinationRevision',
+      ];
+      validateCommandHeader(request, 'transfer.void', required, [...required, 'reason']);
+      assertUuid(request.operationId, { field: 'operationId' });
+      assertRevision(request.expectedOperationRevision, { field: 'expectedOperationRevision' });
+      validateTransferEndpoint(
+        request.sourceType, request.sourceId, request.expectedSourceRevision, 'source'
+      );
+      validateTransferEndpoint(
+        request.destinationType,
+        request.destinationId,
+        request.expectedDestinationRevision,
+        'destination'
+      );
+      if (hasOwn(request, 'reason')) requireNonEmptyString(request.reason, 'reason');
+      return request;
+    }
+
+    async function voidTransfer(input) {
+      const request = transferVoidRequest(input);
+      return executeMultiTargetVoid({
+        request,
+        commandType: 'transfer.void',
+        operationType: 'transfer',
+        declarations: [
+          {
+            targetType: request.sourceType, targetId: request.sourceId,
+            expectedRevision: request.expectedSourceRevision, requireActive: false,
+          },
+          {
+            targetType: request.destinationType, targetId: request.destinationId,
+            expectedRevision: request.expectedDestinationRevision, requireActive: false,
+          },
+        ],
+        validatePrevious: (operation, movements) => {
+          const previous = validateTransferShape(operation, movements);
+          if (
+            previous.details.sourceType !== request.sourceType ||
+            previous.details.sourceId !== request.sourceId ||
+            previous.details.destinationType !== request.destinationType ||
+            previous.details.destinationId !== request.destinationId
+          ) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+              'declared transfer endpoints do not match the Operation',
+              { operationId: request.operationId }
+            );
+          }
+          return previous;
+        },
+        metadata: {
+          sourceType: request.sourceType,
+          sourceId: request.sourceId,
+          destinationType: request.destinationType,
+          destinationId: request.destinationId,
+        },
+      });
+    }
+
     return Object.freeze({
       setup: Object.freeze({ complete }),
       financialSettings: Object.freeze({ updateReferenceSalary }),
@@ -3604,6 +5064,29 @@
         edit: editFixedExpensePayment,
         void: voidFixedExpensePayment,
       }),
+      debtPayment: Object.freeze({
+        create: createDebtPayment,
+        edit: editDebtPayment,
+        void: voidDebtPayment,
+      }),
+      debtTotalAdjustment: Object.freeze({
+        create: createDebtTotalAdjustment,
+      }),
+      savingsDeposit: Object.freeze({
+        create: createSavingsDeposit,
+        edit: editSavingsDeposit,
+        void: voidSavingsDeposit,
+      }),
+      savingsWithdrawal: Object.freeze({
+        create: createSavingsWithdrawal,
+        edit: editSavingsWithdrawal,
+        void: voidSavingsWithdrawal,
+      }),
+      transfer: Object.freeze({
+        create: createTransfer,
+        edit: editTransfer,
+        void: voidTransfer,
+      }),
     });
   }
 
@@ -3643,6 +5126,9 @@
     VARIABLE_EXPENSE_CHANGE_STORES,
     FIXED_EXPENSE_PAYMENT_CREATE_STORES,
     FIXED_EXPENSE_PAYMENT_CHANGE_STORES,
+    MULTI_TARGET_CREATE_BASE_STORES,
+    MULTI_TARGET_CHANGE_BASE_STORES,
+    TARGET_STORE_NAMES,
     createPeritaDomainCommands,
   });
 });

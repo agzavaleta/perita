@@ -23,6 +23,7 @@
     ERROR_CODES,
     PeritaError,
     assertUuid,
+    civilDateInChile,
     createUuidV4,
   } = Contracts;
 
@@ -82,6 +83,17 @@
     additional_income: 1,
     variable_expense: -1,
     fixed_expense_payment: -1,
+  });
+  const BLOCK_FOUR_OPERATION_TYPES = Object.freeze(new Set([
+    'debt_payment',
+    'debt_total_adjustment',
+    'savings_deposit',
+    'savings_withdrawal',
+    'transfer',
+  ]));
+  const SAVINGS_OPERATION_SIGNS = Object.freeze({
+    savings_deposit: 1,
+    savings_withdrawal: -1,
   });
 
   class IntegrityError extends PeritaError {}
@@ -468,7 +480,8 @@
     });
   }
 
-  function checkRelationshipSnapshot(snapshot, issues) {
+  function checkRelationshipSnapshot(snapshot, issues, checkedAt) {
+    const currentCivilDate = civilDateInChile(new Date(checkedAt));
     const periods = mapById(snapshot.periods);
     const templates = mapById(snapshot.fixedExpenseTemplates);
     const fixedInstances = mapById(snapshot.fixedExpenseInstances);
@@ -564,7 +577,11 @@
           context: { movementPeriodId: movement.periodId, operationPeriodId: operation.periodId },
         });
       } else if (
-        (operation.type === 'balance_adjustment' || hasOwn(ACCOUNT_OPERATION_SIGNS, operation.type)) &&
+        (
+          operation.type === 'balance_adjustment' ||
+          hasOwn(ACCOUNT_OPERATION_SIGNS, operation.type) ||
+          BLOCK_FOUR_OPERATION_TYPES.has(operation.type)
+        ) &&
         movement.status !== operation.status
       ) {
         missingRelation(issues, {
@@ -667,6 +684,200 @@
             effectType: movement.effectType,
             expectedDelta,
             actualDelta: movement.delta,
+          },
+        });
+      }
+    });
+
+    const postedDebtPaymentsByDebt = new Map();
+    snapshot.operations.forEach((operation) => {
+      if (operation.type !== 'debt_payment') return;
+      const related = snapshot.movements.filter((movement) => movement.operationId === operation.id);
+      const details = operation.details || {};
+      const accountMovement = related.find((movement) => movement.targetType === 'account');
+      const debtMovement = related.find((movement) => movement.targetType === 'debt');
+      if (related.length !== 2 || !accountMovement || !debtMovement) {
+        missingRelation(issues, {
+          code: 'DEBT_PAYMENT_MOVEMENT_CARDINALITY',
+          scopeType: 'debt',
+          scopeId: details.debtId,
+          storeName: 'operations',
+          recordId: operation.id,
+          message: 'debt payment must have exactly one Account and one Debt Movement',
+          context: { movementCount: related.length },
+        });
+        return;
+      }
+      if (
+        accountMovement.targetId !== details.accountId ||
+        debtMovement.targetId !== details.debtId ||
+        accountMovement.delta !== -operation.amount ||
+        debtMovement.delta !== -operation.amount
+      ) {
+        missingRelation(issues, {
+          code: 'DEBT_PAYMENT_MOVEMENT_INVALID',
+          scopeType: 'debt',
+          scopeId: details.debtId,
+          storeName: 'operations',
+          recordId: operation.id,
+          message: 'debt payment Movements must reduce Account and Debt by the same amount',
+        });
+      }
+      if (operation.status === 'posted' && typeof details.debtId === 'string') {
+        postedDebtPaymentsByDebt.set(
+          details.debtId,
+          (postedDebtPaymentsByDebt.get(details.debtId) || 0) + operation.amount
+        );
+      }
+    });
+
+    snapshot.operations.forEach((operation) => {
+      if (operation.type !== 'debt_total_adjustment') return;
+      const related = snapshot.movements.filter((movement) => movement.operationId === operation.id);
+      const details = operation.details || {};
+      const movement = related[0];
+      const expectedDelta = details.newOutstandingAmount - details.previousOutstandingAmount;
+      if (
+        related.length !== 1 ||
+        !movement ||
+        movement.targetType !== 'debt' ||
+        movement.targetId !== details.debtId ||
+        movement.effectType !== 'debt_outstanding' ||
+        !Number.isSafeInteger(expectedDelta) ||
+        expectedDelta === 0 ||
+        movement.delta !== expectedDelta ||
+        operation.amount !== Math.abs(expectedDelta)
+      ) {
+        missingRelation(issues, {
+          code: 'DEBT_TOTAL_ADJUSTMENT_MOVEMENT_INVALID',
+          scopeType: 'debt',
+          scopeId: details.debtId,
+          storeName: 'operations',
+          recordId: operation.id,
+          message: 'debt total adjustment must contain its one approved signed Debt Movement',
+          context: { movementCount: related.length, expectedDelta },
+        });
+      }
+    });
+
+    snapshot.operations.forEach((operation) => {
+      if (!hasOwn(SAVINGS_OPERATION_SIGNS, operation.type)) return;
+      const related = snapshot.movements.filter((movement) => movement.operationId === operation.id);
+      const details = operation.details || {};
+      const movement = related[0];
+      const expectedDelta = SAVINGS_OPERATION_SIGNS[operation.type] * operation.amount;
+      if (
+        related.length !== 1 ||
+        !movement ||
+        movement.targetType !== 'savings_goal' ||
+        movement.targetId !== details.goalId ||
+        movement.effectType !== 'asset_balance' ||
+        movement.delta !== expectedDelta
+      ) {
+        missingRelation(issues, {
+          code: 'SAVINGS_OPERATION_MOVEMENT_INVALID',
+          scopeType: 'savings_goal',
+          scopeId: details.goalId,
+          storeName: 'operations',
+          recordId: operation.id,
+          message: 'savings operation must have one correctly signed SavingsGoal Movement',
+          context: { operationType: operation.type, movementCount: related.length, expectedDelta },
+        });
+      }
+    });
+
+    snapshot.operations.forEach((operation) => {
+      if (operation.type !== 'transfer') return;
+      const related = snapshot.movements.filter((movement) => movement.operationId === operation.id);
+      const details = operation.details || {};
+      const source = related.find((movement) => movement.delta < 0);
+      const destination = related.find((movement) => movement.delta > 0);
+      const allowed = new Set(['account', 'savings_goal']);
+      const endpointsDiffer = details.sourceType !== details.destinationType ||
+        details.sourceId !== details.destinationId;
+      if (
+        related.length !== 2 ||
+        !source || !destination ||
+        !allowed.has(source.targetType) ||
+        !allowed.has(destination.targetType) ||
+        !endpointsDiffer ||
+        source.targetType !== details.sourceType ||
+        source.targetId !== details.sourceId ||
+        destination.targetType !== details.destinationType ||
+        destination.targetId !== details.destinationId ||
+        source.delta !== -operation.amount ||
+        destination.delta !== operation.amount ||
+        source.delta + destination.delta !== 0
+      ) {
+        missingRelation(issues, {
+          code: 'TRANSFER_MOVEMENTS_INVALID',
+          scopeType: 'period',
+          scopeId: operation.periodId,
+          storeName: 'operations',
+          recordId: operation.id,
+          message: 'transfer must have two balanced Movements over distinct allowed endpoints',
+          context: { movementCount: related.length },
+        });
+      }
+    });
+
+    snapshot.savingsGoals.forEach((goal) => {
+      if (
+        Number.isSafeInteger(goal.currentBalance) &&
+        Number.isSafeInteger(goal.targetAmount) &&
+        typeof goal.progressStatus === 'string'
+      ) {
+        const expected = goal.currentBalance >= goal.targetAmount ? 'completed' : 'in_progress';
+        if (goal.currentBalance < 0 || goal.progressStatus !== expected) {
+          missingRelation(issues, {
+            code: 'SAVINGS_GOAL_STATE_INCONSISTENT',
+            scopeType: 'savings_goal',
+            scopeId: goal.id,
+            storeName: 'savingsGoals',
+            recordId: goal.id,
+            message: 'SavingsGoal balance and progress status are inconsistent',
+            context: { currentBalance: goal.currentBalance, expected, actual: goal.progressStatus },
+          });
+        }
+      }
+    });
+
+    snapshot.debts.forEach((debt) => {
+      const postedPayments = postedDebtPaymentsByDebt.get(debt.id) || 0;
+      if (
+        Number.isSafeInteger(debt.totalAmount) &&
+        postedPayments > debt.totalAmount
+      ) {
+        missingRelation(issues, {
+          code: 'DEBT_POSTED_PAYMENTS_OVER_TOTAL',
+          scopeType: 'debt',
+          scopeId: debt.id,
+          storeName: 'debts',
+          recordId: debt.id,
+          message: 'posted Debt payments cannot exceed the current Debt total',
+          context: { postedPayments, totalAmount: debt.totalAmount },
+        });
+      }
+      if (Number.isSafeInteger(debt.outstandingAmount)) {
+        const expectedPaymentStatus = debt.outstandingAmount === 0
+          ? 'paid'
+          : debt.dueDate !== null && debt.dueDate < currentCivilDate
+            ? 'overdue'
+            : 'active';
+        if (debt.paymentStatus === expectedPaymentStatus) return;
+        missingRelation(issues, {
+          code: 'DEBT_PAYMENT_STATE_INCONSISTENT',
+          scopeType: 'debt',
+          scopeId: debt.id,
+          storeName: 'debts',
+          recordId: debt.id,
+          message: 'Debt payment status must match its outstanding amount and due date',
+          context: {
+            outstandingAmount: debt.outstandingAmount,
+            dueDate: debt.dueDate,
+            currentCivilDate,
+            expected: expectedPaymentStatus,
+            actual: debt.paymentStatus,
           },
         });
       }
@@ -1219,7 +1430,7 @@
       const startedAt = timestampFromNow(now);
       const snapshot = await readSnapshot();
       const issues = [];
-      checks.forEach((check) => check(snapshot, issues));
+      checks.forEach((check) => check(snapshot, issues, startedAt));
       const completedAt = timestampFromNow(now);
       const report = {
         id: newReportId(),
