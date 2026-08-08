@@ -8,7 +8,7 @@ Usage:
 Run this from the project folder (where Perita.jsx and index.html live)
 after any edit to Perita.jsx. It rebuilds only the <script type="text/babel">
 block inside index.html; everything else (head, CDN scripts, PWA/manifest
-tags, the perita-core.js <script> tag, the service-worker bootstrap) is
+tags, the ordered V1.1.0 module <script> tags, and service-worker bootstrap) is
 preserved as-is.
 """
 import os
@@ -26,7 +26,7 @@ if bs == -1:
     raise SystemExit(f'Could not find {babel_tag!r} in {HTML_PATH}')
 head = html[:bs]
 
-jsx_body = jsx.replace('/* Perita v1.0.0 — App.jsx */\n', '')
+jsx_body = jsx.replace('/* Perita v1.1.0 — App.jsx */\n', '')
 
 # Remove CSS injection block (CSS lives in <style> in index.html's head instead)
 css_s = jsx_body.find('\n// ── Inject app CSS')

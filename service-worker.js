@@ -5,13 +5,22 @@
 // "update available" modal (Perita.jsx / Settings) already handles prompting
 // the user and calling skipWaiting() via postMessage — see the message
 // listener at the bottom of this file.
-const CACHE_NAME = 'perita-cache-v3';
+const CACHE_NAME = 'perita-v110-shell-v1';
 
 const APP_SHELL = [
   '/',
   '/index.html',
   '/manifest.json',
-  '/perita-core.js',
+  '/perita-contracts.js',
+  '/perita-indexeddb.js',
+  '/perita-domain.js',
+  '/perita-runtime.js',
+  '/perita-integrity.js',
+  '/perita-legacy.js',
+  '/perita-domain-commands.js',
+  '/perita-backup.js',
+  '/perita-migration.js',
+  '/perita-app.js',
   '/icons/apple-touch-icon.png',
   '/icons/icon-152x152.png',
   '/icons/icon-192x192.png',
@@ -22,7 +31,6 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => cache.addAll(APP_SHELL))
-      .catch(() => {}) // don't fail install if a shell asset is momentarily unreachable
   );
 });
 

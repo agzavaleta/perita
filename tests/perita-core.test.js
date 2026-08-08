@@ -162,11 +162,12 @@ test('Calendar dates and month identifiers', async (t) => {
     });
   });
 
-  await t.test('Perita.jsx uses the shared local-date and month helpers', () => {
+  await t.test('Perita.jsx delegates civil dates and monthly close to the V1.1.0 integration layer', () => {
     const fs = require('fs');
     const src = fs.readFileSync(path.join(__dirname, '..', 'Perita.jsx'), 'utf8');
-    assert.match(src, /const today = \(\) => PeritaCore\.localDateId\(\)/);
-    assert.match(src, /PeritaCore\.nextMonthId\(curMonth\)/);
+    assert.match(src, /const today = \(\) => PeritaApp\.civilDate\(new Date\(\)\)/);
+    assert.match(src, /run\('period\.close-and-open-next'/);
+    assert.doesNotMatch(src, /PeritaCore/);
     assert.doesNotMatch(src, /new Date\(curMonth \+ '-01'\)/);
   });
 });
@@ -641,12 +642,14 @@ test('7. Salary vs. additional income', async (t) => {
     assert.equal(mt.sobrante, 865, '1450 - 350 - 115 - 70 - 50 = 865');
   });
 
-  await t.test('Perita.jsx source keeps the salary out of the Income section and uses the centralized additive helper', () => {
+  await t.test('Perita.jsx source reads canonical income totals and keeps reference salary informational', () => {
     const fs = require('fs');
     const path = require('path');
     const src = fs.readFileSync(path.join(__dirname, '..', 'Perita.jsx'), 'utf8');
-    assert.match(src, /PeritaCore\.monthTotals\(activeMonth,\s*settings\.salary\)/, 'the month-close summary must pass the current configured salary explicitly');
-    assert.match(src, /Sueldo configurado/, 'the salary appears as read-only informational data');
+    assert.match(src, /const summary = state\.summary \|\| \{\}/, 'dashboard totals must read the canonical V1.1.0 summary');
+    assert.match(src, /Sueldo de referencia/, 'the reference salary appears as informational data');
+    assert.match(src, /salary-receipt\.create/, 'received salary must be a canonical operation');
+    assert.doesNotMatch(src, /PeritaCore/);
     assert.doesNotMatch(src, /placeholder="Sueldo,\s*freelance/, 'the old income-form placeholder suggesting salary belongs in Income must be gone');
   });
 });
@@ -852,13 +855,14 @@ test('9. Centralized page-level totals', async (t) => {
     assert.equal(d.totalDebt, PC.totalActiveDebt(debts));
   });
 
-  await t.test('Perita.jsx source calls the centralized helpers instead of duplicating the formulas', () => {
+  await t.test('Perita.jsx source centralizes projected entity totals without using the V1 core', () => {
     const fs = require('fs');
     const path = require('path');
     const src = fs.readFileSync(path.join(__dirname, '..', 'Perita.jsx'), 'utf8');
-    assert.match(src, /PeritaCore\.totalAccountBalance\(/, 'AccountsPage total must call the centralized helper');
-    assert.match(src, /PeritaCore\.totalWalletBalance\(/, 'Wallets/Ahorros total must call the centralized helper');
-    assert.match(src, /PeritaCore\.totalActiveDebt\(/, 'DebtTracker total must call the centralized helper');
+    assert.match(src, /const \{totalAvailable:total\} = dashboardTotals\(state\)/, 'AccountsPage total must call the centralized projection');
+    assert.match(src, /const \{totalSavings\} = dashboardTotals\(state\)/, 'Wallets total must call the centralized projection');
+    assert.match(src, /const \{totalDebt\} = dashboardTotals\(state\)/, 'DebtTracker total must call the centralized projection');
+    assert.doesNotMatch(src, /PeritaCore/);
     assert.doesNotMatch(src, /accounts\.reduce\(\(s,a\)=>s\+a\.balance,0\)/, 'the old duplicated AccountsPage formula must be gone');
     assert.doesNotMatch(src, /wallets\.reduce\(\(a,w\)=>a\+w\.balance,0\)/, 'the old duplicated Wallets formula must be gone');
     assert.doesNotMatch(src, /activeDebts\.reduce\(\(a,d\)=>a\+\(d\.total-d\.paid\),0\)/, 'the old duplicated DebtTracker formula must be gone');

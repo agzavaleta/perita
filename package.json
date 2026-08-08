@@ -1,9 +1,9 @@
 {
   "name": "perita",
-  "version": "1.0.0",
-  "description": "Perita — regression tests for the core financial logic (perita-core.js)",
+  "version": "1.1.0",
+  "description": "Perita V1.1.0 — finanzas personales con IndexedDB y operaciones canónicas",
   "private": true,
-  "main": "perita-core.js",
+  "main": "perita-app.js",
   "scripts": {
     "test": "node --test tests/*.test.js"
   },
