@@ -1740,6 +1740,35 @@
     return null;
   }
 
+  function inspectDataSnapshot(data, options) {
+    const source = data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+    const system = Array.isArray(source.system) ? source.system : [];
+    const snapshot = {
+      schema: system.find((record) => record && record.key === 'schema'),
+      runtime: system.find((record) => record && record.key === 'runtime'),
+    };
+    for (const storeName of SNAPSHOT_STORES) {
+      if (storeName !== 'system') {
+        snapshot[storeName] = Array.isArray(source[storeName]) ? source[storeName] : [];
+      }
+    }
+    const settings = options || {};
+    const checkedAt = settings.checkedAt || new Date(0).toISOString();
+    const issues = [];
+    [
+      checkRuntimeSnapshot,
+      checkCommitSnapshot,
+      checkRelationshipSnapshot,
+      checkBalanceSnapshot,
+    ].forEach((check) => check(snapshot, issues, checkedAt, { sha256: settings.sha256 }));
+    return immutableCopy({
+      status: classify(issues),
+      restrictedScopes: restrictedScopes(issues),
+      summary: summaryFor(snapshot, issues),
+      issues,
+    });
+  }
+
   function createPeritaIntegrity(options) {
     const settings = options || {};
     const storage = settings.storage;
@@ -1913,6 +1942,7 @@
     CHECK_TYPES,
     STATUSES,
     IntegrityError,
+    inspectDataSnapshot,
     createPeritaIntegrity,
   });
 });
