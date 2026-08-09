@@ -165,7 +165,7 @@ const useConfirm = () => {
 
 // ── Unsaved changes guard ─────────────────────────────────────────────────────
 const useUnsavedGuard = (isDirty) => {
-  const {ask, ConfirmNode: GuardNode} = useConfirm();
+  const [pendingClose, setPendingClose] = useState(null);
 
   // Browser/tab close / reload
   useEffect(() => {
@@ -178,17 +178,25 @@ const useUnsavedGuard = (isDirty) => {
     return () => window.removeEventListener('beforeunload', handler);
   }, [isDirty]);
 
-  // Returns a wrapped closer: if dirty, confirms first
-  const guardClose = useCallback(async (closeFn) => {
+  // Store the requested closer explicitly so confirming discard closes exactly
+  // the form that opened the dialog, without depending on a promise/render race.
+  const guardClose = useCallback((closeFn) => {
     if (!isDirty) { closeFn(); return; }
-    const ok = await ask({
-      title: 'Cambios sin guardar',
-      message: 'Si sales ahora perderás el progreso.',
-      confirmLabel: 'Salir',
-      destructive: false,
-    });
-    if (ok) closeFn();
-  }, [isDirty, ask]);
+    setPendingClose(() => closeFn);
+  }, [isDirty]);
+
+  const GuardNode = pendingClose ? <ConfirmDialog
+    title="Cambios sin guardar"
+    message="Si sales ahora perderás el progreso."
+    confirmLabel="Salir"
+    destructive={false}
+    onConfirm={()=>{
+      const close = pendingClose;
+      setPendingClose(null);
+      close();
+    }}
+    onCancel={()=>setPendingClose(null)}
+  /> : null;
 
   return {guardClose, GuardNode};
 };
@@ -428,7 +436,8 @@ const AccountsPage = ({state, setState, notify, run}) => {
   const {ask, ConfirmNode} = useConfirm();
   const isDirty = modal && initForm && JSON.stringify(form) !== JSON.stringify(initForm);
   const {guardClose, GuardNode} = useUnsavedGuard(isDirty);
-  const closeModal = () => guardClose(() => setModal(null));
+  const resetModal = () => { setModal(null); setInitForm(null); setForm(emptyAccount()); };
+  const closeModal = () => guardClose(resetModal);
 
   const openNew = () => { const f=emptyAccount(); setForm(f); setInitForm(f); setModal('new'); };
   const openEdit = (a) => { const f={...a}; setForm(f); setInitForm(f); setModal('edit'); };
@@ -445,7 +454,7 @@ const AccountsPage = ({state, setState, notify, run}) => {
       if(!completed)return;
       notify('Cuenta actualizada','success');
     }
-    setModal(null);
+    resetModal();
   };
 
   const del = async (a) => {
@@ -571,7 +580,8 @@ const Wallets = ({state, setState, notify, run}) => {
   const isDirty = modal && initForm && JSON.stringify(form) !== JSON.stringify(initForm);
   const {guardClose, GuardNode} = useUnsavedGuard(isDirty);
   const {totalSavings} = dashboardTotals(state);
-  const closeModal = () => guardClose(() => setModal(null));
+  const resetModal = () => { setModal(null); setInitForm(null); setForm({emoji:'💰',name:'',bank:'',balance:0,monthly:0,goal:0}); };
+  const closeModal = () => guardClose(resetModal);
 
   const openEdit = (w) => { const f={...w}; setForm(f); setInitForm(f); setModal('edit'); };
   const openNew = () => { const f={emoji:'💰',name:'',bank:'',balance:0,monthly:0,goal:0}; setForm(f); setInitForm(f); setModal('new'); };
@@ -588,7 +598,7 @@ const Wallets = ({state, setState, notify, run}) => {
       if(!completed)return;
       notify('Ahorro actualizado','success');
     }
-    setModal(null);
+    resetModal();
   };
 
   const del = async (w) => {
@@ -864,7 +874,7 @@ const Budget = ({state, setState, notify, run}) => {
           <div className="inline-form">
             <input className="form-input" placeholder="Ej: Arriendo" value={form.name} onChange={e=>setForm(x=>({...x,name:e.target.value}))} />
             <MoneyInput className="form-input inline-money" value={form.amount} onChange={amount=>setForm(x=>({...x,amount}))} />
-            <button className="btn btn-primary" onClick={addItem}><Icon name="plus" size={14}/></button>
+            <button className="btn btn-primary" onClick={addItem}><Icon name="plus" size={14}/> Agregar gasto fijo</button>
           </div>
         </div>
 
@@ -884,36 +894,44 @@ const Budget = ({state, setState, notify, run}) => {
 const IngresosPanel = ({state, setState, notify, run}) => {
   const {expenses} = state;
   const accounts = (state.accounts||[]);
-  const emptyForm = {date:today(),description:'',amount:0,account:''};
+  const emptyForm = () => ({date:today(),description:'',amount:0,account:''});
   const [incomeForm, setIncomeForm] = useState(emptyForm);
+  const [initialIncomeForm, setInitialIncomeForm] = useState(null);
   const [incomeFilter, setIncomeFilter] = useState({month:'',q:''});
   const [editingId, setEditingId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
   const [salaryAccount, setSalaryAccount] = useState(accounts.find(a=>a.status==='active')?.id||'');
   const [salaryAmount, setSalaryAmount] = useState(state.period?.plannedSalaryAmount||state.settings.salary||0);
   const {ask, ConfirmNode} = useConfirm();
+  const incomeDirty = showForm && initialIncomeForm && JSON.stringify(incomeForm)!==JSON.stringify(initialIncomeForm);
+  const {guardClose, GuardNode} = useUnsavedGuard(incomeDirty);
+  const resetAndCloseForm = () => { setShowForm(false); setEditingId(null); setInitialIncomeForm(null); setIncomeForm(emptyForm()); };
+  const closeForm = () => guardClose(resetAndCloseForm);
+  const openNew = () => { const clean=emptyForm(); setEditingId(null); setIncomeForm(clean); setInitialIncomeForm(clean); setShowForm(true); };
 
   const addIncome = () => {
-    if(!incomeForm.amount) { notify('Ingresa el monto','warn'); return; }
-    if(!incomeForm.account) { notify('Selecciona una cuenta de destino','warn'); return; }
+    if(!incomeForm.amount) { notify('Ingresa el monto','warn'); return false; }
+    if(!incomeForm.account) { notify('Selecciona una cuenta de destino','warn'); return false; }
     run('additional-income.create',{accountId:incomeForm.account,operationDate:incomeForm.date,amount:incomeForm.amount,concept:incomeForm.description||null,observation:null},'Ingreso registrado');
-    setIncomeForm(emptyForm);
+    return true;
   };
 
   const saveEdit = () => {
-    if(!incomeForm.amount) { notify('Ingresa el monto','warn'); return; }
-    if(!incomeForm.account) { notify('Selecciona una cuenta de destino','warn'); return; }
+    if(!incomeForm.amount) { notify('Ingresa el monto','warn'); return false; }
+    if(!incomeForm.account) { notify('Selecciona una cuenta de destino','warn'); return false; }
     const previous=expenses.find(item=>item.id===editingId);
     const salary=previous?.operationType==='salary_receipt';
     run(salary?'salary-receipt.edit':'additional-income.edit',{
       operationId:editingId,accountId:incomeForm.account,operationDate:incomeForm.date,amount:incomeForm.amount,
       ...(salary?{}:{concept:incomeForm.description||null,observation:null}),
     },salary?'Sueldo recibido actualizado':'Ingreso actualizado');
-    setEditingId(null);
-    setIncomeForm(emptyForm);
+    return true;
   };
 
   const openEdit = (e) => {
-    setIncomeForm({date:e.date, description:e.description||'', amount:e.amount, account:e.account||''});
+    const existing={date:e.date, description:e.description||'', amount:e.amount, account:e.account||''};
+    setIncomeForm(existing);
+    setInitialIncomeForm(existing);
     setEditingId(e.id);
     setShowForm(true);
   };
@@ -925,8 +943,6 @@ const IngresosPanel = ({state, setState, notify, run}) => {
     run(salary?'salary-receipt.void':'additional-income.void',{operationId:e.id,accountId:e.account,reason:'Anulado desde la interfaz'},salary?'Sueldo recibido anulado':'Ingreso anulado');
   };
 
-  const [showForm, setShowForm] = useState(false);
-  const closeForm = () => { setShowForm(false); setEditingId(null); setIncomeForm(emptyForm); };
   const incomeList = expenses.filter(e=>{
     if(e.type!=='income') return false;
     if(incomeFilter.month && !e.date.startsWith(incomeFilter.month)) return false;
@@ -936,11 +952,14 @@ const IngresosPanel = ({state, setState, notify, run}) => {
   const hasAnyIncome = expenses.some(e=>e.type==='income');
   const totalIncome = incomeList.reduce((a,e)=>a+e.amount, 0);
 
-  const submitAndClose = () => { if(editingId!=null){ saveEdit(); } else { addIncome(); } setShowForm(false); };
+  const submitAndClose = () => {
+    const valid = editingId!=null ? saveEdit() : addIncome();
+    if(valid) resetAndCloseForm();
+  };
 
   return (
     <div>
-      {ConfirmNode}
+      {ConfirmNode}{GuardNode}
 
       {/* Add/edit income modal */}
       {showForm && (
@@ -984,7 +1003,7 @@ const IngresosPanel = ({state, setState, notify, run}) => {
               <option value="">Cuenta destino…</option>
               {accounts.filter(a=>a.status==='active').map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
-            <button className="btn btn-primary" disabled={(state.operations||[]).some(op=>op.periodId===state.period?.id&&op.type==='salary_receipt'&&op.status==='posted')} onClick={()=>{
+            <button className="btn btn-ghost" disabled={(state.operations||[]).some(op=>op.periodId===state.period?.id&&op.type==='salary_receipt'&&op.status==='posted')} onClick={()=>{
               if(!salaryAccount||!salaryAmount){notify('Selecciona cuenta y monto','warn');return;}
               run('salary-receipt.create',{accountId:salaryAccount,operationDate:today(),amount:salaryAmount},'Sueldo recibido registrado');
             }}>Registrar sueldo recibido</button>
@@ -992,7 +1011,7 @@ const IngresosPanel = ({state, setState, notify, run}) => {
         </div>
       )}
       <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
-        <button className="btn btn-primary" style={{width:'100%'}} onClick={()=>{setEditingId(null); setIncomeForm(emptyForm); setShowForm(true);}}><Icon name="plus" size={13}/> Agregar ingreso</button>
+        <button className="btn btn-primary" style={{width:'100%'}} onClick={openNew}><Icon name="plus" size={13}/> Agregar ingreso</button>
         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
           <input className="form-input" type="month" value={incomeFilter.month} onChange={e=>setIncomeFilter(f=>({...f,month:e.target.value}))} style={{flex:'1 1 120px',minWidth:0}} />
           <input className="form-input" placeholder="Buscar..." value={incomeFilter.q} onChange={e=>setIncomeFilter(f=>({...f,q:e.target.value}))} style={{flex:'2 1 140px',minWidth:0}} />
@@ -1010,7 +1029,7 @@ const IngresosPanel = ({state, setState, notify, run}) => {
         <div className="flex justify-between items-center mb-4">
           <span className="text-sm text-gray">{incomeList.length} {incomeList.length===1?'ingreso':'ingresos'}</span>
         </div>
-        {incomeList.length === 0 && <EmptyState {...emptyStateProps(hasAnyIncome, "trending", {title:"Aún no has registrado ingresos.", description:"Registra tus ingresos y deposítalos directamente en una cuenta.", actionLabel:"Agregar ingreso", onAction:()=>setShowForm(true)})}/>}
+        {incomeList.length === 0 && <EmptyState {...emptyStateProps(hasAnyIncome, "trending", {title:"Aún no has registrado ingresos.", description:"Registra tus ingresos y deposítalos directamente en una cuenta.", actionLabel:"Agregar ingreso", onAction:openNew})}/>}
         {incomeList.length > 0 && (
           <div className="table-wrap">
             <table>
@@ -1043,13 +1062,21 @@ const IngresosPanel = ({state, setState, notify, run}) => {
 // ── Expense Tracker ───────────────────────────────────────────────────────────
 const ExpenseTracker = ({state, setState, notify, run}) => {
   const {expenses, varCategories, settings} = state;
-  const [form, setForm] = useState({date:today(),description:'',amount:0,notes:'',account:'',category:''});
+  const emptyExpenseForm = () => ({date:today(),description:'',amount:0,notes:'',account:'',category:''});
+  const [form, setForm] = useState(emptyExpenseForm);
+  const [initialExpenseForm, setInitialExpenseForm] = useState(null);
   const [filter, setFilter] = useState({month:'',category:'',q:''});
   const [tab, setTab] = useState('list');
   const [newCat, setNewCat] = useState('');
   const [editingCategory, setEditingCategory] = useState(null);
   const [editingId, setEditingId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
   const {ask, ConfirmNode} = useConfirm();
+  const expenseDirty = showForm && initialExpenseForm && JSON.stringify(form)!==JSON.stringify(initialExpenseForm);
+  const {guardClose, GuardNode} = useUnsavedGuard(expenseDirty);
+  const resetAndCloseForm = () => { setShowForm(false); setEditingId(null); setInitialExpenseForm(null); setForm(emptyExpenseForm()); };
+  const closeForm = () => guardClose(resetAndCloseForm);
+  const openNew = () => { const clean=emptyExpenseForm(); setEditingId(null); setForm(clean); setInitialExpenseForm(clean); setShowForm(true); };
 
   const accounts = (state.accounts||[]);
   const categories = (varCategories||[]).map(c=>c.name);
@@ -1077,22 +1104,23 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
   };
 
   const add = () => {
-    if(!form.amount) { notify('Ingresa el monto','warn'); return; }
-    if(!form.account || !form.category) { notify('Selecciona cuenta y categoría','warn'); return; }
+    if(!form.amount) { notify('Ingresa el monto','warn'); return false; }
+    if(!form.account || !form.category) { notify('Selecciona cuenta y categoría','warn'); return false; }
     run('variable-expense.create',{accountId:form.account,categoryId:form.category,operationDate:form.date,amount:form.amount,concept:form.description,observation:form.notes||null},'Gasto variable registrado');
-    setForm(f=>({...f,amount:0,description:'',notes:''}));
+    return true;
   };
 
   const saveEdit = () => {
-    if(!form.amount) { notify('Ingresa el monto','warn'); return; }
-    if(!form.account || !form.category) { notify('Selecciona cuenta y categoría','warn'); return; }
+    if(!form.amount) { notify('Ingresa el monto','warn'); return false; }
+    if(!form.account || !form.category) { notify('Selecciona cuenta y categoría','warn'); return false; }
     run('variable-expense.edit',{operationId:editingId,accountId:form.account,categoryId:form.category,operationDate:form.date,amount:form.amount,concept:form.description,observation:form.notes||null},'Gasto variable actualizado');
-    setEditingId(null);
-    setForm({date:today(),description:'',amount:0,notes:'',account:'',category:''});
+    return true;
   };
 
   const openEdit = (e) => {
-    setForm({date:e.date, description:e.description||'', amount:e.amount, notes:e.notes||'',account:e.account||'',category:e.category||''});
+    const existing={date:e.date, description:e.description||'', amount:e.amount, notes:e.notes||'',account:e.account||'',category:e.category||''};
+    setForm(existing);
+    setInitialExpenseForm(existing);
     setEditingId(e.id);
     setShowForm(true);
   };
@@ -1129,14 +1157,14 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>fmt(v)},grid:{color:'#f3f4f6'}},x:{grid:{display:false}}}}
   };
 
-  const [showForm, setShowForm] = useState(false);
-  const closeForm = () => { setShowForm(false); setEditingId(null); setForm({date:today(),description:'',amount:0,notes:'',account:'',category:''}); };
-
-  const submitAndClose = () => { if(editingId!=null){ saveEdit(); } else { add(); } setShowForm(false); };
+  const submitAndClose = () => {
+    const valid = editingId!=null ? saveEdit() : add();
+    if(valid) resetAndCloseForm();
+  };
 
   return (
     <div>
-      {ConfirmNode}
+      {ConfirmNode}{GuardNode}
 
       {/* Add/edit form modal */}
       {showForm && (
@@ -1189,7 +1217,7 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
       {tab==='list' && (
         <>
           <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
-            <button className="btn btn-primary" style={{width:'100%'}} onClick={()=>{setEditingId(null); setForm({date:today(),description:'',amount:0,notes:'',account:'',category:''}); setShowForm(true);}}><Icon name="plus" size={13}/> Agregar gasto variable</button>
+            <button className="btn btn-primary" style={{width:'100%'}} onClick={openNew}><Icon name="plus" size={13}/> Agregar gasto variable</button>
             <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
               <input className="form-input" type="month" value={filter.month} onChange={e=>setFilter(f=>({...f,month:e.target.value}))} style={{flex:'1 1 120px',minWidth:0}} />
               <input className="form-input" placeholder="Buscar..." value={filter.q} onChange={e=>setFilter(f=>({...f,q:e.target.value}))} style={{flex:'2 1 140px',minWidth:0}} />
@@ -1204,7 +1232,7 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
               </div>
             </div>
             {filtered.length===0
-              ? <EmptyState {...emptyStateProps(hasAnyExpense, "expense", {title:"Aún no has registrado gastos variables.", description:"Agrega tu primer gasto variable para llevar el control de tus gastos del mes.", actionLabel:"Agregar gasto", onAction:()=>setShowForm(true)})}/>
+              ? <EmptyState {...emptyStateProps(hasAnyExpense, "expense", {title:"Aún no has registrado gastos variables.", description:"Agrega tu primer gasto variable para llevar el control de tus gastos del mes.", actionLabel:"Agregar gasto", onAction:openNew})}/>
               : <div className="table-wrap">
                 <table>
                   <thead><tr><th>Fecha</th><th>Nombre gasto</th><th>Monto</th><th></th></tr></thead>
@@ -1265,7 +1293,8 @@ const DebtTracker = ({state, setState, notify, run}) => {
   const {ask, ConfirmNode} = useConfirm();
   const isDirty = modal && initForm && JSON.stringify(form) !== JSON.stringify(initForm);
   const {guardClose, GuardNode} = useUnsavedGuard(isDirty);
-  const closeModal = () => guardClose(() => setModal(null));
+  const resetModal = () => { setModal(null); setInitForm(null); setForm(emptyDebt()); };
+  const closeModal = () => guardClose(resetModal);
 
   const activeDebts = debts.filter(d=>d.status!=='pagada');
   const {totalDebt} = dashboardTotals(state);
@@ -1285,7 +1314,7 @@ const DebtTracker = ({state, setState, notify, run}) => {
       if(!completed)return;
       notify('Deuda actualizada','success');
     }
-    setModal(null);
+    resetModal();
   };
 
   const delDebt = async (d) => {
@@ -1467,6 +1496,15 @@ const HistorialMensual = ({state,run,notify}) => {
   const history = (state.monthlyHistory || []).slice().reverse(); // newest first
   const [detail, setDetail] = useState(null);
   const [editOperation,setEditOperation]=useState(null);
+  const [initialEditOperation,setInitialEditOperation]=useState(null);
+  const operationDirty=editOperation&&initialEditOperation&&JSON.stringify(editOperation)!==JSON.stringify(initialEditOperation);
+  const {guardClose:guardOperationClose,GuardNode:OperationGuardNode}=useUnsavedGuard(operationDirty);
+  const resetOperationEdit=()=>{setEditOperation(null);setInitialEditOperation(null);};
+  const closeOperationEdit=()=>guardOperationClose(resetOperationEdit);
+  const openOperationEdit=(operation)=>{
+    const editable={...operation,source:operation.type==='transfer'?`${operation.details.sourceType}:${operation.details.sourceId}`:null,destination:operation.type==='transfer'?`${operation.details.destinationType}:${operation.details.destinationId}`:null};
+    setEditOperation(editable);setInitialEditOperation(editable);
+  };
   const activeOperations=(state.operations||[]).filter(item=>item.periodId===state.period?.id).slice().sort((a,b)=>b.operationDate.localeCompare(a.operationDate));
   const commandPrefix={salary_receipt:'salary-receipt',additional_income:'additional-income',variable_expense:'variable-expense',fixed_expense_payment:'fixed-expense-payment',debt_payment:'debt-payment',savings_deposit:'savings-deposit',savings_withdrawal:'savings-withdrawal',transfer:'transfer',balance_adjustment:'balance-adjustment'};
   const accountEditableTypes=['salary_receipt','additional_income','variable_expense','fixed_expense_payment','debt_payment'];
@@ -1493,20 +1531,20 @@ const HistorialMensual = ({state,run,notify}) => {
       [payload.destinationType,payload.destinationId]=operation.destination.split(':');
     }
     const completed=await run(`${prefix}.edit`,payload,'Operación actualizada');
-    if(completed)setEditOperation(null);
+    if(completed)resetOperationEdit();
   };
-  const EditOperationModal=editOperation&&<div className="modal-backdrop" onClick={()=>setEditOperation(null)}><div className="modal" onClick={e=>e.stopPropagation()}>
+  const EditOperationModal=editOperation&&<div className="modal-backdrop" onClick={closeOperationEdit}><div className="modal" onClick={e=>e.stopPropagation()}>
     <div className="modal-title">Editar operación</div>
     <div className="form-group"><label className="form-label">Fecha</label><input className="form-input" type="date" value={editOperation.operationDate} onChange={e=>setEditOperation(current=>({...current,operationDate:e.target.value}))}/></div>
     <div className="form-group"><label className="form-label">Monto</label><MoneyInput className="form-input" value={editOperation.amount} onChange={amount=>setEditOperation(current=>({...current,amount}))}/></div>
     {accountEditableTypes.includes(editOperation.type)&&<div className="form-group"><label className="form-label">Cuenta</label><select className="form-input form-select" value={editOperation.details.accountId} onChange={e=>setEditOperation(current=>({...current,details:{...current.details,accountId:e.target.value}}))}>{(state.accounts||[]).filter(item=>item.status==='active').map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></div>}
     {editOperation.type==='transfer'&&<>{[['Origen','source'],['Destino','destination']].map(([label,key])=><div className="form-group" key={key}><label className="form-label">{label}</label><select className="form-input form-select" value={editOperation[key]} onChange={e=>setEditOperation(current=>({...current,[key]:e.target.value}))}>{transferTargets.map(target=><option key={target.value} value={target.value}>{target.label}</option>)}</select></div>)}</>}
-    <div className="form-actions"><button className="btn btn-ghost" onClick={()=>setEditOperation(null)}>Cancelar</button><button className="btn btn-primary" onClick={saveOperationEdit}>Guardar</button></div>
+    <div className="form-actions"><button className="btn btn-ghost" onClick={closeOperationEdit}>Cancelar</button><button className="btn btn-primary" onClick={saveOperationEdit}>Guardar</button></div>
   </div></div>;
   const CurrentOperations=()=> <div className="card mb-4">
     <div className="section-title mb-3">Operaciones del periodo activo</div>
     {activeOperations.length===0?<div className="text-sm text-gray">Sin operaciones canónicas.</div>:<div className="table-wrap"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>Monto</th><th>Estado</th><th>Revisiones</th><th></th></tr></thead><tbody>
-      {activeOperations.map(operation=><tr key={operation.id}><td>{operation.operationDate}</td><td>{operation.type}</td><td>{fmt(operation.amount)}</td><td><span className={`badge ${operation.status==='voided'?'badge-gray':'badge-green'}`}>{operation.status}</span></td><td>{(state.operationRevisions||[]).filter(revision=>revision.operationId===operation.id).length}</td><td>{operation.status==='posted'&&operation.type!=='debt_total_adjustment'&&<><button className="btn btn-ghost btn-sm" onClick={()=>setEditOperation({...operation,source:operation.type==='transfer'?`${operation.details.sourceType}:${operation.details.sourceId}`:null,destination:operation.type==='transfer'?`${operation.details.destinationType}:${operation.details.destinationId}`:null})}>Editar</button><button className="btn btn-danger btn-sm" onClick={()=>voidCurrent(operation)}>Anular</button></>}</td></tr>)}
+      {activeOperations.map(operation=><tr key={operation.id}><td>{operation.operationDate}</td><td>{operation.type}</td><td>{fmt(operation.amount)}</td><td><span className={`badge ${operation.status==='voided'?'badge-gray':'badge-green'}`}>{operation.status}</span></td><td>{(state.operationRevisions||[]).filter(revision=>revision.operationId===operation.id).length}</td><td>{operation.status==='posted'&&operation.type!=='debt_total_adjustment'&&<><button className="btn btn-ghost btn-sm" onClick={()=>openOperationEdit(operation)}>Editar</button><button className="btn btn-danger btn-sm" onClick={()=>voidCurrent(operation)}>Anular</button></>}</td></tr>)}
     </tbody></table></div>}
     {(state.legacyEntries||[]).length>0&&<div className="alert alert-error mt-3">{state.legacyEntries.length} entradas legadas de solo lectura. No generan movimientos canónicos.</div>}
   </div>;
@@ -1618,11 +1656,12 @@ const HistorialMensual = ({state,run,notify}) => {
   }
 
   if (history.length === 0) {
-    return <div>{EditOperationModal}<CurrentOperations/><EmptyState icon="chart" title="Aún no hay meses cerrados." description="Cuando cierres un mes, aparecerá aquí para consultarlo después." /></div>;
+    return <div>{OperationGuardNode}{EditOperationModal}<CurrentOperations/><EmptyState icon="document" title="Aún no hay meses cerrados." description="Cuando cierres un mes, aparecerá aquí para consultarlo después." /></div>;
   }
 
   return (
     <div>
+      {OperationGuardNode}
       {EditOperationModal}
       <CurrentOperations/>
       <div className="grid-2">
@@ -1803,7 +1842,10 @@ const Settings = ({state, setState, notify, run, app}) => {
           <button className="btn btn-ghost" onClick={()=>restoreInput.current?.click()}>Restaurar…</button>
           <input ref={restoreInput} type="file" accept="application/json,.json" style={{display:'none'}} onChange={e=>restoreFile(e.target.files?.[0])}/>
         </div>
-        <div className="divider" />
+      </div>
+
+      <div className="card mt-4" style={{maxWidth:520}}>
+        <div className="section-title mb-3">Eliminación definitiva</div>
         <p className="text-sm text-gray">Eliminación definitiva: no existe papelera, recuperación local por 30 días ni deshacer.</p>
         <input className="form-input mt-2" placeholder="Escribe ELIMINAR" value={deleteConfirmation} onChange={e=>setDeleteConfirmation(e.target.value)} />
         <button className="btn btn-danger w-full mt-2" onClick={erase}>Eliminar definitivamente</button>
@@ -2062,10 +2104,10 @@ const StartupCard = ({title,children}) => <div style={{minHeight:'100vh',display
 
 const SetupScreen = ({app,onComplete,notify}) => {
   const [form,setForm]=useState({periodKey:today().slice(0,7),salary:0});
-  const [accounts,setAccounts]=useState([{key:recordId(),name:'Cuenta principal',openingBalance:0}]);
+  const [account,setAccount]=useState({name:'Cuenta principal',openingBalance:0});
   const [busy,setBusy]=useState(false);
   const submit=async()=>{
-    if(!accounts.length||accounts.some(account=>!account.name.trim())){notify('Completa el nombre de cada cuenta','warn');return;}
+    if(!account.name.trim()){notify('Completa el nombre de la cuenta','warn');return;}
     setBusy(true);
     const timestamp=recordTime();
     try{
@@ -2073,25 +2115,23 @@ const SetupScreen = ({app,onComplete,notify}) => {
         currentCivilDate:today(),
         financialSettings:{key:'current',salaryReferenceAmount:form.salary,currency:'CLP',timezone:'America/Santiago',revision:1,createdAt:timestamp,updatedAt:timestamp},
         period:{id:recordId(),periodKey:form.periodKey,status:'open',plannedSalaryAmount:form.salary,openedAt:timestamp,closedAt:null,snapshotId:null,revision:1},
-        accounts:accounts.map(account=>({id:recordId(),name:account.name.trim(),openingBalance:account.openingBalance,currentBalance:account.openingBalance,status:'active',revision:1,createdAt:timestamp,updatedAt:timestamp})),
+        accounts:[{id:recordId(),name:account.name.trim(),openingBalance:account.openingBalance,currentBalance:account.openingBalance,status:'active',revision:1,createdAt:timestamp,updatedAt:timestamp}],
       });
-      if(accounts.some(account=>account.openingBalance<0))notify('Advertencia registrada: una o más cuentas iniciales comienzan con saldo negativo','warn');
+      if(account.openingBalance<0)notify('Advertencia registrada: la cuenta inicial comienza con saldo negativo','warn');
       await onComplete(result.state);
     }catch(error){notify(`${error.code||'SETUP_FAILED'}: ${error.message}`,'error');}
     finally{setBusy(false);}
   };
   return <StartupCard title="Configurar Perita V1.1.0">
-    <p className="text-sm text-gray mb-4">Crea el periodo inicial y al menos una cuenta. Esta confirmación es atómica.</p>
+    <p className="text-sm text-gray mb-4">Crea el periodo inicial y una cuenta. Esta confirmación es atómica.</p>
     <div className="form-group"><label className="form-label">Periodo inicial</label><input className="form-input" type="month" value={form.periodKey} onChange={event=>setForm(current=>({...current,periodKey:event.target.value}))}/></div>
     <div className="form-group"><label className="form-label">Sueldo de referencia</label><MoneyInput className="form-input" value={form.salary} onChange={salary=>setForm(current=>({...current,salary}))}/></div>
-    <div className="form-label">Cuentas iniciales</div>
-    {accounts.map((account,index)=><div className="card-sm mb-2" key={account.key}>
-      <div className="form-group"><label className="form-label">Nombre</label><input autoFocus={index===0} className="form-input" placeholder="Ej: Cuenta corriente" value={account.name} onChange={event=>setAccounts(current=>current.map(item=>item.key===account.key?{...item,name:event.target.value}:item))}/></div>
-      <div className="form-group"><label className="form-label">Saldo inicial</label><MoneyInput className="form-input" value={account.openingBalance} onChange={openingBalance=>setAccounts(current=>current.map(item=>item.key===account.key?{...item,openingBalance}:item))}/></div>
+    <div className="form-label">Cuenta inicial</div>
+    <div className="card-sm mb-4">
+      <div className="form-group"><label className="form-label">Nombre</label><input autoFocus className="form-input" placeholder="Ej: Cuenta corriente" value={account.name} onChange={event=>setAccount(current=>({...current,name:event.target.value}))}/></div>
+      <div className="form-group"><label className="form-label">Saldo inicial</label><MoneyInput className="form-input" value={account.openingBalance} onChange={openingBalance=>setAccount(current=>({...current,openingBalance}))}/></div>
       {account.openingBalance<0&&<div className="alert alert-warn">Esta cuenta comenzará con saldo negativo como excepción de apertura.</div>}
-      {accounts.length>1&&<button className="btn btn-ghost btn-sm" onClick={()=>setAccounts(current=>current.filter(item=>item.key!==account.key))}>Quitar cuenta</button>}
-    </div>)}
-    <button className="btn btn-ghost w-full mb-3" onClick={()=>setAccounts(current=>[...current,{key:recordId(),name:'',openingBalance:0}])}>Agregar otra cuenta</button>
+    </div>
     <button className="btn btn-primary w-full" disabled={busy} onClick={submit}>{busy?'Configurando…':'Completar configuración'}</button>
   </StartupCard>;
 };
@@ -2227,6 +2267,10 @@ const App = () => {
   const monthLabel = now.toLocaleDateString('es-CL',{month:'long',year:'numeric'});
 
   const pageProps = {state, setState, notify, run, app};
+
+  useEffect(()=>{
+    window.scrollTo({top:0,left:0,behavior:'auto'});
+  },[page]);
 
   if(boot.phase==='loading') return <StartupCard title="Abriendo Perita V1.1.0"><p className="text-sm text-gray">Leyendo IndexedDB y verificando el runtime…</p></StartupCard>;
   if(boot.phase==='error') return <StartupCard title="No se pudo abrir Perita"><div className="alert alert-error">{boot.error?.code}: {boot.error?.message}</div><p className="text-sm text-gray mt-3">No se creó una instalación vacía. Conserva esta pantalla para diagnóstico.</p></StartupCard>;

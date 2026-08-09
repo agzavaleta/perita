@@ -498,3 +498,22 @@ test('static integration loads V1.1.0 modules in order and caches the complete o
   assert.match(worker, /perita-v110-shell-v1/);
   assert.match(html, /IndexedDB perita_v110/);
 });
+
+test('UI integration keeps setup, navigation, icons, hierarchy, and unsaved guards coherent', () => {
+  const html = readFileSync(`${__dirname}/../index.html`, 'utf8');
+  const jsx = readFileSync(`${__dirname}/../Perita.jsx`, 'utf8');
+
+  assert.doesNotMatch(jsx, /Agregar otra cuenta|Quitar cuenta/);
+  assert.match(jsx, /accounts:\[\{id:recordId\(\),name:account\.name\.trim\(\)/);
+  assert.match(jsx, /window\.scrollTo\(\{top:0,left:0,behavior:'auto'\}\)/);
+  assert.match(jsx, /EmptyState icon="document" title="Aún no hay meses cerrados\."/);
+  assert.match(jsx, /Agregar gasto fijo<\/button>/);
+  assert.match(jsx, /className="btn btn-ghost" disabled=.*salary_receipt/);
+  assert.match(jsx, /const \[pendingClose, setPendingClose\] = useState\(null\)/);
+  assert.match(jsx, /setPendingClose\(\(\) => closeFn\)/);
+  assert.equal((jsx.match(/if\(valid\) resetAndCloseForm\(\)/g)||[]).length, 2);
+
+  assert.match(html, /\.form-input\{width:100%;min-width:0;max-width:100%/);
+  assert.match(html, /\.items-start\{align-items:flex-start\}/);
+  assert.match(html, /\.mb-1\{margin-bottom:4px\}.*\.mb-3\{margin-bottom:12px\}.*\.mb-5\{margin-bottom:20px\}/);
+});
