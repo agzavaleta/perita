@@ -257,8 +257,8 @@ const Dashboard = ({state, notify}) => {
             {accs.map(a=>(
               <div key={a.id} className="flex justify-between items-center" style={{padding:'9px 0',borderBottom:'1px solid var(--gray-100)'}}>
                 <div>
-                  <div style={{fontSize:13,fontWeight:600}}>{a.name}</div>
-                  <div style={{fontSize:11,color:'var(--gray-400)'}}>{a.type==='cash'?'Efectivo':'Banco'}{a.bank?' · '+a.bank:''}</div>
+                  <div style={{fontSize:16,fontWeight:600}}>{a.name}</div>
+                  <div style={{fontSize:13,color:'var(--gray-400)'}}>{a.type==='cash'?'Efectivo':'Banco'}{a.bank?' · '+a.bank:''}</div>
                 </div>
                 <span style={{fontWeight:700,color:'var(--gray-900)'}}>{fmt(a.balance)}</span>
               </div>
@@ -285,8 +285,8 @@ const Dashboard = ({state, notify}) => {
                 <div className="flex items-center gap-2">
                   <span style={{fontSize:16}}>{w.emoji}</span>
                   <div>
-                    <div style={{fontSize:13,fontWeight:600}}>{w.name}</div>
-                    {w.bank && <div style={{fontSize:11,color:'var(--gray-400)'}}>{w.bank}</div>}
+                    <div style={{fontSize:16,fontWeight:600}}>{w.name}</div>
+                    {w.bank && <div style={{fontSize:13,color:'var(--gray-400)'}}>{w.bank}</div>}
                   </div>
                 </div>
                 <span style={{fontWeight:700,color:'var(--gray-900)'}}>{fmt(w.balance)}</span>
@@ -308,7 +308,7 @@ const Dashboard = ({state, notify}) => {
             <div>
               <div className="stat-label" style={{color:'rgba(255,255,255,.75)'}}>Disponible</div>
               <div style={{fontSize:32,fontWeight:700,letterSpacing:'-.02em',margin:'8px 0 4px'}}>{fmt(totalAvailable)}</div>
-              <div style={{fontSize:12,color:'rgba(255,255,255,.7)'}}>{accs.length} cuenta{accs.length!==1?'s':''} · toca para ver</div>
+              <div style={{fontSize:14,color:'rgba(255,255,255,.7)'}}>{accs.length} cuenta{accs.length!==1?'s':''} · toca para ver</div>
             </div>
             <div style={{background:'rgba(255,255,255,.15)',borderRadius:10,padding:10}}><Icon name="accounts" size={20} color="#fff"/></div>
           </div>
@@ -319,7 +319,7 @@ const Dashboard = ({state, notify}) => {
             <div>
               <div className="stat-label" style={{color:'rgba(255,255,255,.75)'}}>Ahorros</div>
               <div style={{fontSize:32,fontWeight:700,letterSpacing:'-.02em',margin:'8px 0 4px'}}>{fmt(totalSavings)}</div>
-              <div style={{fontSize:12,color:'rgba(255,255,255,.7)'}}>{wallets.length} meta{wallets.length!==1?'s':''} · toca para ver</div>
+              <div style={{fontSize:14,color:'rgba(255,255,255,.7)'}}>{wallets.length} meta{wallets.length!==1?'s':''} · toca para ver</div>
             </div>
             <div style={{background:'rgba(255,255,255,.15)',borderRadius:10,padding:10}}><Icon name="save2" size={20} color="#fff"/></div>
           </div>
@@ -350,7 +350,7 @@ const Dashboard = ({state, notify}) => {
           <div key={i} className="card">
             <div className={`stat-icon ${k.color}`}><Icon name={k.icon} size={17} /></div>
             <div className="stat-label">{k.label}</div>
-            <div className="stat-value" style={{fontSize:18}}>{fmt(k.value)}</div>
+            <div className="stat-value" style={{fontSize:20}}>{fmt(k.value)}</div>
             <div className="stat-sub">{k.sub}</div>
           </div>
         ))}
@@ -395,7 +395,7 @@ const Dashboard = ({state, notify}) => {
               </div>
             );
           })}
-          {!(debts||[]).length && <div style={{textAlign:"center",padding:"20px 0",color:"var(--gray-400)",fontSize:13}}>Sin deudas activas</div>}
+          {!(debts||[]).length && <div style={{textAlign:"center",padding:"20px 0",color:"var(--gray-400)",fontSize:14}}>Sin deudas activas</div>}
         </div>
         <div className="card">
           <div className="section-title mb-4">Ahorros</div>
@@ -530,7 +530,7 @@ const AccountsPage = ({state, setState, notify, run}) => {
               </div>
             </div>
             <div className="stat-label">Cuenta</div>
-            <div style={{fontSize:13,fontWeight:600,color:'var(--gray-800)',marginBottom:4}}>{a.name}</div>
+            <div style={{fontSize:16,fontWeight:600,color:'var(--gray-800)',marginBottom:4}}>{a.name}</div>
             <div style={{fontSize:24,fontWeight:700,letterSpacing:'-.02em',color:'var(--gray-900)',margin:'6px 0'}}>{fmt(a.balance)}</div>
             <button className="btn btn-ghost btn-sm w-full mt-2" onClick={()=>adjustBalance(a)}>Ajustar saldo</button>
           </div>
