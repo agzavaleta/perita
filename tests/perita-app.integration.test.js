@@ -6,6 +6,8 @@ const { createHash } = require('node:crypto');
 const { readFileSync } = require('node:fs');
 const { IDBFactory, IDBKeyRange } = require('fake-indexeddb');
 const IndexedDb = require('../perita-indexeddb.js');
+const Runtime = require('../perita-runtime.js');
+const DomainCommands = require('../perita-domain-commands.js');
 const PeritaApp = require('../perita-app.js');
 
 const NOW = '2026-08-05T12:00:00.000Z';
@@ -107,6 +109,165 @@ test('application integration initializes a new install without touching legacy 
   assert.equal(completed.state.accounts[0].balance, 100000);
   assert.equal(completed.state.summary.totalIncomeAmount, 0);
   assert.equal(source.writes.length, 0);
+});
+
+test('post-setup account creation records the requested real balance as a canonical adjustment', async (t) => {
+  const factory = new IDBFactory();
+  const app = application(factory, { prefix: 'a1000000' });
+  t.after(() => app.close());
+  await app.initialize();
+  await app.completeSetup(setupPayload());
+  const deliveredStates = [];
+  const unsubscribe = app.subscribe((state) => deliveredStates.push(state));
+  t.after(unsubscribe);
+
+  const completed = await app.createAccountWithBalance({
+    name: 'Cuenta nueva',
+    currentBalance: 500000,
+    operationDate: DATE,
+  });
+  const account = completed.state._snapshot.accounts.find((item) => item.id === completed.accountId);
+  const opening = completed.state._snapshot.periodOpenings.find((item) => item.targetId === completed.accountId);
+  const operation = completed.state.operations.find((item) => item.details.accountId === completed.accountId);
+  const movement = completed.state.movements.find((item) => item.operationId === operation.id);
+
+  assert.equal(account.openingBalance, 0);
+  assert.equal(account.currentBalance, 500000);
+  assert.equal(opening.openingAmount, 0);
+  assert.equal(operation.type, 'balance_adjustment');
+  assert.equal(operation.status, 'posted');
+  assert.equal(movement.targetType, 'account');
+  assert.equal(movement.targetId, completed.accountId);
+  assert.equal(movement.delta, 500000);
+  assert.equal(completed.state.accounts.find((item) => item.id === completed.accountId).balance, 500000);
+  assert.deepEqual(deliveredStates.map((state) => state.accounts.find((item) => item.id === completed.accountId)?.balance), [500000]);
+
+  await assert.rejects(
+    app.createAccountWithBalance({ name: 'Línea utilizada', currentBalance: -25000, operationDate: DATE }),
+    (error) => error.code === 'DOMAIN_STATE_INVALID' && /cannot leave the Account negative/.test(error.message)
+  );
+  assert.equal(app.state._snapshot.accounts.some((item) => item.name === 'Línea utilizada'), false);
+});
+
+test('a failed initial balance adjustment leaves the newly created account explicitly at zero', async (t) => {
+  const factory = new IDBFactory();
+  const createUuid = sequence('a1500000');
+  const storage = IndexedDb.createPeritaIndexedDb({
+    indexedDB: factory,
+    IDBKeyRange,
+    crypto: { randomUUID: () => id(901) },
+    now: () => NOW,
+  });
+  const runtime = Runtime.createPeritaRuntime({
+    storage,
+    now: () => NOW,
+    tabId: 'integration-tab-failed-adjustment',
+    createUuid,
+  });
+  const realCommands = DomainCommands.createPeritaDomainCommands({
+    runtime,
+    now: () => NOW,
+    createUuid,
+    sha256,
+  });
+  const commands = {
+    ...realCommands,
+    balanceAdjustment: {
+      ...realCommands.balanceAdjustment,
+      create: async () => {
+        const error = new Error('induced balance adjustment failure');
+        error.code = 'INDUCED_ADJUSTMENT_FAILURE';
+        throw error;
+      },
+    },
+  };
+  const app = PeritaApp.createPeritaApplication({
+    indexedDB: factory,
+    IDBKeyRange,
+    storage,
+    runtime,
+    commands,
+    legacyStorage: legacyStorage(null),
+    now: () => NOW,
+    createUuid,
+    sha256,
+    tabId: 'integration-tab-failed-adjustment',
+    channel: null,
+  });
+  t.after(() => app.close());
+  await app.initialize();
+  await app.completeSetup(setupPayload());
+  const deliveredStates = [];
+  const unsubscribe = app.subscribe((state) => deliveredStates.push(state));
+  t.after(unsubscribe);
+
+  await assert.rejects(
+    app.createAccountWithBalance({
+      name: 'Cuenta con ajuste fallido',
+      currentBalance: 60000,
+      operationDate: DATE,
+    }),
+    (error) => error.code === 'ACCOUNT_BALANCE_ADJUSTMENT_FAILED' &&
+      error.context.causeCode === 'INDUCED_ADJUSTMENT_FAILURE' &&
+      /se creó en \$0/.test(error.message)
+  );
+
+  const state = app.state;
+  const account = state._snapshot.accounts.find((item) => item.name === 'Cuenta con ajuste fallido');
+  const opening = state._snapshot.periodOpenings.find((item) => item.targetId === account.id);
+  assert.equal(account.openingBalance, 0);
+  assert.equal(account.currentBalance, 0);
+  assert.equal(opening.openingAmount, 0);
+  assert.equal(state.operations.some((item) => item.details.accountId === account.id), false);
+  assert.equal(state.movements.some((item) => item.targetId === account.id), false);
+  assert.deepEqual(
+    deliveredStates.map((item) => item.accounts.find((entry) => entry.id === account.id)?.balance),
+    [0]
+  );
+});
+
+test('active accounts can be adjusted while deactivation and inactive projections stay safe', async (t) => {
+  const factory = new IDBFactory();
+  const app = application(factory, { prefix: 'a2000000' });
+  t.after(() => app.close());
+  await app.initialize();
+  await app.completeSetup(setupPayload());
+  const created = await app.createAccountWithBalance({
+    name: 'Cuenta operativa',
+    currentBalance: 0,
+    operationDate: DATE,
+  });
+
+  const adjusted = await app.execute('balance-adjustment.create', {
+    accountId: created.accountId,
+    operationDate: DATE,
+    delta: 25000,
+    reason: 'Ajuste de prueba',
+  });
+  assert.equal(adjusted.state.accounts.find((item) => item.id === created.accountId).balance, 25000);
+  await assert.rejects(
+    app.execute('account.deactivate', { accountId: created.accountId }),
+    (error) => error.code === 'DOMAIN_STATE_INVALID' && /balance must be zero/.test(error.message)
+  );
+
+  await app.execute('balance-adjustment.create', {
+    accountId: created.accountId,
+    operationDate: DATE,
+    delta: -25000,
+    reason: 'Dejar saldo en cero',
+  });
+  const deactivated = await app.execute('account.deactivate', { accountId: created.accountId });
+  assert.equal(deactivated.state.accounts.some((item) => item.id === created.accountId), false);
+  assert.equal(deactivated.state._snapshot.accounts.find((item) => item.id === created.accountId).status, 'inactive');
+  await assert.rejects(
+    app.execute('balance-adjustment.create', {
+      accountId: created.accountId,
+      operationDate: DATE,
+      delta: 1,
+      reason: 'No permitido',
+    }),
+    (error) => error.code === 'DOMAIN_STATE_INVALID' && /must exist and be active/.test(error.message)
+  );
 });
 
 test('application adapter delegates a UI intent to a domain command and reloads IndexedDB', async (t) => {
@@ -509,11 +670,19 @@ test('UI integration keeps setup, navigation, icons, hierarchy, and unsaved guar
   assert.match(jsx, /EmptyState icon="document" title="Aún no hay meses cerrados\."/);
   assert.match(jsx, /Agregar gasto fijo<\/button>/);
   assert.match(jsx, /className="btn btn-ghost" disabled=.*salary_receipt/);
+  assert.match(jsx, /Sin ahorros registrados\./);
+  assert.match(jsx, /app\.createAccountWithBalance/);
+  assert.match(jsx, /title:'Desactivar cuenta'/);
+  assert.match(jsx, /Para desactivar esta cuenta, primero deja su saldo en \$0\./);
+  assert.match(jsx, /Esta cuenta está desactivada y no admite operaciones\./);
   assert.match(jsx, /const \[pendingClose, setPendingClose\] = useState\(null\)/);
   assert.match(jsx, /setPendingClose\(\(\) => closeFn\)/);
   assert.equal((jsx.match(/if\(valid\) resetAndCloseForm\(\)/g)||[]).length, 2);
 
   assert.match(html, /\.form-input\{width:100%;min-width:0;max-width:100%/);
+  assert.match(html, /\.form-input\[type="date"\],\.form-input\[type="month"\]\{display:block;inline-size:100%;min-inline-size:0/);
+  assert.match(html, /::-webkit-date-and-time-value\{inline-size:100%;min-inline-size:0/);
+  assert.match(html, /\.notif-close\{width:32px;height:32px;min-width:32px/);
   assert.match(html, /\.items-start\{align-items:flex-start\}/);
   assert.match(html, /\.mb-1\{margin-bottom:4px\}.*\.mb-3\{margin-bottom:12px\}.*\.mb-5\{margin-bottom:20px\}/);
 });

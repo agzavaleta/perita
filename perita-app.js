@@ -259,7 +259,7 @@
       })
       : null;
     const instanceByTemplate = new Map(activeInstances.map((instance) => [instance.templateId, instance]));
-    const accounts = snapshot.accounts.map((account) => ({
+    const accounts = snapshot.accounts.filter((account) => account.status === 'active').map((account) => ({
       id: account.id, name: account.name, balance: account.currentBalance,
       type: 'bank', bank: '', status: account.status, revision: account.revision,
     }));
@@ -369,6 +369,8 @@
     let heartbeatHandle = null;
     let lastState = null;
     let stateListener = null;
+    let stateDeliveryPauseDepth = 0;
+    let pendingStateDelivery = null;
 
     async function readSnapshot() {
       await storage.open();
@@ -382,8 +384,18 @@
     async function refresh() {
       const snapshot = await readSnapshot();
       lastState = snapshotToView(snapshot);
-      if (stateListener) stateListener(lastState);
+      if (stateListener) {
+        if (stateDeliveryPauseDepth > 0) pendingStateDelivery = lastState;
+        else stateListener(lastState);
+      }
       return lastState;
+    }
+
+    function flushPendingStateDelivery() {
+      if (stateDeliveryPauseDepth !== 0 || pendingStateDelivery === null) return;
+      const nextState = pendingStateDelivery;
+      pendingStateDelivery = null;
+      if (stateListener) stateListener(nextState);
     }
 
     function emit(type) {
@@ -619,6 +631,70 @@
       }
     }
 
+    async function createAccountWithBalance(input) {
+      const request = input || {};
+      const currentBalance = Contracts.assertMoney(request.currentBalance === undefined ? 0 : request.currentBalance, {
+        field: 'currentBalance',
+        allowZero: true,
+        allowNegative: true,
+      });
+      if (currentBalance < 0) {
+        throw new Contracts.PeritaError(
+          Contracts.ERROR_CODES.DOMAIN_STATE_INVALID,
+          'a post-setup Account balance adjustment cannot leave the Account negative',
+          { currentBalance }
+        );
+      }
+      const accountId = request.accountId || createUuid();
+      const timestamp = request.timestamp || now();
+      const operationDate = request.operationDate || civilDate(new Date(timestamp));
+      let created = null;
+      let completed = null;
+      stateDeliveryPauseDepth += 1;
+      try {
+        created = await execute('account.create', {
+          account: {
+            id: accountId,
+            name: request.name,
+            openingBalance: 0,
+            currentBalance: 0,
+            status: 'active',
+            revision: 1,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+        });
+        completed = created;
+        if (currentBalance !== 0) {
+          completed = await execute('balance-adjustment.create', {
+            accountId,
+            operationDate,
+            delta: currentBalance,
+            reason: request.reason || 'Saldo incorporado al crear la cuenta',
+          });
+        }
+        return immutable({
+          accountId,
+          created: created.result,
+          adjustment: currentBalance === 0 ? null : completed.result,
+          state: completed.state,
+        });
+      } catch (cause) {
+        if (created !== null) {
+          throw new Contracts.PeritaError(
+            'ACCOUNT_BALANCE_ADJUSTMENT_FAILED',
+            'La cuenta se creó en $0, pero no fue posible incorporar el saldo indicado.',
+            { accountId, currentBalance, causeCode: cause && cause.code ? cause.code : null },
+            cause
+          );
+        }
+        throw cause;
+      } finally {
+        stateDeliveryPauseDepth -= 1;
+        flushPendingStateDelivery();
+      }
+    }
+
     async function exportBackup() {
       return backup.exportBackup();
     }
@@ -689,6 +765,7 @@
       completeSetup,
       confirmMigration,
       execute,
+      createAccountWithBalance,
       exportBackup,
       validateBackup: backup.validateBackup,
       restoreBackup,

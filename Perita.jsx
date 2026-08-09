@@ -32,6 +32,20 @@ const MoneyInput = ({value,onChange,emptyZero=true,placeholder='0',...props}) =>
 };
 const pct = (a,b) => b ? Math.min(100,Math.round((a/b)*100)) : 0;
 const today = () => PeritaApp.civilDate(new Date());
+const expectedDomainErrorMessage = (error) => {
+  if(!error || error.code!=='DOMAIN_STATE_INVALID') return null;
+  if(/balance must be zero before deactivation/i.test(error.message||'')) {
+    return 'Para desactivar esta cuenta, primero deja su saldo en $0.';
+  }
+  if(/financial movement target must exist and be active|only an active Account/i.test(error.message||'')) {
+    return 'Esta cuenta está desactivada y no admite operaciones.';
+  }
+  if(/post-setup Account balance adjustment cannot leave the Account negative/i.test(error.message||'')) {
+    return 'El saldo de una cuenta nueva no puede ser negativo porque el ajuste trazable no permite dejarla bajo $0.';
+  }
+  return null;
+};
+const presentError = (error) => expectedDomainErrorMessage(error) || `${error?.code||'ERROR'}: ${error?.message||'Ocurrió un error inesperado'}`;
 const monthsLeft = (current,goal,monthly) => {
   if(monthly<=0) return '∞';
   const left = goal - current;
@@ -208,7 +222,7 @@ const Notifs = ({notifs,dismiss}) => (
       <div key={n.id} className={`notif ${n.type==='warn'?'notif-warn':n.type==='error'?'notif-error':''}`}>
         <Icon name={n.type==='warn'||n.type==='error'?'alert':'check'} size={14} />
         <span style={{flex:1}}>{n.msg}</span>
-        <button onClick={()=>dismiss(n.id)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--gray-400)',lineHeight:1}}>×</button>
+        <button className="notif-close" aria-label="Cerrar notificación" onClick={()=>dismiss(n.id)}>×</button>
       </div>
     ))}
   </div>
@@ -240,7 +254,7 @@ const ChartCanvas = ({id,config,height=220}) => {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 const Dashboard = ({state, notify}) => {
   const {settings,wallets,debts,accounts} = state;
-  const accs = accounts || [];
+  const accs = (accounts || []).filter(account=>account.status==='active');
 
   // Canonical totals are projected from V1.1.0 operations and movements.
   const {
@@ -300,6 +314,7 @@ const Dashboard = ({state, notify}) => {
                 <span style={{fontWeight:700,color:'var(--gray-900)'}}>{fmt(w.balance)}</span>
               </div>
             ))}
+            {wallets.length===0 && <div className="text-sm text-gray">Sin ahorros registrados.</div>}
             <div className="flex justify-between items-center" style={{paddingTop:14}}>
               <span style={{fontWeight:700,fontSize:15}}>Total</span>
               <span style={{fontWeight:700,fontSize:18,color:'var(--blue)'}}>{fmt(totalSavings)}</span>
@@ -419,6 +434,7 @@ const Dashboard = ({state, notify}) => {
               <span className="text-xs text-gray">{pct(w.balance,w.goal)}%</span>
             </div>
           ))}
+          {wallets.length===0 && <div style={{textAlign:'center',padding:'20px 0',color:'var(--gray-400)',fontSize:14}}>Sin ahorros registrados.</div>}
         </div>
       </div>
     </div>
@@ -428,8 +444,8 @@ const Dashboard = ({state, notify}) => {
 // ── Accounts ──────────────────────────────────────────────────────────────────
 const emptyAccount = () => ({name:'',type:'bank',bank:'',balance:0});
 
-const AccountsPage = ({state, setState, notify, run}) => {
-  const accounts = state.accounts || [];
+const AccountsPage = ({state, setState, notify, run, app}) => {
+  const accounts = (state.accounts || []).filter(account=>account.status==='active');
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState(emptyAccount());
   const [initForm, setInitForm] = useState(null);
@@ -444,25 +460,42 @@ const AccountsPage = ({state, setState, notify, run}) => {
 
   const save = async () => {
     if(!form.name) { notify('Completa el nombre','warn'); return; }
-    if(modal==='new' && form.balance!==0) { notify('Una cuenta nueva comienza en cero; ajústala después de crearla','warn'); return; }
     if(modal==='new'){
-      const completed=await setState(s=>({...s, accounts:[...(s.accounts||[]),{...form,id:s.nextId}], nextId:s.nextId+1}));
-      if(!completed)return;
-      notify('Cuenta agregada','success');
+      try {
+        const completed=await app.createAccountWithBalance({
+          name:form.name.trim(),
+          currentBalance:form.balance,
+          operationDate:today(),
+          reason:'Saldo incorporado al crear la cuenta',
+        });
+        setState(completed.state);
+        notify('Cuenta agregada','success');
+      } catch(error) {
+        if(error?.code==='ACCOUNT_BALANCE_ADJUSTMENT_FAILED') {
+          if(app.state)setState(app.state);
+          const causeCode=error.context?.causeCode?` (${error.context.causeCode})`:'';
+          notify(`${error.message} Usa “Ajustar saldo” para completarlo.${causeCode}`,'error');
+          resetModal();
+          return;
+        }
+        notify(presentError(error),'error');
+        return;
+      }
     } else {
-      const completed=await setState(s=>({...s, accounts:(s.accounts||[]).map(a=>a.id===form.id?form:a)}));
+      const completed=await run('account.update',{accountId:form.id,changes:{name:form.name.trim()}},'Cuenta actualizada');
       if(!completed)return;
-      notify('Cuenta actualizada','success');
     }
     resetModal();
   };
 
-  const del = async (a) => {
-    const ok = await ask({title:'Eliminar cuenta',message:`¿Eliminar "${a.name}"? Esta acción no se puede deshacer.`,confirmLabel:'Eliminar'});
+  const deactivate = async (a) => {
+    const ok = await ask({
+      title:'Desactivar cuenta',
+      message:`¿Desactivar "${a.name}"? Se conservarán sus operaciones e historial, pero dejará de estar disponible para nuevas acciones.`,
+      confirmLabel:'Desactivar',
+    });
     if(!ok) return;
-    const completed=await setState(s=>({...s, accounts:(s.accounts||[]).filter(x=>x.id!==a.id)}));
-    if(!completed)return;
-    notify('Cuenta eliminada','success');
+    await run('account.deactivate',{accountId:a.id},'Cuenta desactivada');
   };
 
   const adjustModal = useState(null);
@@ -471,6 +504,7 @@ const AccountsPage = ({state, setState, notify, run}) => {
   const [transferForm,setTransferForm]=useState({source:'',destination:'',amount:0,date:today()});
 
   const adjustBalance = (a) => {
+    if(a.status!=='active') { notify('Esta cuenta está desactivada y no admite operaciones.','warn'); return; }
     setAdjustForm({id:a.id, balance:a.balance, name:a.name});
     adjustModal[1](true);
   };
@@ -498,9 +532,15 @@ const AccountsPage = ({state, setState, notify, run}) => {
             <div className="form-actions mt-4">
               <button className="btn btn-ghost" onClick={()=>adjustModal[1](false)}>Cancelar</button>
               <button className="btn btn-primary" onClick={async()=>{
-                const completed=await setState(s=>({...s, accounts:(s.accounts||[]).map(x=>x.id===adjustForm.id?{...x,balance:adjustForm.balance}:x)}));
+                const current=accounts.find(account=>account.id===adjustForm.id);
+                if(!current){notify('Esta cuenta está desactivada y no admite operaciones.','warn');adjustModal[1](false);return;}
+                const delta=adjustForm.balance-current.balance;
+                if(delta===0){adjustModal[1](false);return;}
+                const completed=await run('balance-adjustment.create',{
+                  accountId:current.id,operationDate:today(),delta,
+                  reason:'Ajuste solicitado desde la interfaz',
+                },'Saldo actualizado');
                 if(!completed)return;
-                notify('Saldo actualizado','success');
                 adjustModal[1](false);
               }}>Guardar</button>
             </div>
@@ -535,7 +575,7 @@ const AccountsPage = ({state, setState, notify, run}) => {
               </div>
               <div className="flex gap-2">
                 <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>openEdit(a)}><Icon name="pencil" size={13}/></button>
-                <button className="btn btn-danger btn-sm btn-icon" onClick={()=>del(a)}><Icon name="trash" size={13}/></button>
+                <button className="btn btn-danger btn-sm btn-icon" aria-label={`Desactivar ${a.name}`} title="Desactivar cuenta" onClick={()=>deactivate(a)}><Icon name="x" size={13}/></button>
               </div>
             </div>
             <div className="stat-label">Cuenta</div>
@@ -558,7 +598,7 @@ const AccountsPage = ({state, setState, notify, run}) => {
             <div className="form-group">
               <label className="form-label">Saldo actual</label>
               <MoneyInput className="form-input" disabled={modal==='edit'} value={form.balance} onChange={balance=>setForm(f=>({...f,balance}))} />
-              <div className="text-xs text-gray mt-1">Las cuentas posteriores al setup se crean en cero. Los cambios usan ajustes trazables.</div>
+              <div className="text-xs text-gray mt-1">La apertura técnica será $0. Si indicas un saldo, se registrará mediante un ajuste trazable.</div>
             </div>
             <div className="form-actions mt-4">
               <button className="btn btn-ghost" onClick={closeModal}>Cancelar</button>
@@ -2223,7 +2263,7 @@ const App = () => {
 
   const run=useCallback(async(command,payload,success)=>{
     try{const completed=await app.execute(command,payload);setStateRaw(completed.state);if(success)notify(success,'success');return completed;}
-    catch(error){notify(`${error.code||'ERROR'}: ${error.message}`,'error');return null;}
+    catch(error){notify(presentError(error),'error');return null;}
   },[app,notify]);
 
   const setState = useCallback((updater) => {
@@ -2233,7 +2273,7 @@ const App = () => {
     return translateLegacyIntent(app,previous,next).then(result=>{
       if(result?.state)setStateRaw(result.state);
       return result;
-    }).catch(error=>{notify(`${error.code||'ERROR'}: ${error.message}`,'error');return null;});
+    }).catch(error=>{notify(presentError(error),'error');return null;});
   }, [app,state,notify]);
 
   const dismiss = (id) => setNotifs(n=>n.filter(x=>x.id!==id));
