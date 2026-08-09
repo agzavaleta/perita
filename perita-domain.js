@@ -271,15 +271,14 @@
     const record = requireRecord(value, 'Period');
     requireFields(record, [
       'id', 'periodKey', 'status', 'plannedSalaryAmount',
-      'variableExpenseBudgetAmount', 'plannedSavingsAmount', 'openedAt',
-      'closedAt', 'snapshotId', 'revision',
+      'openedAt', 'closedAt', 'snapshotId', 'revision',
     ], 'Period');
     assertUuid(record.id, { field: 'Period.id' });
     assertPeriod(record.periodKey, { field: 'Period.periodKey' });
     assertEnum(record.status, PERIOD_STATUSES, 'Period.status');
-    for (const field of ['plannedSalaryAmount', 'variableExpenseBudgetAmount', 'plannedSavingsAmount']) {
-      assertMoney(record[field], { field: `Period.${field}`, allowZero: true });
-    }
+    assertMoney(record.plannedSalaryAmount, {
+      field: 'Period.plannedSalaryAmount', allowZero: true,
+    });
     assertTimestamp(record.openedAt, 'Period.openedAt');
     assertNullableTimestamp(record.closedAt, 'Period.closedAt');
     assertNullableUuid(record.snapshotId, 'Period.snapshotId');
@@ -298,7 +297,19 @@
         { periodId: record.id }
       );
     }
-    return immutableCopy(record, 'Period');
+    // Older V1.1.0 records can contain retired monthly-planning fields. Build
+    // the canonical shape explicitly so they remain readable but disappear on
+    // the next canonical write instead of leaking into projections or backups.
+    return immutableCopy({
+      id: record.id,
+      periodKey: record.periodKey,
+      status: record.status,
+      plannedSalaryAmount: record.plannedSalaryAmount,
+      openedAt: record.openedAt,
+      closedAt: record.closedAt,
+      snapshotId: record.snapshotId,
+      revision: record.revision,
+    }, 'Period');
   }
 
   function validatePeriodOpening(value) {

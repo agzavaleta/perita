@@ -85,8 +85,6 @@ function activePeriod(overrides) {
     periodKey: '2026-08',
     status: 'open',
     plannedSalaryAmount: 900000,
-    variableExpenseBudgetAmount: 200000,
-    plannedSavingsAmount: 100000,
     openedAt: START,
     closedAt: null,
     snapshotId: null,
@@ -155,7 +153,7 @@ async function planningInput(storage, overrides) {
     expectedWriterEpoch: 1,
     periodId: id(1),
     expectedPeriodRevision: 1,
-    variableExpenseBudgetAmount: 250000,
+    plannedSalaryAmount: 950000,
     ...(overrides || {}),
   };
 }
@@ -337,40 +335,14 @@ test('V1.1.0 reference salary updates', async (t) => {
   });
 });
 
-test('V1.1.0 active-period planning updates', async (t) => {
-  await t.test('budget, savings, planned salary, and combined updates use approved fields', async (t2) => {
-    const cases = [
-      { variableExpenseBudgetAmount: 300000 },
-      { plannedSavingsAmount: 150000, variableExpenseBudgetAmount: undefined },
-      { plannedSalaryAmount: 880000, variableExpenseBudgetAmount: undefined },
-      { variableExpenseBudgetAmount: 310000, plannedSavingsAmount: 160000 },
-    ];
-    for (const patch of cases) {
-      const f = await fixture(t2);
-      await bootstrap(f);
-      const overrides = { ...patch };
-      if (overrides.variableExpenseBudgetAmount === undefined) {
-        delete overrides.variableExpenseBudgetAmount;
-        const state = await f.storage.get('system', 'runtime');
-        const completed = await f.commands.period.updatePlanning({
-          expectedDataRevision: state.dataRevision,
-          expectedWriterEpoch: 1,
-          periodId: id(1),
-          expectedPeriodRevision: 1,
-          ...overrides,
-        });
-        for (const [field, value] of Object.entries(overrides)) {
-          assert.equal(completed.result.period[field], value);
-        }
-      } else {
-        const completed = await f.commands.period.updatePlanning(
-          await planningInput(f.storage, overrides)
-        );
-        for (const [field, value] of Object.entries(overrides)) {
-          assert.equal(completed.result.period[field], value);
-        }
-      }
-    }
+test('V1.1.0 active-period planned salary updates', async (t) => {
+  await t.test('planned salary remains the only approved Period planning field', async (t2) => {
+    const f = await fixture(t2);
+    await bootstrap(f);
+    const completed = await f.commands.period.updatePlanning(
+      await planningInput(f.storage, { plannedSalaryAmount: 880000 })
+    );
+    assert.equal(completed.result.period.plannedSalaryAmount, 880000);
   });
 
   await t.test('zero is allowed and unedited fields are preserved', async (t2) => {
@@ -378,11 +350,9 @@ test('V1.1.0 active-period planning updates', async (t) => {
     await bootstrap(f);
     const before = await f.storage.get('periods', id(1));
     const completed = await f.commands.period.updatePlanning(
-      await planningInput(f.storage, { variableExpenseBudgetAmount: 0 })
+      await planningInput(f.storage, { plannedSalaryAmount: 0 })
     );
-    assert.equal(completed.result.period.variableExpenseBudgetAmount, 0);
-    assert.equal(completed.result.period.plannedSalaryAmount, before.plannedSalaryAmount);
-    assert.equal(completed.result.period.plannedSavingsAmount, before.plannedSavingsAmount);
+    assert.equal(completed.result.period.plannedSalaryAmount, 0);
     for (const field of ['id', 'periodKey', 'status', 'openedAt', 'closedAt', 'snapshotId']) {
       assert.equal(completed.result.period[field], before[field], field);
     }
@@ -390,11 +360,11 @@ test('V1.1.0 active-period planning updates', async (t) => {
   });
 
   await t.test('negative and invalid planning values are rejected', async (t2) => {
-    for (const variableExpenseBudgetAmount of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    for (const plannedSalaryAmount of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       const f = await fixture(t2);
       await bootstrap(f);
       const error = await captureRejection(f.commands.period.updatePlanning(
-        await planningInput(f.storage, { variableExpenseBudgetAmount })
+        await planningInput(f.storage, { plannedSalaryAmount })
       ));
       assert.ok([
         Contracts.ERROR_CODES.MONEY_NEGATIVE_NOT_ALLOWED,
@@ -411,6 +381,17 @@ test('V1.1.0 active-period planning updates', async (t) => {
       ))).code,
       Contracts.ERROR_CODES.INVALID_DOMAIN_FIELD
     );
+
+    for (const retiredField of ['variableExpenseBudgetAmount', 'plannedSavingsAmount']) {
+      const retired = await fixture(t2);
+      await bootstrap(retired);
+      assert.equal(
+        (await captureRejection(retired.commands.period.updatePlanning(
+          await planningInput(retired.storage, { [retiredField]: 1 })
+        ))).code,
+        Contracts.ERROR_CODES.INVALID_DOMAIN_FIELD
+      );
+    }
 
     const empty = await fixture(t2);
     await bootstrap(empty);
@@ -512,8 +493,7 @@ test('V1.1.0 active-period planning updates', async (t) => {
     const previous = await f.storage.get('periods', id(1));
     const completed = await f.commands.period.updatePlanning(
       await planningInput(f.storage, {
-        variableExpenseBudgetAmount: 275000,
-        plannedSavingsAmount: 125000,
+        plannedSalaryAmount: 875000,
       })
     );
     const event = completed.result.auditEvent;
@@ -532,7 +512,7 @@ test('V1.1.0 active-period planning updates', async (t) => {
   });
 });
 
-test('V1.1.0 settings and planning rollback', async (t) => {
+test('V1.1.0 settings and planned-salary rollback', async (t) => {
   for (const targetStore of ['financialSettings', 'auditEvents', 'commits', 'system']) {
     await t.test(`salary update rolls back when ${targetStore} fails`, async (t2) => {
       const f = await fixture(t2);
@@ -555,7 +535,7 @@ test('V1.1.0 settings and planning rollback', async (t) => {
   }
 
   for (const targetStore of ['periods', 'auditEvents', 'commits', 'system']) {
-    await t.test(`planning update rolls back when ${targetStore} fails`, async (t2) => {
+    await t.test(`planned salary update rolls back when ${targetStore} fails`, async (t2) => {
       const f = await fixture(t2);
       await bootstrap(f);
       const beforePeriod = await f.storage.get('periods', id(1));
@@ -574,7 +554,7 @@ test('V1.1.0 settings and planning rollback', async (t) => {
   }
 });
 
-test('V1.1.0 settings and planning general invariants', async (t) => {
+test('V1.1.0 settings and planned-salary general invariants', async (t) => {
   await t.test('each command advances dataRevision exactly once and creates no financial records', async (t2) => {
     const f = await fixture(t2);
     await bootstrap(f);
@@ -584,13 +564,13 @@ test('V1.1.0 settings and planning general invariants', async (t) => {
     );
     assert.equal(salary.commit.previousDataRevision, before.dataRevision);
     assert.equal(salary.commit.dataRevision, before.dataRevision + 1);
-    const planning = await f.commands.period.updatePlanning(await planningInput(f.storage));
-    assert.equal(planning.commit.previousDataRevision, before.dataRevision + 1);
-    assert.equal(planning.commit.dataRevision, before.dataRevision + 2);
+    const plannedSalary = await f.commands.period.updatePlanning(await planningInput(f.storage));
+    assert.equal(plannedSalary.commit.previousDataRevision, before.dataRevision + 1);
+    assert.equal(plannedSalary.commit.dataRevision, before.dataRevision + 2);
     await assertNoFinancialRecords(f.storage);
   });
 
-  await t.test('updated settings and planning reload coherently from IndexedDB', async (t2) => {
+  await t.test('updated settings and planned salary reload coherently from IndexedDB', async (t2) => {
     const factory = new IDBFactory();
     const f = await fixture(t2, { factory });
     await bootstrap(f);
@@ -598,8 +578,7 @@ test('V1.1.0 settings and planning general invariants', async (t) => {
       await settingsInput(f.storage, { salaryReferenceAmount: 990000 })
     );
     await f.commands.period.updatePlanning(await planningInput(f.storage, {
-      variableExpenseBudgetAmount: 333000,
-      plannedSavingsAmount: 222000,
+      plannedSalaryAmount: 990000,
     }));
     f.storage.close();
 
@@ -608,8 +587,7 @@ test('V1.1.0 settings and planning general invariants', async (t) => {
     t2.after(() => reloaded.close());
     assert.equal((await reloaded.get('financialSettings', 'current')).salaryReferenceAmount, 990000);
     const savedPeriod = await reloaded.get('periods', id(1));
-    assert.equal(savedPeriod.variableExpenseBudgetAmount, 333000);
-    assert.equal(savedPeriod.plannedSavingsAmount, 222000);
+    assert.equal(savedPeriod.plannedSalaryAmount, 990000);
     assert.equal((await reloaded.getAll('auditEvents')).length, 5);
     await assertNoFinancialRecords(reloaded);
   });

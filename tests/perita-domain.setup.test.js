@@ -108,8 +108,6 @@ function period(overrides) {
     periodKey: '2026-08',
     status: 'open',
     plannedSalaryAmount: 900000,
-    variableExpenseBudgetAmount: 200000,
-    plannedSavingsAmount: 100000,
     openedAt: START,
     closedAt: null,
     snapshotId: null,
@@ -271,13 +269,9 @@ test('V1.1.0 setup.complete valid installations', async (t) => {
       financialSettings: financialSettings({ salaryReferenceAmount: 0 }),
       period: period({
         plannedSalaryAmount: 0,
-        variableExpenseBudgetAmount: 0,
-        plannedSavingsAmount: 0,
       }),
     }));
     assert.equal(completed.result.financialSettings.salaryReferenceAmount, 0);
-    assert.equal(completed.result.period.variableExpenseBudgetAmount, 0);
-    assert.equal(completed.result.period.plannedSavingsAmount, 0);
   });
 });
 

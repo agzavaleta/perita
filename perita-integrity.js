@@ -302,13 +302,11 @@
       receivedSalaryAmount: totals.receivedSalaryAmount,
       additionalIncomeAmount: totals.additionalIncomeAmount,
       totalIncomeAmount,
-      variableExpenseBudgetAmount: plan.variableExpenseBudgetAmount,
       fixedExpensePlannedAmount,
       fixedExpensePaidAmount: totals.fixedExpensePaidAmount,
       fixedExpenseUnpaidAmount,
       variableExpenseAmount: totals.variableExpenseAmount,
       debtPaymentAmount: totals.debtPaymentAmount,
-      plannedSavingsAmount: plan.plannedSavingsAmount,
       netSavingsAmount: totals.netSavingsAmount,
       availableAmount,
     };

@@ -62,8 +62,6 @@ function period() {
     periodKey: '2026-08',
     status: 'open',
     plannedSalaryAmount: 0,
-    variableExpenseBudgetAmount: 100000,
-    plannedSavingsAmount: 50000,
     openedAt: NOW,
     closedAt: null,
     snapshotId: null,
@@ -363,6 +361,16 @@ test('V1.1.0 backup validation', async (t) => {
     assert.equal((await f.backup.validateBackup(JSON.stringify(backup))).status, 'valid');
   });
 
+  await t.test('accepts a previously published V1.1.0 backup with retired Period fields', async (t2) => {
+    const f = await fixture(t2);
+    const backup = await f.backup.exportBackup();
+    const legacyBackup = await rehash(backup, (copy) => {
+      copy.data.periods[0].variableExpenseBudgetAmount = 123456;
+      copy.data.periods[0].plannedSavingsAmount = 654321;
+    });
+    assert.equal((await f.backup.validateBackup(legacyBackup)).status, 'valid');
+  });
+
   await t.test('classifies malformed, incomplete, altered, and incompatible documents', async (t2) => {
     const f = await fixture(t2);
     const backup = await f.backup.exportBackup();
@@ -419,6 +427,48 @@ test('V1.1.0 backup restoration', async (t) => {
     await service.restoreBackup({ backup: targetBackup, preventiveBackup });
     assert.deepEqual(await storage.get('accounts', ACCOUNT), account());
     assert.equal((await storage.get('system', 'runtime')).writeEnabled, false);
+  });
+
+  await t.test('restores an older V1.1.0 backup without reviving retired planning', async (t2) => {
+    const source = await fixture(t2);
+    await addComplexState(source);
+    await closePeriod(source);
+    const exported = await source.backup.exportBackup();
+    const legacyBackup = await rehash(exported, (copy) => {
+      copy.data.periods.forEach((record) => {
+        record.variableExpenseBudgetAmount = 123456;
+        record.plannedSavingsAmount = 654321;
+      });
+      const snapshot = copy.data.periodSnapshots[0];
+      snapshot.data.periodPlan.variableExpenseBudgetAmount = 123456;
+      snapshot.data.periodPlan.plannedSavingsAmount = 654321;
+      snapshot.data.totals.variableExpenseBudgetAmount = 123456;
+      snapshot.data.totals.plannedSavingsAmount = 654321;
+      const snapshotPayload = { ...snapshot };
+      delete snapshotPayload.integrity;
+      snapshot.integrity.payloadHash = sha256(Backup.canonicalJson(snapshotPayload));
+    });
+    assert.equal((await source.backup.validateBackup(legacyBackup)).status, 'valid');
+    const factory = new IDBFactory();
+    const storage = makeStorage(factory);
+    await storage.open();
+    t2.after(() => storage.close());
+    const service = Backup.createPeritaBackup({
+      storage, indexedDB: factory, now: () => NOW, sha256,
+    });
+    const preventiveBackup = await service.exportBackup();
+    await service.restoreBackup({ backup: legacyBackup, preventiveBackup });
+    for (const restoredPeriod of await storage.getAll('periods')) {
+      assert.equal(Object.hasOwn(restoredPeriod, 'variableExpenseBudgetAmount'), false);
+      assert.equal(Object.hasOwn(restoredPeriod, 'plannedSavingsAmount'), false);
+    }
+    const restoredSnapshot = (await storage.getAll('periodSnapshots'))[0];
+    assert.deepEqual(restoredSnapshot, legacyBackup.data.periodSnapshots[0]);
+    assert.equal(
+      restoredSnapshot.integrity.payloadHash,
+      legacyBackup.data.periodSnapshots[0].integrity.payloadHash
+    );
+    assert.equal((await service.validateBackup(await service.exportBackup())).status, 'valid');
   });
 
   await t.test('preserves restored health restrictions while disabling writes and leases', async (t2) => {

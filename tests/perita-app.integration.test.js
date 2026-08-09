@@ -34,6 +34,19 @@ function legacyStorage(raw) {
   };
 }
 
+function sessionStore() {
+  const values = new Map();
+  return {
+    getItem: (key) => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value)),
+    clone: () => {
+      const copy = sessionStore();
+      values.forEach((value, key) => copy.setItem(key, value));
+      return copy;
+    },
+  };
+}
+
 function application(factory, options) {
   const settings = options || {};
   return PeritaApp.createPeritaApplication({
@@ -58,7 +71,6 @@ function setupPayload() {
     },
     period: {
       id: id(1), periodKey: '2026-08', status: 'open', plannedSalaryAmount: 900000,
-      variableExpenseBudgetAmount: 200000, plannedSavingsAmount: 100000,
       openedAt: NOW, closedAt: null, snapshotId: null, revision: 1,
     },
     accounts: [{
@@ -112,6 +124,97 @@ test('application adapter delegates a UI intent to a domain command and reloads 
   assert.equal(updated.state.runtime.dataRevision, 3);
   assert.equal(updated.state.operations.length, 0);
   assert.equal(updated.state.movements.length, 0);
+});
+
+test('an incomplete setup renews its writer after page teardown and reload', async (t) => {
+  const factory = new IDBFactory();
+  const tabSession = sessionStore();
+  const create = (prefix, navigationType) => PeritaApp.createPeritaApplication({
+    indexedDB: factory,
+    IDBKeyRange,
+    crypto: { randomUUID: () => id(900) },
+    legacyStorage: legacyStorage(null),
+    sessionStorage: tabSession,
+    navigationType,
+    now: () => NOW,
+    createUuid: sequence(prefix),
+    channel: null,
+  });
+  const first = create('f3100000', 'navigate');
+  const initial = await first.initialize();
+  assert.equal(initial.phase, 'setup_required');
+  assert.equal(initial.writer, true);
+  const originalEpoch = initial.writerEpoch;
+  first.suspend();
+
+  const reopened = create('f3200000', 'reload');
+  t.after(() => reopened.close());
+  const next = await reopened.initialize();
+  assert.equal(next.phase, 'setup_required');
+  assert.equal(next.writer, true);
+  assert.equal(next.writerEpoch, originalEpoch);
+  assert.equal(next.error, undefined);
+});
+
+test('a duplicated or separate tab never reuses the active writer identity', async (t) => {
+  const factory = new IDBFactory();
+  const firstSession = sessionStore();
+  const create = (prefix, tabSession) => PeritaApp.createPeritaApplication({
+    indexedDB: factory,
+    IDBKeyRange,
+    crypto: { randomUUID: () => id(900) },
+    legacyStorage: legacyStorage(null),
+    sessionStorage: tabSession,
+    navigationType: 'navigate',
+    now: () => NOW,
+    createUuid: sequence(prefix),
+    channel: null,
+  });
+  const first = create('f3500000', firstSession);
+  t.after(() => first.close());
+  assert.equal((await first.initialize()).phase, 'setup_required');
+
+  const duplicate = create('f3600000', firstSession.clone());
+  t.after(() => duplicate.close());
+  const duplicateState = await duplicate.initialize();
+  assert.equal(duplicateState.phase, 'read_only');
+  assert.equal(duplicateState.writer, false);
+  assert.equal(duplicateState.error.code, 'WRITER_ALREADY_OWNED');
+
+  const separate = create('f3700000', sessionStore());
+  t.after(() => separate.close());
+  const separateState = await separate.initialize();
+  assert.equal(separateState.phase, 'read_only');
+  assert.equal(separateState.writer, false);
+  assert.equal(separateState.error.code, 'WRITER_ALREADY_OWNED');
+});
+
+test('retired monthly-planning values in an existing V1.1.0 Period are ignored compatibly', async (t) => {
+  const factory = new IDBFactory();
+  const first = application(factory, { tabId: 'compatibility-tab-a', prefix: 'f3300000' });
+  await first.initialize();
+  await first.completeSetup(setupPayload());
+  await first.close();
+
+  const storage = IndexedDb.createPeritaIndexedDb({ indexedDB: factory, IDBKeyRange });
+  await storage.open();
+  const period = await storage.get('periods', id(1));
+  await storage.put('periods', {
+    ...period,
+    variableExpenseBudgetAmount: 123456,
+    plannedSavingsAmount: 654321,
+  });
+  storage.close();
+
+  const reopened = application(factory, { tabId: 'compatibility-tab-b', prefix: 'f3400000' });
+  t.after(() => reopened.close());
+  const initialized = await reopened.initialize();
+  assert.notEqual(initialized.phase, 'error');
+  assert.equal(Object.hasOwn(initialized.state.period, 'variableExpenseBudgetAmount'), false);
+  assert.equal(Object.hasOwn(initialized.state.period, 'plannedSavingsAmount'), false);
+  const backup = await reopened.exportBackup();
+  assert.equal(Object.hasOwn(backup.data.periods[0], 'variableExpenseBudgetAmount'), false);
+  assert.equal(Object.hasOwn(backup.data.periods[0], 'plannedSavingsAmount'), false);
 });
 
 test('financial UI adapter enriches create, edit, and void revisions from canonical state', async (t) => {
@@ -388,6 +491,10 @@ test('static integration loads V1.1.0 modules in order and caches the complete o
   assert.match(jsx, /fixed-expense-instance\.update-planned-amount/);
   assert.match(jsx, /La cuenta debe crearse en cero/);
   assert.match(jsx, /La meta debe crearse en cero/);
+  assert.match(jsx, /const MoneyInput/);
+  assert.match(jsx, /const OtherPage/);
+  assert.match(jsx, /history',label:'Historial',icon:'document'/);
+  assert.doesNotMatch(jsx, /Presupuesto variable|Ahorro planificado|Guardar planificación/);
   assert.match(worker, /perita-v110-shell-v1/);
   assert.match(html, /IndexedDB perita_v110/);
 });

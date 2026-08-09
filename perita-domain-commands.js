@@ -51,8 +51,6 @@
   ]);
   const PERIOD_PLANNING_FIELDS = Object.freeze([
     'plannedSalaryAmount',
-    'variableExpenseBudgetAmount',
-    'plannedSavingsAmount',
   ]);
   const ACCOUNT_CREATE_STORES = Object.freeze([
     'accounts',
@@ -219,13 +217,11 @@
     'receivedSalaryAmount',
     'additionalIncomeAmount',
     'totalIncomeAmount',
-    'variableExpenseBudgetAmount',
     'fixedExpensePlannedAmount',
     'fixedExpensePaidAmount',
     'fixedExpenseUnpaidAmount',
     'variableExpenseAmount',
     'debtPaymentAmount',
-    'plannedSavingsAmount',
     'netSavingsAmount',
     'availableAmount',
   ]);
@@ -972,13 +968,11 @@
       receivedSalaryAmount: totals.receivedSalaryAmount,
       additionalIncomeAmount: totals.additionalIncomeAmount,
       totalIncomeAmount,
-      variableExpenseBudgetAmount: period.variableExpenseBudgetAmount,
       fixedExpensePlannedAmount,
       fixedExpensePaidAmount: totals.fixedExpensePaidAmount,
       fixedExpenseUnpaidAmount,
       variableExpenseAmount: totals.variableExpenseAmount,
       debtPaymentAmount: totals.debtPaymentAmount,
-      plannedSavingsAmount: period.plannedSavingsAmount,
       netSavingsAmount: totals.netSavingsAmount,
       availableAmount,
     };
@@ -5841,8 +5835,6 @@
             periodKey: nextPeriodKey,
             status: 'open',
             plannedSalaryAmount: financialSettings.salaryReferenceAmount,
-            variableExpenseBudgetAmount: 0,
-            plannedSavingsAmount: 0,
             openedAt: occurredAt,
             closedAt: null,
             snapshotId: null,
@@ -5965,8 +5957,6 @@
             data: {
               periodPlan: {
                 plannedSalaryAmount: period.plannedSalaryAmount,
-                variableExpenseBudgetAmount: period.variableExpenseBudgetAmount,
-                plannedSavingsAmount: period.plannedSavingsAmount,
               },
               operations: periodOperations,
               movements: periodMovements,

@@ -323,6 +323,7 @@
 
   function safeRestoreData(data) {
     const copy = JSON.parse(JSON.stringify(data));
+    copy.periods = copy.periods.map((record) => Domain.validatePeriod(record));
     copy.system = copy.system.map((record) => (
       record.key === 'runtime' ? safeRuntime(record) : record
     ));
@@ -374,7 +375,11 @@
           async (transaction) => {
             const entries = [];
             for (const storeName of BACKUP_STORE_NAMES) {
-              entries.push([storeName, await transaction.getAll(storeName)]);
+              const records = await transaction.getAll(storeName);
+              entries.push([
+                storeName,
+                storeName === 'periods' ? records.map(Domain.validatePeriod) : records,
+              ]);
             }
             return immutableCopy(Object.fromEntries(entries));
           }
@@ -586,7 +591,11 @@
           async (transaction) => {
             const currentEntries = [];
             for (const storeName of BACKUP_STORE_NAMES) {
-              currentEntries.push([storeName, await transaction.getAll(storeName)]);
+              const records = await transaction.getAll(storeName);
+              currentEntries.push([
+                storeName,
+                storeName === 'periods' ? records.map(Domain.validatePeriod) : records,
+              ]);
             }
             if (
               canonicalJson(preventiveResult.backup.data) !==

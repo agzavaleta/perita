@@ -216,10 +216,7 @@
   /* ── Mobile bottom nav ── */
   .mobile-nav{display:none}
 
-  .mobile-only-sheet{display:none}
-
   @media(max-width:700px){
-  .mobile-only-sheet{display:flex}
     body{overflow-x:hidden}
     #root{flex-direction:column}
 
@@ -356,6 +353,33 @@ const { useState, useEffect, useRef, useCallback } = React;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const fmt = (n) => new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP',maximumFractionDigits:0}).format(n||0);
+const formatMoneyInput = (value, emptyZero=true) => {
+  if(value===''||value===null||value===undefined||(emptyZero&&value===0))return '';
+  const numeric=Number(value);
+  return Number.isFinite(numeric)?new Intl.NumberFormat('es-CL',{maximumFractionDigits:0,useGrouping:true}).format(numeric):'';
+};
+const MoneyInput = ({value,onChange,emptyZero=true,...props}) => {
+  const [display,setDisplay]=useState(()=>formatMoneyInput(value,emptyZero));
+  const editing=useRef(false);
+  useEffect(()=>{if(!editing.current)setDisplay(formatMoneyInput(value,emptyZero));},[value,emptyZero]);
+  const change=(event)=>{
+    const raw=event.target.value.replace(/\s/g,'');
+    if(!/^-?[\d.]*$/.test(raw))return;
+    if(raw===''||raw==='-'){
+      setDisplay(raw);
+      onChange(0);
+      return;
+    }
+    const numeric=Number(raw.replace(/\./g,''));
+    if(!Number.isSafeInteger(numeric))return;
+    setDisplay(formatMoneyInput(numeric,false));
+    onChange(numeric);
+  };
+  return <input {...props} type="text" inputMode="numeric" value={display}
+    onFocus={()=>{editing.current=true;}}
+    onBlur={()=>{editing.current=false;setDisplay(formatMoneyInput(value,emptyZero));}}
+    onChange={change}/>;
+};
 const pct = (a,b) => b ? Math.min(100,Math.round((a/b)*100)) : 0;
 const today = () => PeritaApp.civilDate(new Date());
 const monthsLeft = (current,goal,monthly) => {
@@ -418,6 +442,7 @@ const Icon = ({name,size=16,color='currentColor'}) => {
     trending:'<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/>',
     target:'<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
     save2:'<path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+    document:'<path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V6z"/><polyline points="14 2 14 6 18 6"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><line x1="8" y1="9" x2="10" y2="9"/>',
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
@@ -807,8 +832,8 @@ const AccountsPage = ({state, setState, notify, run}) => {
             <div className="modal-title">Ajustar saldo — {adjustForm.name}</div>
             <div className="form-group">
               <label className="form-label">Nuevo saldo</label>
-              <input className="form-input" type="number" value={adjustForm.balance}
-                onChange={e=>setAdjustForm(f=>({...f,balance:Number(e.target.value)}))} autoFocus />
+              <MoneyInput className="form-input" value={adjustForm.balance}
+                onChange={balance=>setAdjustForm(f=>({...f,balance}))} autoFocus />
             </div>
             <div className="flex gap-3 justify-between mt-4">
               <button className="btn btn-ghost" onClick={()=>adjustModal[1](false)}>Cancelar</button>
@@ -826,7 +851,7 @@ const AccountsPage = ({state, setState, notify, run}) => {
         <div className="modal-title">Transferir entre cuentas y metas</div>
         {[['Origen','source'],['Destino','destination']].map(([label,key])=><div className="form-group" key={key}><label className="form-label">{label}</label><select className="form-input form-select" value={transferForm[key]} onChange={e=>setTransferForm(current=>({...current,[key]:e.target.value}))}><option value="">Seleccionar…</option>{transferTargets.map(target=><option key={target.value} value={target.value}>{target.label}</option>)}</select></div>)}
         <div className="form-group"><label className="form-label">Fecha</label><input className="form-input" type="date" value={transferForm.date} onChange={e=>setTransferForm(current=>({...current,date:e.target.value}))}/></div>
-        <div className="form-group"><label className="form-label">Monto</label><input className="form-input" type="number" value={transferForm.amount||''} onChange={e=>setTransferForm(current=>({...current,amount:Number(e.target.value)}))}/></div>
+        <div className="form-group"><label className="form-label">Monto</label><MoneyInput className="form-input" value={transferForm.amount} onChange={amount=>setTransferForm(current=>({...current,amount}))}/></div>
         <div className="flex justify-between gap-2"><button className="btn btn-ghost" onClick={()=>setTransferModal(false)}>Cancelar</button><button className="btn btn-primary" onClick={()=>{
           if(!transferForm.source||!transferForm.destination||!transferForm.amount){notify('Completa origen, destino y monto','warn');return;}
           const [sourceType,sourceId]=transferForm.source.split(':');const [destinationType,destinationId]=transferForm.destination.split(':');
@@ -872,7 +897,7 @@ const AccountsPage = ({state, setState, notify, run}) => {
             </div>
             <div className="form-group">
               <label className="form-label">Saldo actual</label>
-              <input className="form-input" type="number" disabled={modal==='edit'} value={form.balance||''} onChange={e=>setForm(f=>({...f,balance:Number(e.target.value)}))} />
+              <MoneyInput className="form-input" disabled={modal==='edit'} value={form.balance} onChange={balance=>setForm(f=>({...f,balance}))} />
               <div className="text-xs text-gray mt-1">Las cuentas posteriores al setup se crean en cero. Los cambios usan ajustes trazables.</div>
             </div>
             <div className="flex gap-3 justify-between mt-4">
@@ -1002,8 +1027,8 @@ const Wallets = ({state, setState, notify, run}) => {
             ].map(f=>(
               <div key={f.key} className="form-group">
                 <label className="form-label">{f.label}</label>
-                <input className="form-input" type="number" value={form[f.key]} disabled={f.key==='balance'}
-                  onChange={e=>setForm(x=>({...x,[f.key]:Number(e.target.value)}))} />
+                <MoneyInput className="form-input" value={form[f.key]} disabled={f.key==='balance'}
+                  onChange={value=>setForm(x=>({...x,[f.key]:value}))} />
                 {f.key==='balance'&&<div className="text-xs text-gray mt-1">El saldo se modifica mediante depósitos, retiros o transferencias trazables.</div>}
               </div>
             ))}
@@ -1022,7 +1047,7 @@ const Wallets = ({state, setState, notify, run}) => {
             <div className="modal-title">{depositKind==='deposit'?'Depositar en':'Retirar de'} {depositModal.name}</div>
             <div className="form-group">
               <label className="form-label">Monto</label>
-              <input className="form-input" type="number" value={depositAmt} onChange={e=>setDepositAmt(Number(e.target.value))} />
+              <MoneyInput className="form-input" value={depositAmt} onChange={setDepositAmt} />
             </div>
             <div className="form-group">
               <label className="form-label">{depositKind==='deposit'?'Transferir desde cuenta':'Transferir hacia cuenta'}</label>
@@ -1130,7 +1155,7 @@ const Budget = ({state, setState, notify, run}) => {
       {ConfirmNode}
       {plannedEdit&&<div className="modal-backdrop" onClick={()=>setPlannedEdit(null)}><div className="modal" style={{maxWidth:380}} onClick={event=>event.stopPropagation()}>
         <div className="modal-title">Monto del periodo — {plannedEdit.name}</div>
-        <div className="form-group"><label className="form-label">Monto planificado del mes activo</label><input className="form-input" type="number" value={plannedEdit.amount||''} onChange={event=>setPlannedEdit(current=>({...current,amount:Number(event.target.value)}))}/></div>
+        <div className="form-group"><label className="form-label">Monto planificado del mes activo</label><MoneyInput className="form-input" value={plannedEdit.amount} onChange={amount=>setPlannedEdit(current=>({...current,amount}))}/></div>
         <div className="text-xs text-gray">Este cambio no modifica la referencia usada en periodos futuros.</div>
         <div className="flex gap-3 justify-between mt-4"><button className="btn btn-ghost" onClick={()=>setPlannedEdit(null)}>Cancelar</button><button className="btn btn-primary" onClick={savePlannedAmount}>Guardar</button></div>
       </div></div>}
@@ -1166,7 +1191,7 @@ const Budget = ({state, setState, notify, run}) => {
               {editing===b.id ? (
                 <>
                   <input className="form-input" style={{flex:1}} value={editForm.name} onChange={e=>setEditForm(current=>({...current,name:e.target.value}))} />
-                  <input className="form-input" type="number" title="Referencia para periodos futuros" style={{width:110}} value={editForm.referenceAmount} onChange={e=>setEditForm(current=>({...current,referenceAmount:Number(e.target.value)}))} />
+                  <MoneyInput className="form-input" title="Referencia para periodos futuros" style={{width:110}} value={editForm.referenceAmount} onChange={referenceAmount=>setEditForm(current=>({...current,referenceAmount}))} />
                   <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>saveTemplate(b)}><Icon name="check" size={13}/></button>
                 </>
               ) : (
@@ -1187,7 +1212,7 @@ const Budget = ({state, setState, notify, run}) => {
           <div className="divider" />
           <div className="flex gap-2">
             <input className="form-input" placeholder="Nombre gasto" value={form.name} onChange={e=>setForm(x=>({...x,name:e.target.value}))} style={{flex:1}} />
-            <input className="form-input" type="number" placeholder="Monto" value={form.amount||''} onChange={e=>setForm(x=>({...x,amount:Number(e.target.value)}))} style={{width:120}} />
+            <MoneyInput className="form-input" placeholder="Monto" value={form.amount} onChange={amount=>setForm(x=>({...x,amount}))} style={{width:120}} />
             <button className="btn btn-primary" onClick={addItem}><Icon name="plus" size={14}/></button>
           </div>
         </div>
@@ -1281,7 +1306,7 @@ const IngresosPanel = ({state, setState, notify, run}) => {
             </div>
             <div className="form-group">
               <label className="form-label">Monto</label>
-              <input className="form-input" type="number" value={incomeForm.amount||''} onChange={e=>setIncomeForm(f=>({...f,amount:Number(e.target.value)}))} autoFocus />
+              <MoneyInput className="form-input" value={incomeForm.amount} onChange={amount=>setIncomeForm(f=>({...f,amount}))} autoFocus />
             </div>
             <div className="form-group">
               <label className="form-label">Depositar en cuenta *</label>
@@ -1303,7 +1328,7 @@ const IngresosPanel = ({state, setState, notify, run}) => {
           <span className="text-gray text-sm">Sueldo de referencia: </span>
           <span className="font-bold text-green">{fmt(state.settings.salary)}</span>
           <div className="flex gap-2 mt-3" style={{flexWrap:'wrap'}}>
-            <input className="form-input" type="number" value={salaryAmount||''} onChange={e=>setSalaryAmount(Number(e.target.value))} style={{flex:'1 1 120px'}} />
+            <MoneyInput className="form-input" value={salaryAmount} onChange={setSalaryAmount} style={{flex:'1 1 120px'}} />
             <select className="form-input form-select" value={salaryAccount} onChange={e=>setSalaryAccount(e.target.value)} style={{flex:'1 1 150px'}}>
               <option value="">Cuenta destino…</option>
               {accounts.filter(a=>a.status==='active').map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
@@ -1477,7 +1502,7 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
             </div>
             <div className="form-group">
               <label className="form-label">Monto</label>
-              <input className="form-input" type="number" value={form.amount||''} onChange={e=>setForm(f=>({...f,amount:Number(e.target.value)}))} autoFocus />
+              <MoneyInput className="form-input" value={form.amount} onChange={amount=>setForm(f=>({...f,amount}))} autoFocus />
             </div>
             <div className="form-group">
               <label className="form-label">Cuenta *</label>
@@ -1655,7 +1680,9 @@ const DebtTracker = ({state, setState, notify, run}) => {
         ? <select className="form-input form-select" value={form[key]} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))}>
             {opts.map(o=><option key={o} value={o}>{o.charAt(0).toUpperCase()+o.slice(1)}</option>)}
           </select>
-        : <input className="form-input" type={type} value={form[key]||''} onChange={e=>setForm(f=>({...f,[key]:type==='number'?Number(e.target.value):e.target.value}))} />
+        : type==='number'
+          ? <MoneyInput className="form-input" value={form[key]} onChange={value=>setForm(f=>({...f,[key]:value}))} />
+          : <input className="form-input" type={type} value={form[key]||''} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))} />
       }
     </div>
   );
@@ -1764,7 +1791,7 @@ const DebtTracker = ({state, setState, notify, run}) => {
             <div className="text-sm text-gray mb-4">Restante: {fmt(payModal.total - payModal.paid)}</div>
             <div className="form-group">
               <label className="form-label">Monto a pagar</label>
-              <input className="form-input" type="number" value={payAmt||''} onChange={e=>setPayAmt(Number(e.target.value))} />
+              <MoneyInput className="form-input" value={payAmt} onChange={setPayAmt} />
             </div>
             <div className="form-group">
               <label className="form-label">Cuenta *</label>
@@ -1823,7 +1850,7 @@ const HistorialMensual = ({state,run,notify}) => {
   const EditOperationModal=editOperation&&<div className="modal-backdrop" onClick={()=>setEditOperation(null)}><div className="modal" onClick={e=>e.stopPropagation()}>
     <div className="modal-title">Editar operación</div>
     <div className="form-group"><label className="form-label">Fecha</label><input className="form-input" type="date" value={editOperation.operationDate} onChange={e=>setEditOperation(current=>({...current,operationDate:e.target.value}))}/></div>
-    <div className="form-group"><label className="form-label">Monto</label><input className="form-input" type="number" value={editOperation.amount||''} onChange={e=>setEditOperation(current=>({...current,amount:Number(e.target.value)}))}/></div>
+    <div className="form-group"><label className="form-label">Monto</label><MoneyInput className="form-input" value={editOperation.amount} onChange={amount=>setEditOperation(current=>({...current,amount}))}/></div>
     {accountEditableTypes.includes(editOperation.type)&&<div className="form-group"><label className="form-label">Cuenta</label><select className="form-input form-select" value={editOperation.details.accountId} onChange={e=>setEditOperation(current=>({...current,details:{...current.details,accountId:e.target.value}}))}>{(state.accounts||[]).filter(item=>item.status==='active').map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select></div>}
     {editOperation.type==='transfer'&&<>{[['Origen','source'],['Destino','destination']].map(([label,key])=><div className="form-group" key={key}><label className="form-label">{label}</label><select className="form-input form-select" value={editOperation[key]} onChange={e=>setEditOperation(current=>({...current,[key]:e.target.value}))}>{transferTargets.map(target=><option key={target.value} value={target.value}>{target.label}</option>)}</select></div>)}</>}
     <div className="flex justify-between"><button className="btn btn-ghost" onClick={()=>setEditOperation(null)}>Cancelar</button><button className="btn btn-primary" onClick={saveOperationEdit}>Guardar</button></div>
@@ -1991,8 +2018,6 @@ const HistorialMensual = ({state,run,notify}) => {
 const Settings = ({state, setState, notify, run, app}) => {
   const {settings} = state;
   const [salaryDraft,setSalaryDraft]=useState(settings.salary);
-  const [budgetDraft,setBudgetDraft]=useState(state.period?.variableExpenseBudgetAmount||0);
-  const [savingsDraft,setSavingsDraft]=useState(state.period?.plannedSavingsAmount||0);
   const {ask, ConfirmNode} = useConfirm();
   const [showMonthSummary, setShowMonthSummary] = useState(false);
   const [lastBackup,setLastBackup]=useState(null);
@@ -2108,7 +2133,7 @@ const Settings = ({state, setState, notify, run, app}) => {
         ].map(f=>(
           <div key={f.key} className="form-group">
             <label className="form-label">{f.label}</label>
-              <input className="form-input" type="number" value={salaryDraft||''} onChange={e=>setSalaryDraft(Number(e.target.value))} />
+              <MoneyInput className="form-input" value={salaryDraft} onChange={setSalaryDraft} />
           </div>
         ))}
         <div className="flex justify-between mt-4">
@@ -2120,11 +2145,6 @@ const Settings = ({state, setState, notify, run, app}) => {
       <div className="card mt-4" style={{maxWidth:520}}>
         <div className="section-title mb-3">Ciclo mensual</div>
         <p className="text-sm text-gray mb-4">Mes activo: <strong>{curMonth}</strong> · {monthExpenses.length} movimientos registrados.</p>
-        <div className="grid-2">
-          <div className="form-group"><label className="form-label">Presupuesto variable</label><input className="form-input" type="number" value={budgetDraft||''} onChange={e=>setBudgetDraft(Number(e.target.value))}/></div>
-          <div className="form-group"><label className="form-label">Ahorro planificado</label><input className="form-input" type="number" value={savingsDraft||''} onChange={e=>setSavingsDraft(Number(e.target.value))}/></div>
-        </div>
-        <button className="btn btn-ghost w-full mb-3" onClick={()=>run('period.update-planning',{variableExpenseBudgetAmount:budgetDraft,plannedSavingsAmount:savingsDraft},'Planificación actualizada')}>Guardar planificación</button>
         <button className="btn btn-primary w-full" onClick={()=>setShowMonthSummary(true)}>Cerrar mes e iniciar nuevo</button>
       </div>
 
@@ -2346,6 +2366,23 @@ const translateLegacyIntent = async (app, previous, next) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 //  APP
 // ═══════════════════════════════════════════════════════════════════════════════
+const OTHER_DESTINATIONS = [
+  {id:'budget',label:'Fijos',description:'Gastos recurrentes y pagos del mes',icon:'budget'},
+  {id:'expenses',label:'Variables',description:'Gastos variables y categorías',icon:'expense'},
+  {id:'income',label:'Ingresos',description:'Sueldo recibido e ingresos adicionales',icon:'trending'},
+  {id:'debt',label:'Deudas',description:'Deudas, ajustes y pagos',icon:'debt'},
+  {id:'history',label:'Historial',description:'Operaciones y meses cerrados',icon:'document'},
+];
+
+const OtherPage = ({navigate}) => <div className="grid-2">
+  {OTHER_DESTINATIONS.map(item=><button key={item.id} className="card" onClick={()=>navigate(item.id)}
+    style={{textAlign:'left',cursor:'pointer',display:'flex',alignItems:'center',gap:16,width:'100%'}}>
+    <div className="stat-icon icon-green" style={{margin:0,flex:'0 0 auto'}}><Icon name={item.icon} size={19}/></div>
+    <div style={{flex:1}}><div className="section-title">{item.label}</div><div className="section-sub">{item.description}</div></div>
+    <span aria-hidden="true" style={{color:'var(--gray-400)',fontSize:20}}>›</span>
+  </button>)}
+</div>;
+
 const PAGES = [
   {id:'dashboard',label:'Dashboard',icon:'dashboard'},
   {id:'accounts',label:'Cuentas',icon:'accounts'},
@@ -2354,7 +2391,8 @@ const PAGES = [
   {id:'expenses',label:'Variables',icon:'expense'},
   {id:'income',label:'Ingresos',icon:'trending'},
   {id:'debt',label:'Deudas',icon:'debt'},
-  {id:'history',label:'Historial',icon:'chart'},
+  {id:'history',label:'Historial',icon:'document'},
+  {id:'other',label:'Otros',icon:'budget'},
   {id:'settings',label:'Ajustes',icon:'settings'},
 ];
 
@@ -2367,6 +2405,7 @@ const PAGE_TITLES = {
   income:['Ingresos','Registra y consulta tus ingresos'],
   debt:['Deuda','Seguimiento y amortización'],
   history:['Historial Mensual','Consulta tus meses anteriores'],
+  other:['Otros','Accede a ingresos, gastos, deudas e historial'],
   settings:['Ajustes','Configura tus datos base'],
 };
 
@@ -2375,7 +2414,7 @@ const StartupCard = ({title,children}) => <div style={{minHeight:'100vh',display
 </div>;
 
 const SetupScreen = ({app,onComplete,notify}) => {
-  const [form,setForm]=useState({periodKey:today().slice(0,7),salary:0,budget:0,savings:0});
+  const [form,setForm]=useState({periodKey:today().slice(0,7),salary:0});
   const [accounts,setAccounts]=useState([{key:recordId(),name:'Cuenta principal',openingBalance:0}]);
   const [busy,setBusy]=useState(false);
   const submit=async()=>{
@@ -2386,7 +2425,7 @@ const SetupScreen = ({app,onComplete,notify}) => {
       const result=await app.completeSetup({
         currentCivilDate:today(),
         financialSettings:{key:'current',salaryReferenceAmount:form.salary,currency:'CLP',timezone:'America/Santiago',revision:1,createdAt:timestamp,updatedAt:timestamp},
-        period:{id:recordId(),periodKey:form.periodKey,status:'open',plannedSalaryAmount:form.salary,variableExpenseBudgetAmount:form.budget,plannedSavingsAmount:form.savings,openedAt:timestamp,closedAt:null,snapshotId:null,revision:1},
+        period:{id:recordId(),periodKey:form.periodKey,status:'open',plannedSalaryAmount:form.salary,openedAt:timestamp,closedAt:null,snapshotId:null,revision:1},
         accounts:accounts.map(account=>({id:recordId(),name:account.name.trim(),openingBalance:account.openingBalance,currentBalance:account.openingBalance,status:'active',revision:1,createdAt:timestamp,updatedAt:timestamp})),
       });
       if(accounts.some(account=>account.openingBalance<0))notify('Advertencia registrada: una o más cuentas iniciales comienzan con saldo negativo','warn');
@@ -2396,13 +2435,12 @@ const SetupScreen = ({app,onComplete,notify}) => {
   };
   return <StartupCard title="Configurar Perita V1.1.0">
     <p className="text-sm text-gray mb-4">Crea el periodo inicial y al menos una cuenta. Esta confirmación es atómica.</p>
-    {[
-      ['Periodo inicial','periodKey','month'],['Sueldo de referencia','salary','number'],['Presupuesto variable','budget','number'],['Ahorro planificado','savings','number'],
-    ].map(([label,key,type])=><div className="form-group" key={key}><label className="form-label">{label}</label><input autoFocus={key==='accountName'} className="form-input" type={type} value={form[key]||''} onChange={e=>setForm(current=>({...current,[key]:type==='number'?Number(e.target.value):e.target.value}))}/></div>)}
+    <div className="form-group"><label className="form-label">Periodo inicial</label><input className="form-input" type="month" value={form.periodKey} onChange={event=>setForm(current=>({...current,periodKey:event.target.value}))}/></div>
+    <div className="form-group"><label className="form-label">Sueldo de referencia</label><MoneyInput className="form-input" value={form.salary} onChange={salary=>setForm(current=>({...current,salary}))}/></div>
     <div className="form-label">Cuentas iniciales</div>
     {accounts.map((account,index)=><div className="card-sm mb-2" key={account.key}>
       <div className="form-group"><label className="form-label">Nombre</label><input autoFocus={index===0} className="form-input" value={account.name} onChange={event=>setAccounts(current=>current.map(item=>item.key===account.key?{...item,name:event.target.value}:item))}/></div>
-      <div className="form-group"><label className="form-label">Saldo inicial</label><input className="form-input" type="number" value={account.openingBalance||''} onChange={event=>setAccounts(current=>current.map(item=>item.key===account.key?{...item,openingBalance:Number(event.target.value)}:item))}/></div>
+      <div className="form-group"><label className="form-label">Saldo inicial</label><MoneyInput className="form-input" value={account.openingBalance} onChange={openingBalance=>setAccounts(current=>current.map(item=>item.key===account.key?{...item,openingBalance}:item))}/></div>
       {account.openingBalance<0&&<div className="alert alert-warn">Esta cuenta comenzará con saldo negativo como excepción de apertura.</div>}
       {accounts.length>1&&<button className="btn btn-ghost btn-sm" onClick={()=>setAccounts(current=>current.filter(item=>item.key!==account.key))}>Quitar cuenta</button>}
     </div>)}
@@ -2461,7 +2499,7 @@ const App = () => {
       if(initialized.state)setStateRaw(initialized.state);
       if(initialized.writer)app.startHeartbeat(error=>{setBoot(current=>({...current,phase:'ready_read_only',writer:false,error}));notify('Se perdió el writer lease','warn');});
     });
-    return()=>{active=false;unsubscribe();app.close();};
+    return()=>{active=false;unsubscribe();app.suspend();};
   },[app,notify]);
 
   // Service worker update detection
@@ -2541,10 +2579,6 @@ const App = () => {
   const now = new Date();
   const monthLabel = now.toLocaleDateString('es-CL',{month:'long',year:'numeric'});
 
-  const [showOtros, setShowOtros] = useState(false);
-  const OTROS_PAGES = ['budget','expenses','income','debt','history'];
-  const otrosActive = OTROS_PAGES.includes(page);
-
   const pageProps = {state, setState, notify, run, app};
 
   if(boot.phase==='loading') return <StartupCard title="Abriendo Perita V1.1.0"><p className="text-sm text-gray">Leyendo IndexedDB y verificando el runtime…</p></StartupCard>;
@@ -2578,42 +2612,17 @@ const App = () => {
         </div>
       )}
 
-      {/* Otros bottom sheet — mobile only */}
-      {showOtros && (
-        <div className="mobile-only-sheet" style={{position:'fixed',inset:0,zIndex:400,flexDirection:'column',justifyContent:'flex-end'}}
-          onClick={()=>setShowOtros(false)}>
-          <div style={{background:'#fff',borderRadius:'16px 16px 0 0',padding:'12px 0 32px',boxShadow:'0 -4px 24px rgba(0,0,0,.12)'}}
-            onClick={e=>e.stopPropagation()}>
-            <div style={{width:36,height:4,background:'var(--gray-200)',borderRadius:99,margin:'0 auto 16px'}} />
-            <div style={{padding:'0 8px'}}>
-              {PAGES.filter(p=>OTROS_PAGES.includes(p.id)).map(p=>(
-                <button key={p.id} className={`nav-item ${page===p.id?'active':''}`} style={{width:'100%',marginBottom:4}}
-                  onClick={()=>{ setPage(p.id); setShowOtros(false); }}>
-                  <Icon name={p.icon} size={16} />{p.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Mobile bottom nav — Dashboard · Cuentas · Ahorros · Otros · Ajustes */}
       <nav className="mobile-nav">
         {[
           {id:'dashboard',label:'Inicio',icon:'dashboard'},
           {id:'accounts',label:'Cuentas',icon:'accounts'},
           {id:'wallets',label:'Ahorros',icon:'wallet'},
-          {id:'__otros__',label:'Otros',icon:'budget'},
+          {id:'other',label:'Otros',icon:'budget'},
           {id:'settings',label:'Ajustes',icon:'settings'},
-        ].map(p=> p.id === '__otros__' ? (
-          <button key="otros" className={`mobile-nav-item ${otrosActive||showOtros?'active':''}`}
-            onClick={()=>setShowOtros(o=>!o)}>
-            <Icon name={p.icon} size={18} color={otrosActive||showOtros?'var(--green)':'var(--gray-400)'} />
-            {p.label}
-          </button>
-        ) : (
+        ].map(p=>(
           <button key={p.id} className={`mobile-nav-item ${page===p.id?'active':''}`}
-            onClick={()=>{ setPage(p.id); setShowOtros(false); }}>
+            onClick={()=>setPage(p.id)}>
             <Icon name={p.icon} size={18} color={page===p.id?'var(--green)':'var(--gray-400)'} />
             {p.label}
           </button>
@@ -2644,20 +2653,9 @@ const App = () => {
                 <Icon name={p.icon} size={15}/>{p.label}
               </button>
             ))}
-            {/* Otros collapsible group */}
-            <button className={`nav-item ${otrosActive?'active':''}`} onClick={()=>setShowOtros(o=>!o)}
-              style={{justifyContent:'space-between'}}>
-              <span style={{display:'flex',alignItems:'center',gap:10}}>
-                <Icon name="budget" size={15}/>Otros
-              </span>
-              <span style={{fontSize:10,opacity:.5}}>{showOtros?'▲':'▼'}</span>
+            <button className={`nav-item ${page==='other'?'active':''}`} onClick={()=>setPage('other')}>
+              <Icon name="budget" size={15}/>Otros
             </button>
-            {showOtros && PAGES.filter(p=>OTROS_PAGES.includes(p.id)).map(p=>(
-              <button key={p.id} className={`nav-item ${page===p.id?'active':''}`}
-                onClick={()=>setPage(p.id)} style={{paddingLeft:32}}>
-                <Icon name={p.icon} size={14}/>{p.label}
-              </button>
-            ))}
           </div>
           <div className="nav-section">
             <div className="nav-label">Herramientas</div>
@@ -2693,6 +2691,7 @@ const App = () => {
           {page==='income' && <IngresosPanel {...pageProps} />}
           {page==='debt' && <DebtTracker {...pageProps} />}
           {page==='history' && <HistorialMensual {...pageProps} />}
+          {page==='other' && <OtherPage navigate={setPage} />}
           {page==='settings' && <Settings {...pageProps} />}
         </div>
       </main>

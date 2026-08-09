@@ -243,8 +243,6 @@
       periodKey: proposedPeriod.periodKey,
       status: 'open',
       plannedSalaryAmount: salary,
-      variableExpenseBudgetAmount: 0,
-      plannedSavingsAmount: 0,
       openedAt: cutoverAt,
       closedAt: null,
       snapshotId: null,

@@ -84,8 +84,6 @@ function period(overrides) {
     periodKey: '2026-08',
     status: 'open',
     plannedSalaryAmount: 900000,
-    variableExpenseBudgetAmount: 200000,
-    plannedSavingsAmount: 100000,
     openedAt: START,
     closedAt: null,
     snapshotId: null,

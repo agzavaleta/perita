@@ -4,6 +4,7 @@
     module.exports = factory(
       require('./perita-contracts.js'),
       require('./perita-indexeddb.js'),
+      require('./perita-domain.js'),
       require('./perita-runtime.js'),
       require('./perita-integrity.js'),
       require('./perita-domain-commands.js'),
@@ -14,6 +15,7 @@
     root.PeritaApp = factory(
       root.PeritaContracts,
       root.PeritaIndexedDb,
+      root.PeritaDomain,
       root.PeritaRuntime,
       root.PeritaIntegrity,
       root.PeritaDomainCommands,
@@ -24,6 +26,7 @@
 })(typeof self !== 'undefined' ? self : this, function (
   Contracts,
   IndexedDb,
+  Domain,
   Runtime,
   Integrity,
   DomainCommands,
@@ -32,13 +35,14 @@
 ) {
   'use strict';
 
-  const REQUIRED = [Contracts, IndexedDb, Runtime, Integrity, DomainCommands, Migration, Backup];
+  const REQUIRED = [Contracts, IndexedDb, Domain, Runtime, Integrity, DomainCommands, Migration, Backup];
   if (REQUIRED.some((dependency) => !dependency)) {
     throw new Error('Perita V1.1.0 application dependencies are incomplete');
   }
 
   const APP_VERSION = '1.1.0';
   const LEGACY_KEY = 'perita_v1';
+  const TAB_ID_SESSION_KEY = 'perita_v110_tab_id';
   const LEASE_DURATION_MS = 15000;
   const HEARTBEAT_INTERVAL_MS = 5000;
   const READ_STORES = Object.freeze([
@@ -117,6 +121,34 @@
 
   function uuid(cryptoSource) {
     return Contracts.createUuidV4(cryptoSource);
+  }
+
+  function navigationType(performanceSource) {
+    try {
+      const entries = performanceSource && typeof performanceSource.getEntriesByType === 'function'
+        ? performanceSource.getEntriesByType('navigation')
+        : [];
+      const type = entries && entries[0] && entries[0].type;
+      return ['reload', 'back_forward'].includes(type) ? type : 'navigate';
+    } catch (_) {
+      return 'navigate';
+    }
+  }
+
+  function sessionTabId(sessionStore, createUuid, pageNavigationType) {
+    if (!sessionStore || typeof sessionStore.getItem !== 'function' || typeof sessionStore.setItem !== 'function') {
+      return createUuid();
+    }
+    try {
+      const existing = sessionStore.getItem(TAB_ID_SESSION_KEY);
+      const canReuse = ['reload', 'back_forward'].includes(pageNavigationType);
+      if (canReuse && typeof existing === 'string' && existing.trim() !== '') return existing;
+      const created = createUuid();
+      sessionStore.setItem(TAB_ID_SESSION_KEY, created);
+      return created;
+    } catch (_) {
+      return createUuid();
+    }
   }
 
   function civilDate(date) {
@@ -208,9 +240,10 @@
   function snapshotToView(snapshot) {
     const runtime = snapshot.system.find((record) => record.key === 'runtime');
     const settings = snapshot.financialSettings.find((record) => record.key === 'current') || null;
-    const activePeriod = runtime && runtime.activePeriodId
+    const storedActivePeriod = runtime && runtime.activePeriodId
       ? snapshot.periods.find((period) => period.id === runtime.activePeriodId) || null
       : null;
+    const activePeriod = storedActivePeriod ? Domain.validatePeriod(storedActivePeriod) : null;
     const activeOperations = activePeriod
       ? snapshot.operations.filter((operation) => operation.periodId === activePeriod.id)
       : [];
@@ -305,7 +338,14 @@
     const now = settings.now || (() => new Date().toISOString());
     const createUuid = settings.createUuid || (() => uuid(cryptoSource));
     const sha256 = settings.sha256 || browserSha256;
-    const tabId = settings.tabId || createUuid();
+    const sessionStore = Object.prototype.hasOwnProperty.call(settings, 'sessionStorage')
+      ? settings.sessionStorage
+      : (typeof globalThis !== 'undefined' ? globalThis.sessionStorage : null);
+    const performanceSource = Object.prototype.hasOwnProperty.call(settings, 'performance')
+      ? settings.performance
+      : (typeof globalThis !== 'undefined' ? globalThis.performance : null);
+    const pageNavigationType = settings.navigationType || navigationType(performanceSource);
+    const tabId = settings.tabId || sessionTabId(sessionStore, createUuid, pageNavigationType);
     const storage = settings.storage || IndexedDb.createPeritaIndexedDb({
       indexedDB, IDBKeyRange, crypto: cryptoSource, now,
     });
@@ -633,6 +673,16 @@
       storage.close();
     }
 
+    function suspend() {
+      // Page teardown cannot reliably await IndexedDB. Preserve the short
+      // lease and stable per-tab identity so a reload can renew it without an
+      // asynchronous release racing the next application instance.
+      stopHeartbeat();
+      writerEpoch = null;
+      if (channel) channel.close();
+      storage.close();
+    }
+
     return Object.freeze({
       initialize,
       refresh,
@@ -647,6 +697,7 @@
       startHeartbeat,
       stopHeartbeat,
       subscribe,
+      suspend,
       close,
       errorView,
       get writerEpoch() { return writerEpoch; },
@@ -657,6 +708,7 @@
   return Object.freeze({
     APP_VERSION,
     LEGACY_KEY,
+    TAB_ID_SESSION_KEY,
     LEASE_DURATION_MS,
     HEARTBEAT_INTERVAL_MS,
     READ_STORES,
@@ -664,6 +716,8 @@
     civilDate,
     browserSha256,
     errorView,
+    navigationType,
+    sessionTabId,
     snapshotToView,
     createPeritaApplication,
   });

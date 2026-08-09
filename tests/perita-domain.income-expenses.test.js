@@ -134,8 +134,7 @@ async function fixture(t, options) {
     },
     period: {
       id: PERIOD_ID, periodKey: '2026-08', status: 'open',
-      plannedSalaryAmount: 900000, variableExpenseBudgetAmount: 200000,
-      plannedSavingsAmount: 100000, openedAt: NOW, closedAt: null,
+      plannedSalaryAmount: 900000, openedAt: NOW, closedAt: null,
       snapshotId: null, revision: 1,
     },
     accounts: [account(ACCOUNT_A, 100000), account(ACCOUNT_B, 50000)],

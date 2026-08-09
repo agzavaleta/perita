@@ -85,8 +85,6 @@ function period(periodKey, plannedSalaryAmount) {
     periodKey: periodKey || '2026-08',
     status: 'open',
     plannedSalaryAmount: plannedSalaryAmount || 0,
-    variableExpenseBudgetAmount: 100000,
-    plannedSavingsAmount: 50000,
     openedAt: NOW,
     closedAt: null,
     snapshotId: null,
@@ -399,13 +397,11 @@ test('V1.1.0 derived monthly summary', async (t) => {
       receivedSalaryAmount: 500,
       additionalIncomeAmount: 100,
       totalIncomeAmount: 600,
-      variableExpenseBudgetAmount: 100000,
       fixedExpensePlannedAmount: 130,
       fixedExpensePaidAmount: 50,
       fixedExpenseUnpaidAmount: 70,
       variableExpenseAmount: 40,
       debtPaymentAmount: 30,
-      plannedSavingsAmount: 50000,
       netSavingsAmount: 22,
       availableAmount: 458,
     });
@@ -463,8 +459,6 @@ test('V1.1.0 period.close-and-open-next', async (t) => {
     assert.equal(result.result.nextPeriod.periodKey, '2026-09');
     assert.equal(result.result.nextPeriod.status, 'open');
     assert.equal(result.result.nextPeriod.plannedSalaryAmount, 500000);
-    assert.equal(result.result.nextPeriod.variableExpenseBudgetAmount, 0);
-    assert.equal(result.result.nextPeriod.plannedSavingsAmount, 0);
     assert.equal((await f.store.get('system', 'runtime')).activePeriodId, result.result.nextPeriod.id);
     assert.equal((await f.store.getAll('periodSnapshots')).length, 1);
     assert.equal(result.result.periodSnapshot.snapshotKind, 'canonical');

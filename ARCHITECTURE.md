@@ -132,7 +132,7 @@ reference.
 App
 ├── Notifs
 ├── UpdateModal (SW update detection → postMessage SKIP_WAITING)
-├── OtrosBottomSheet (mobile only, .mobile-only-sheet)
+├── OtherPage (Fijos, Variables, Ingresos, Deudas, Historial)
 ├── MobileNav (≤700px: Inicio·Cuentas·Ahorros·Otros·Ajustes)
 ├── Sidebar (>700px: with Otros collapsible group)
 └── Main content (one page active at a time):
@@ -176,9 +176,9 @@ PAGES = [
 OTROS_PAGES = ['budget','expenses','income','debt','history']
 ```
 
-- Desktop (≥1100px): sidebar, 240px, with collapsible "Otros" group (`showOtros` state)
+- Desktop (≥1100px): sidebar, 240px, with "Otros" as a full-page destination
 - Tablet (701–1099px): sidebar, 200px (unified single breakpoint — see below)
-- Mobile (≤700px): sidebar hidden; bottom nav shown; Otros → `.mobile-only-sheet` bottom drawer
+- Mobile (≤700px): sidebar hidden; bottom nav shown; Otros opens the same full-page destination
 
 ---
 
@@ -381,4 +381,3 @@ downloaded and run.
 - All of the above lives directly in `index.html` (markup, CSS, and the
   watchdog script), not in `Perita.jsx` — see "Sync workflow" above for why
   `sync_to_html.py` can never drop it.
-

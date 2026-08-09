@@ -47,8 +47,6 @@ function validPeriod(overrides) {
     periodKey: '2026-08',
     status: 'open',
     plannedSalaryAmount: 900000,
-    variableExpenseBudgetAmount: 200000,
-    plannedSavingsAmount: 100000,
     openedAt: NOW,
     closedAt: null,
     snapshotId: null,
@@ -309,6 +307,15 @@ test('V1.1.0 valid domain records', async (t) => {
 });
 
 test('V1.1.0 required fields, scalar contracts, and enums', async (t) => {
+  await t.test('Period ignores retired monthly-planning fields from existing V1.1.0 data', () => {
+    const result = Domain.validatePeriod(validPeriod({
+      variableExpenseBudgetAmount: 123456,
+      plannedSavingsAmount: 654321,
+    }));
+    assert.equal(Object.hasOwn(result, 'variableExpenseBudgetAmount'), false);
+    assert.equal(Object.hasOwn(result, 'plannedSavingsAmount'), false);
+  });
+
   await t.test('every model rejects a missing required field', () => {
     const cases = [
       [Domain.validateFinancialSettings, validFinancialSettings(), 'currency'],
