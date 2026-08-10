@@ -63,7 +63,7 @@
     'periods',
     'auditEvents',
   ]);
-  const ACCOUNT_EDITABLE_FIELDS = Object.freeze(['name']);
+  const ACCOUNT_EDITABLE_FIELDS = Object.freeze(['name', 'bank']);
   const CATEGORY_STORES = Object.freeze(['categories', 'periods', 'auditEvents']);
   const FIXED_TEMPLATE_CREATE_STORES = Object.freeze([
     'fixedExpenseTemplates',

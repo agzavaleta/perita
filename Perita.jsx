@@ -464,6 +464,7 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
       try {
         const completed=await app.createAccountWithBalance({
           name:form.name.trim(),
+          bank:form.bank.trim(),
           currentBalance:form.balance,
           operationDate:today(),
           reason:'Saldo incorporado al crear la cuenta',
@@ -485,6 +486,7 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
       try {
         const completed=await app.updateAccountWithBalance({
           accountId:form.id,name:form.name.trim(),currentBalance:form.balance,
+          bank:form.bank.trim(),
           operationDate:today(),reason:'Ajuste de saldo al editar la cuenta',
         });
         setState(completed.state);
@@ -550,6 +552,7 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
             </div>
             <div className="stat-label">Cuenta</div>
             <div style={{fontSize:16,fontWeight:600,color:'var(--gray-800)',marginBottom:4}}>{a.name}</div>
+            {a.bank && <div className="text-sm text-gray">{a.bank}</div>}
             <div style={{fontSize:24,fontWeight:700,letterSpacing:'-.02em',color:'var(--gray-900)',margin:'6px 0'}}>{fmt(a.balance)}</div>
           </div>
         ))}
@@ -563,6 +566,10 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
             <div className="form-group">
               <label className="form-label">Nombre</label>
               <input className="form-input" placeholder="Ej: Cuenta corriente" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Banco <span className="text-gray">(opcional)</span></label>
+              <input className="form-input" placeholder="Ej: Banco Estado" value={form.bank||''} onChange={e=>setForm(f=>({...f,bank:e.target.value}))} />
             </div>
             <div className="form-group">
               <label className="form-label">Saldo actual</label>
@@ -1931,7 +1938,7 @@ const translateLegacyIntent = async (app, previous, next) => {
   if(addedAccount){
     if(addedAccount.balance!==0) throw new Error('La cuenta debe crearse en cero. Incorpora el saldo desde “Editar Cuenta”.');
     return app.execute('account.create',{account:{
-      id:recordId(),name:addedAccount.name,openingBalance:0,currentBalance:0,status:'active',
+      id:recordId(),name:addedAccount.name,bank:addedAccount.bank||null,openingBalance:0,currentBalance:0,status:'active',
       revision:1,createdAt:timestamp,updatedAt:timestamp,
     }});
   }
@@ -1941,11 +1948,11 @@ const translateLegacyIntent = async (app, previous, next) => {
   if(changedAccount){
     const current=next.accounts.find(item=>item.id===changedAccount.id);
     if(current.balance!==changedAccount.balance){
-      return app.updateAccountWithBalance({accountId:current.id,name:current.name,
+      return app.updateAccountWithBalance({accountId:current.id,name:current.name,bank:current.bank||null,
         currentBalance:current.balance,operationDate:today(),reason:'Ajuste de saldo al editar la cuenta'});
     }
-    if(current.name!==changedAccount.name) return app.updateAccountWithBalance({accountId:current.id,
-      name:current.name,currentBalance:current.balance,operationDate:today()});
+    if(current.name!==changedAccount.name||current.bank!==changedAccount.bank) return app.updateAccountWithBalance({accountId:current.id,
+      name:current.name,bank:current.bank||null,currentBalance:current.balance,operationDate:today()});
     throw new Error('El contrato vigente de cuentas solo permite editar el nombre.');
   }
 

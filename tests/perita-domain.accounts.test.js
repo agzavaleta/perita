@@ -96,6 +96,7 @@ function account(number, overrides) {
   return {
     id: id(number),
     name: `Cuenta ${number}`,
+    bank: null,
     openingBalance: 0,
     currentBalance: 0,
     status: 'active',
@@ -286,6 +287,19 @@ test('V1.1.0 account.create', async (t) => {
     );
   });
 
+  await t.test('persists an optional bank and normalizes an omitted legacy bank to null', async (t2) => {
+    const f = await fixture(t2);
+    await bootstrap(f);
+    const withBank = await f.commands.account.create(await createInput(f.storage, {
+      account: account(3, { bank: 'Banco Estado' }),
+    }));
+    assert.equal(withBank.result.account.bank, 'Banco Estado');
+
+    const legacyShape = account(4);
+    delete legacyShape.bank;
+    assert.equal(Domain.validateAccount(legacyShape).bank, null);
+  });
+
   await t.test('rejects nonzero balances, inactive status, and noninitial revision', async (t2) => {
     const cases = [
       { openingBalance: 1, currentBalance: 1 },
@@ -353,15 +367,16 @@ test('V1.1.0 account.create', async (t) => {
 });
 
 test('V1.1.0 account.update', async (t) => {
-  await t.test('updates only the existing descriptive name and advances once', async (t2) => {
+  await t.test('updates the descriptive name and bank and advances once', async (t2) => {
     const f = await fixture(t2);
     await bootstrap(f);
     const before = await f.storage.get('accounts', id(2));
     const runtimeBefore = await f.storage.get('system', 'runtime');
-    const completed = await f.commands.account.update(await updateInput(f.storage));
+    const completed = await f.commands.account.update(await updateInput(f.storage, { bank: 'Banco de Chile' }));
     const after = completed.result.account;
 
     assert.equal(after.name, 'Cuenta renombrada');
+    assert.equal(after.bank, 'Banco de Chile');
     assert.equal(after.revision, 2);
     assert.equal(after.updatedAt, f.clock.now());
     for (const field of [

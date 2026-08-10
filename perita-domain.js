@@ -334,6 +334,8 @@
     ], 'Account');
     validateMutableIdentity(record, 'Account');
     assertString(record.name, 'Account.name');
+    const bank = record.bank === undefined ? null : record.bank;
+    assertNullableString(bank, 'Account.bank');
     assertMoney(record.openingBalance, {
       field: 'Account.openingBalance', allowZero: true, allowNegative: true,
     });
@@ -348,7 +350,7 @@
         { accountId: record.id, currentBalance: record.currentBalance }
       );
     }
-    return immutableCopy(record, 'Account');
+    return immutableCopy({ ...record, bank }, 'Account');
   }
 
   function validateSavingsGoal(value) {

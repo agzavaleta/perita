@@ -120,6 +120,7 @@ function account(number, overrides) {
   return {
     id: id(number || 2),
     name: `Cuenta ${number || 2}`,
+    bank: null,
     openingBalance: 0,
     currentBalance: 0,
     status: 'active',

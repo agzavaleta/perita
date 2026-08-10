@@ -70,6 +70,7 @@ function validAccount(overrides) {
   return {
     id: id(3),
     name: 'Cuenta principal',
+    bank: null,
     openingBalance: 0,
     currentBalance: 0,
     status: 'active',

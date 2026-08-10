@@ -324,6 +324,7 @@
   function safeRestoreData(data) {
     const copy = JSON.parse(JSON.stringify(data));
     copy.periods = copy.periods.map((record) => Domain.validatePeriod(record));
+    copy.accounts = copy.accounts.map((record) => Domain.validateAccount(record));
     copy.system = copy.system.map((record) => (
       record.key === 'runtime' ? safeRuntime(record) : record
     ));
@@ -378,7 +379,11 @@
               const records = await transaction.getAll(storeName);
               entries.push([
                 storeName,
-                storeName === 'periods' ? records.map(Domain.validatePeriod) : records,
+                storeName === 'periods'
+                  ? records.map(Domain.validatePeriod)
+                  : storeName === 'accounts'
+                    ? records.map(Domain.validateAccount)
+                    : records,
               ]);
             }
             return immutableCopy(Object.fromEntries(entries));

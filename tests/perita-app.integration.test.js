@@ -197,6 +197,7 @@ test('post-setup account creation records the requested real balance as a canoni
 
   const completed = await app.createAccountWithBalance({
     name: 'Cuenta nueva',
+    bank: 'Banco Estado',
     currentBalance: 500000,
     operationDate: DATE,
   });
@@ -206,6 +207,7 @@ test('post-setup account creation records the requested real balance as a canoni
   const movement = completed.state.movements.find((item) => item.operationId === operation.id);
 
   assert.equal(account.openingBalance, 0);
+  assert.equal(account.bank, 'Banco Estado');
   assert.equal(account.currentBalance, 500000);
   assert.equal(opening.openingAmount, 0);
   assert.equal(operation.type, 'balance_adjustment');
@@ -215,6 +217,14 @@ test('post-setup account creation records the requested real balance as a canoni
   assert.equal(movement.delta, 500000);
   assert.equal(completed.state.accounts.find((item) => item.id === completed.accountId).balance, 500000);
   assert.deepEqual(deliveredStates.map((state) => state.accounts.find((item) => item.id === completed.accountId)?.balance), [500000]);
+
+  const withoutBank = await app.createAccountWithBalance({
+    name: 'Efectivo', currentBalance: 0, operationDate: DATE,
+  });
+  assert.equal(
+    withoutBank.state._snapshot.accounts.find((item) => item.id === withoutBank.accountId).bank,
+    null
+  );
 
   await assert.rejects(
     app.createAccountWithBalance({ name: 'Línea utilizada', currentBalance: -25000, operationDate: DATE }),
@@ -301,22 +311,24 @@ test('account edit processes name, balance, or both through canonical commands',
   const accountId = setup.state.accounts[0].id;
 
   const named = await app.updateAccountWithBalance({
-    accountId, name: 'Cuenta renombrada', currentBalance: 100000, operationDate: DATE,
+    accountId, name: 'Cuenta renombrada', bank: 'Banco Uno', currentBalance: 100000, operationDate: DATE,
   });
   assert.equal(named.state.accounts.find((item) => item.id === accountId).name, 'Cuenta renombrada');
+  assert.equal(named.state.accounts.find((item) => item.id === accountId).bank, 'Banco Uno');
   assert.equal(named.state.operations.length, 0);
 
   const balanced = await app.updateAccountWithBalance({
-    accountId, name: 'Cuenta renombrada', currentBalance: 125000, operationDate: DATE,
+    accountId, name: 'Cuenta renombrada', bank: 'Banco Uno', currentBalance: 125000, operationDate: DATE,
   });
   assert.equal(balanced.state.accounts.find((item) => item.id === accountId).balance, 125000);
   assert.equal(balanced.state.movements.at(-1).delta, 25000);
 
   const both = await app.updateAccountWithBalance({
-    accountId, name: 'Cuenta final', currentBalance: 90000, operationDate: DATE,
+    accountId, name: 'Cuenta final', bank: 'Banco Dos', currentBalance: 90000, operationDate: DATE,
   });
   const account = both.state._snapshot.accounts.find((item) => item.id === accountId);
   assert.equal(account.name, 'Cuenta final');
+  assert.equal(account.bank, 'Banco Dos');
   assert.equal(account.currentBalance, 90000);
   assert.equal(both.state.movements.at(-1).delta, -35000);
 });

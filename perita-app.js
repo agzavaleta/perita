@@ -261,7 +261,7 @@
     const instanceByTemplate = new Map(activeInstances.map((instance) => [instance.templateId, instance]));
     const accounts = snapshot.accounts.filter((account) => account.status === 'active').map((account) => ({
       id: account.id, name: account.name, balance: account.currentBalance,
-      type: 'bank', bank: '', status: account.status, revision: account.revision,
+      type: 'bank', bank: account.bank || '', status: account.status, revision: account.revision,
     }));
     const wallets = snapshot.savingsGoals.map((goal) => ({
       id: goal.id, emoji: '💰', name: goal.name, bank: '', balance: goal.currentBalance,
@@ -853,6 +853,7 @@
           account: {
             id: accountId,
             name: request.name,
+            bank: request.bank || null,
             openingBalance: 0,
             currentBalance: 0,
             status: 'active',
@@ -961,14 +962,19 @@
         field: 'currentBalance', allowZero: true, allowNegative: true,
       });
       const nameChanged = request.name !== account.name;
+      const bank = request.bank || null;
+      const bankChanged = bank !== account.bank;
       const balanceDelta = currentBalance - account.currentBalance;
       let completed = null;
       stateDeliveryPauseDepth += 1;
       try {
-        if (nameChanged) {
+        if (nameChanged || bankChanged) {
           completed = await execute('account.update', {
             accountId: account.id,
-            changes: { name: request.name },
+            changes: {
+              ...(nameChanged ? { name: request.name } : {}),
+              ...(bankChanged ? { bank } : {}),
+            },
           });
         }
         if (balanceDelta !== 0) {
@@ -981,7 +987,7 @@
         }
         return immutable({
           accountId: account.id,
-          nameUpdated: nameChanged,
+          detailsUpdated: nameChanged || bankChanged,
           adjustment: balanceDelta === 0 ? null : completed.result,
           state: completed ? completed.state : state,
         });

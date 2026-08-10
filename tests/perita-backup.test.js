@@ -73,6 +73,7 @@ function account() {
   return {
     id: ACCOUNT,
     name: 'Cuenta principal',
+    bank: 'Banco Estado',
     openingBalance: 1000000,
     currentBalance: 1000000,
     status: 'active',
@@ -435,6 +436,7 @@ test('V1.1.0 backup restoration', async (t) => {
     await closePeriod(source);
     const exported = await source.backup.exportBackup();
     const legacyBackup = await rehash(exported, (copy) => {
+      copy.data.accounts.forEach((record) => { delete record.bank; });
       copy.data.periods.forEach((record) => {
         record.variableExpenseBudgetAmount = 123456;
         record.plannedSavingsAmount = 654321;
@@ -458,6 +460,7 @@ test('V1.1.0 backup restoration', async (t) => {
     });
     const preventiveBackup = await service.exportBackup();
     await service.restoreBackup({ backup: legacyBackup, preventiveBackup });
+    assert.equal((await storage.get('accounts', ACCOUNT)).bank, null);
     for (const restoredPeriod of await storage.getAll('periods')) {
       assert.equal(Object.hasOwn(restoredPeriod, 'variableExpenseBudgetAmount'), false);
       assert.equal(Object.hasOwn(restoredPeriod, 'plannedSavingsAmount'), false);
