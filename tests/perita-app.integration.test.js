@@ -49,18 +49,92 @@ function sessionStore() {
   };
 }
 
+function mutableClock(initial) {
+  let milliseconds = Date.parse(initial || NOW);
+  return {
+    now: () => new Date(milliseconds).toISOString(),
+    advance: (amount) => { milliseconds += amount; },
+  };
+}
+
+function intervalHarness() {
+  let nextId = 1;
+  const active = new Map();
+  return {
+    setInterval: (callback, delay) => {
+      const idValue = nextId++;
+      active.set(idValue, { callback, delay });
+      return idValue;
+    },
+    clearInterval: (idValue) => active.delete(idValue),
+    runActive: () => Promise.all([...active.values()].map(({ callback }) => callback())),
+    get activeCount() { return active.size; },
+    get createdCount() { return nextId - 1; },
+  };
+}
+
+function channelHarness() {
+  const instances = [];
+  return {
+    instances,
+    create: () => {
+      const instance = {
+        closed: false,
+        messages: [],
+        onmessage: null,
+        postMessage(message) { this.messages.push(message); },
+        close() { this.closed = true; },
+      };
+      instances.push(instance);
+      return instance;
+    },
+  };
+}
+
+function eventTargetHarness(initialVisibility) {
+  const listeners = new Map();
+  return {
+    visibilityState: initialVisibility || 'visible',
+    addEventListener(type, listener) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(listener);
+    },
+    removeEventListener(type, listener) {
+      if (listeners.has(type)) listeners.get(type).delete(listener);
+    },
+    dispatch(type, event) {
+      for (const listener of listeners.get(type) || []) listener(event || { type });
+    },
+    listenerCount(type) { return (listeners.get(type) || new Set()).size; },
+  };
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function application(factory, options) {
   const settings = options || {};
   return PeritaApp.createPeritaApplication({
     indexedDB: factory,
     IDBKeyRange,
+    storage: settings.storage,
     crypto: { randomUUID: () => id(900) },
     legacyStorage: settings.legacyStorage || legacyStorage(null),
-    now: () => NOW,
+    now: settings.now || (() => NOW),
     createUuid: sequence(settings.prefix || 'f2000000'),
     sha256,
     tabId: settings.tabId || 'integration-tab-a',
     channel: null,
+    channelFactory: settings.channelFactory,
+    setInterval: settings.setInterval,
+    clearInterval: settings.clearInterval,
   });
 }
 
@@ -315,6 +389,297 @@ test('an incomplete setup renews its writer after page teardown and reload', asy
   assert.equal(next.writer, true);
   assert.equal(next.writerEpoch, originalEpoch);
   assert.equal(next.error, undefined);
+});
+
+test('suspend and resume rebuild resources, renew the valid writer, and keep one heartbeat', async (t) => {
+  const factory = new IDBFactory();
+  const clock = mutableClock();
+  const baseStorage = IndexedDb.createPeritaIndexedDb({
+    indexedDB: factory,
+    IDBKeyRange,
+    crypto: { randomUUID: () => id(902) },
+    now: clock.now,
+  });
+  let openCount = 0;
+  let closeCount = 0;
+  const storage = {
+    ...baseStorage,
+    open: async () => { openCount += 1; return baseStorage.open(); },
+    close: () => { closeCount += 1; baseStorage.close(); },
+  };
+  const channels = channelHarness();
+  const intervals = intervalHarness();
+  const app = application(factory, {
+    prefix: 'f3150000',
+    storage,
+    now: clock.now,
+    channelFactory: channels.create,
+    setInterval: intervals.setInterval,
+    clearInterval: intervals.clearInterval,
+  });
+  t.after(() => app.close());
+  const unsubscribe = app.subscribe(() => undefined);
+  t.after(unsubscribe);
+  await app.initialize();
+  await app.completeSetup(setupPayload());
+  const stateBeforeSuspend = app.state;
+  const canonicalFinancialState = {
+    dataRevision: stateBeforeSuspend.runtime.dataRevision,
+    lastCommitId: stateBeforeSuspend.runtime.lastCommitId,
+    activePeriodId: stateBeforeSuspend.runtime.activePeriodId,
+    periodRevision: stateBeforeSuspend.period.revision,
+    accounts: stateBeforeSuspend._snapshot.accounts.map((account) => ({
+      id: account.id,
+      openingBalance: account.openingBalance,
+      currentBalance: account.currentBalance,
+      revision: account.revision,
+    })),
+    operations: stateBeforeSuspend.operations,
+    movements: stateBeforeSuspend.movements,
+    commits: stateBeforeSuspend._snapshot.commits,
+  };
+  const originalEpoch = app.writerEpoch;
+  const leaseLosses = [];
+  app.startHeartbeat((error) => leaseLosses.push(error));
+  app.startHeartbeat((error) => leaseLosses.push(error));
+  assert.equal(intervals.activeCount, 1);
+  assert.equal(intervals.createdCount, 1);
+  assert.equal(channels.instances.length, 1);
+
+  const heartbeatInFlight = intervals.runActive();
+  app.suspend();
+  await heartbeatInFlight;
+  assert.equal(app.suspended, true);
+  assert.equal(app.writerEpoch, null);
+  assert.equal(app.heartbeatActive, false);
+  assert.equal(intervals.activeCount, 0);
+  assert.equal(channels.instances[0].closed, true);
+  assert.equal(leaseLosses.length, 0);
+  const opensBeforeResume = openCount;
+
+  const resumed = await app.resume();
+  assert.equal(resumed.phase, 'ok');
+  assert.equal(resumed.writer, true);
+  assert.equal(resumed.writerEpoch, originalEpoch);
+  assert.equal(app.suspended, false);
+  assert.ok(openCount > opensBeforeResume);
+  assert.ok(closeCount >= 1);
+  assert.equal(channels.instances.length, 2);
+  assert.equal(channels.instances[1].closed, false);
+  assert.equal(typeof channels.instances[1].onmessage, 'function');
+  assert.deepEqual({
+    dataRevision: resumed.state.runtime.dataRevision,
+    lastCommitId: resumed.state.runtime.lastCommitId,
+    activePeriodId: resumed.state.runtime.activePeriodId,
+    periodRevision: resumed.state.period.revision,
+    accounts: resumed.state._snapshot.accounts.map((account) => ({
+      id: account.id,
+      openingBalance: account.openingBalance,
+      currentBalance: account.currentBalance,
+      revision: account.revision,
+    })),
+    operations: resumed.state.operations,
+    movements: resumed.state.movements,
+    commits: resumed.state._snapshot.commits,
+  }, canonicalFinancialState);
+  app.startHeartbeat();
+  app.startHeartbeat();
+  assert.equal(intervals.activeCount, 1);
+  assert.equal(intervals.createdCount, 2);
+
+  const updated = await app.execute('financial-settings.update-reference-salary', {
+    salaryReferenceAmount: 910000,
+  });
+  assert.equal(updated.state.settings.salary, 910000);
+});
+
+test('resume reacquires an expired writer canonically and respects another winner', async (t) => {
+  const factory = new IDBFactory();
+  const clock = mutableClock();
+  const first = application(factory, {
+    tabId: 'resume-expired-a', prefix: 'f3250000', now: clock.now,
+  });
+  await first.initialize();
+  await first.completeSetup(setupPayload());
+  const originalEpoch = first.writerEpoch;
+  first.suspend();
+  clock.advance(PeritaApp.LEASE_DURATION_MS + 1);
+  const reacquired = await first.resume();
+  assert.equal(reacquired.phase, 'ok');
+  assert.equal(reacquired.writer, true);
+  assert.equal(reacquired.writerEpoch, originalEpoch + 1);
+
+  first.suspend();
+  clock.advance(PeritaApp.LEASE_DURATION_MS + 1);
+  const second = application(factory, {
+    tabId: 'resume-expired-b', prefix: 'f3350000', now: clock.now,
+  });
+  t.after(async () => { await second.close(); await first.close(); });
+  const winner = await second.initialize();
+  assert.equal(winner.writer, true);
+  const readOnly = await first.resume();
+  assert.equal(readOnly.phase, 'ready_read_only');
+  assert.equal(readOnly.writer, false);
+  assert.equal(readOnly.error.code, 'WRITER_ALREADY_OWNED');
+  assert.equal(first.writerEpoch, null);
+});
+
+test('a failed resume remains retryable and never reuses a closed storage connection', async (t) => {
+  const factory = new IDBFactory();
+  const baseStorage = IndexedDb.createPeritaIndexedDb({
+    indexedDB: factory,
+    IDBKeyRange,
+    crypto: { randomUUID: () => id(903) },
+    now: () => NOW,
+  });
+  let failNextOpen = false;
+  const storage = {
+    ...baseStorage,
+    open: async () => {
+      if (failNextOpen) {
+        failNextOpen = false;
+        throw new Error('induced resume open failure');
+      }
+      return baseStorage.open();
+    },
+  };
+  const app = application(factory, { prefix: 'f3450000', storage });
+  t.after(() => app.close());
+  await app.initialize();
+  await app.completeSetup(setupPayload());
+  app.suspend();
+  failNextOpen = true;
+  const failed = await app.resume();
+  assert.equal(failed.phase, 'error');
+  assert.match(failed.error.message, /induced resume open failure/);
+  const retried = await app.resume();
+  assert.equal(retried.phase, 'ok');
+  assert.equal(retried.writer, true);
+  assert.equal(retried.state.runtime.setupStatus, 'completed');
+});
+
+test('lifecycle controller serializes pageshow and visibility resumes without duplicate listeners', async () => {
+  const eventTarget = eventTargetHarness();
+  const visibility = eventTargetHarness('visible');
+  const resumptions = [];
+  const suspendedReasons = [];
+  const recoveringReasons = [];
+  const results = [];
+  const applicationStub = {
+    resume: () => {
+      const pending = deferred();
+      resumptions.push(pending);
+      return pending.promise;
+    },
+    suspend: () => suspendedReasons.push('suspended'),
+  };
+  const controller = PeritaApp.createLifecycleController({
+    application: applicationStub,
+    eventTarget,
+    visibilitySource: visibility,
+    onRecovering: ({ reason }) => recoveringReasons.push(reason),
+    onResult: (result, reason) => results.push({ result, reason }),
+  });
+  const initial = controller.start();
+  await Promise.resolve();
+  assert.equal(resumptions.length, 1);
+  eventTarget.dispatch('pageshow', { persisted: false });
+  visibility.dispatch('visibilitychange');
+  assert.equal(resumptions.length, 1);
+  resumptions[0].resolve({ phase: 'ok' });
+  await initial;
+  assert.equal(results.length, 1);
+
+  eventTarget.dispatch('pageshow', { persisted: false });
+  await Promise.resolve();
+  assert.equal(resumptions.length, 2);
+  resumptions[1].resolve({ phase: 'ok' });
+  await controller.resume('observe-normal-pageshow');
+
+  visibility.visibilityState = 'hidden';
+  visibility.dispatch('visibilitychange');
+  eventTarget.dispatch('pagehide');
+  assert.equal(suspendedReasons.length, 1);
+  visibility.visibilityState = 'visible';
+  eventTarget.dispatch('pageshow', { persisted: true });
+  visibility.dispatch('visibilitychange');
+  await Promise.resolve();
+  assert.equal(resumptions.length, 3);
+  resumptions[2].resolve({ phase: 'ok' });
+  await controller.resume('observe-bfcache');
+  assert.equal(resumptions.length, 3);
+  assert.ok(recoveringReasons.includes('pageshow-bfcache'));
+  assert.ok(results.some((item) => item.reason === 'pageshow-bfcache'));
+
+  const rapidOld = controller.resume('rapid-foreground');
+  await Promise.resolve();
+  assert.equal(resumptions.length, 4);
+  visibility.visibilityState = 'hidden';
+  visibility.dispatch('visibilitychange');
+  visibility.visibilityState = 'visible';
+  visibility.dispatch('visibilitychange');
+  resumptions[3].resolve({ phase: 'stale-result' });
+  await rapidOld;
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(resumptions.length, 5);
+  resumptions[4].resolve({ phase: 'ok' });
+  await controller.resume('observe-rapid-foreground');
+  assert.equal(results.some((item) => item.result.phase === 'stale-result'), false);
+  assert.equal(eventTarget.listenerCount('pagehide'), 1);
+  assert.equal(eventTarget.listenerCount('pageshow'), 1);
+  assert.equal(visibility.listenerCount('visibilitychange'), 1);
+
+  controller.stop();
+  assert.equal(eventTarget.listenerCount('pagehide'), 0);
+  assert.equal(eventTarget.listenerCount('pageshow'), 0);
+  assert.equal(visibility.listenerCount('visibilitychange'), 0);
+  assert.equal(suspendedReasons.length, 3);
+});
+
+test('lifecycle recovery failure is visible to callbacks and a manual retry can recover', async () => {
+  const eventTarget = eventTargetHarness();
+  const visibility = eventTargetHarness('visible');
+  let attempts = 0;
+  const errors = [];
+  const results = [];
+  const controller = PeritaApp.createLifecycleController({
+    application: {
+      resume: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('induced lifecycle resume failure');
+        return { phase: 'ok' };
+      },
+      suspend: () => undefined,
+    },
+    eventTarget,
+    visibilitySource: visibility,
+    onError: (error) => errors.push(error.message),
+    onResult: (result) => results.push(result),
+  });
+  await controller.start();
+  assert.deepEqual(errors, ['induced lifecycle resume failure']);
+  await controller.resume('manual-retry');
+  assert.equal(attempts, 2);
+  assert.equal(results[0].phase, 'ok');
+  controller.stop();
+});
+
+test('definitive close after suspension releases the writer and forbids instance reuse', async (t) => {
+  const factory = new IDBFactory();
+  const first = application(factory, { tabId: 'close-after-suspend-a', prefix: 'f3550000' });
+  await first.initialize();
+  await first.completeSetup(setupPayload());
+  first.suspend();
+  await first.close();
+  assert.equal(first.closed, true);
+  await assert.rejects(first.resume(), /ya fue cerrada/);
+
+  const second = application(factory, { tabId: 'close-after-suspend-b', prefix: 'f3650000' });
+  t.after(() => second.close());
+  const initialized = await second.initialize();
+  assert.equal(initialized.writer, true);
+  assert.notEqual(initialized.phase, 'ready_read_only');
 });
 
 test('a duplicated or separate tab never reuses the active writer identity', async (t) => {
@@ -675,6 +1040,10 @@ test('UI integration keeps setup, navigation, icons, hierarchy, and unsaved guar
   assert.match(jsx, /title:'Desactivar cuenta'/);
   assert.match(jsx, /Para desactivar esta cuenta, primero deja su saldo en \$0\./);
   assert.match(jsx, /Esta cuenta está desactivada y no admite operaciones\./);
+  assert.match(jsx, /const RecoveryOverlay = \(\) =>/);
+  assert.match(jsx, /PeritaApp\.createLifecycleController/);
+  assert.match(jsx, /Revalidando tus datos y el control seguro de escritura\./);
+  assert.match(jsx, /Reintentar conexión/);
   assert.match(jsx, /const \[pendingClose, setPendingClose\] = useState\(null\)/);
   assert.match(jsx, /setPendingClose\(\(\) => closeFn\)/);
   assert.equal((jsx.match(/if\(valid\) resetAndCloseForm\(\)/g)||[]).length, 2);

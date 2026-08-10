@@ -329,6 +329,119 @@
     });
   }
 
+  function createLifecycleController(options) {
+    const settings = options || {};
+    const application = settings.application;
+    const eventTarget = settings.eventTarget;
+    const visibilitySource = settings.visibilitySource;
+    if (!application || typeof application.resume !== 'function' || typeof application.suspend !== 'function') {
+      throw new TypeError('createLifecycleController requires a resumable application');
+    }
+    if (!eventTarget || typeof eventTarget.addEventListener !== 'function') {
+      throw new TypeError('createLifecycleController requires an event target');
+    }
+    let active = false;
+    let temporarilySuspended = false;
+    let lifecycleVersion = 0;
+    let recoveryPromise = null;
+    let recoveryVersion = null;
+    let pendingReason = null;
+
+    const isVisible = () => !visibilitySource || visibilitySource.visibilityState !== 'hidden';
+
+    function recover(reason) {
+      if (!active) return Promise.resolve(null);
+      if (recoveryPromise) {
+        if (recoveryVersion !== lifecycleVersion) pendingReason = reason;
+        if (typeof settings.onRecovering === 'function') {
+          settings.onRecovering(Object.freeze({ reason, pending: true }));
+        }
+        return recoveryPromise;
+      }
+      pendingReason = null;
+      const requestedVersion = lifecycleVersion;
+      recoveryVersion = requestedVersion;
+      temporarilySuspended = false;
+      if (typeof settings.onRecovering === 'function') {
+        settings.onRecovering(Object.freeze({ reason, pending: false }));
+      }
+      recoveryPromise = Promise.resolve()
+        .then(() => application.resume())
+        .then((result) => {
+          if (active && requestedVersion === lifecycleVersion && isVisible()) {
+            if (typeof settings.onResult === 'function') settings.onResult(result, reason);
+          }
+          return result;
+        })
+        .catch((error) => {
+          if (active && requestedVersion === lifecycleVersion && isVisible()) {
+            if (typeof settings.onError === 'function') settings.onError(error, reason);
+          }
+          return null;
+        })
+        .finally(() => {
+          const settledCurrent = active && requestedVersion === lifecycleVersion && isVisible();
+          recoveryPromise = null;
+          recoveryVersion = null;
+          if (settledCurrent && typeof settings.onSettled === 'function') {
+            settings.onSettled(reason);
+          }
+          if (pendingReason !== null && active && isVisible()) {
+            const nextReason = pendingReason;
+            pendingReason = null;
+            recover(nextReason);
+          }
+        });
+      return recoveryPromise;
+    }
+
+    function suspend(reason) {
+      if (!active || temporarilySuspended) return;
+      temporarilySuspended = true;
+      lifecycleVersion += 1;
+      application.suspend();
+      if (typeof settings.onSuspended === 'function') settings.onSuspended(reason);
+    }
+
+    const handlePageHide = () => suspend('pagehide');
+    const handlePageShow = (event) => recover(event && event.persisted ? 'pageshow-bfcache' : 'pageshow');
+    const handleVisibilityChange = () => {
+      if (isVisible()) recover('visibility-visible');
+      else suspend('visibility-hidden');
+    };
+
+    function start() {
+      if (active) return recoveryPromise || Promise.resolve(null);
+      active = true;
+      eventTarget.addEventListener('pagehide', handlePageHide);
+      eventTarget.addEventListener('pageshow', handlePageShow);
+      if (visibilitySource && typeof visibilitySource.addEventListener === 'function') {
+        visibilitySource.addEventListener('visibilitychange', handleVisibilityChange);
+      }
+      return recover('initial');
+    }
+
+    function stop() {
+      if (!active) return;
+      active = false;
+      lifecycleVersion += 1;
+      pendingReason = null;
+      eventTarget.removeEventListener('pagehide', handlePageHide);
+      eventTarget.removeEventListener('pageshow', handlePageShow);
+      if (visibilitySource && typeof visibilitySource.removeEventListener === 'function') {
+        visibilitySource.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
+      application.suspend();
+    }
+
+    return Object.freeze({
+      start,
+      stop,
+      resume: (reason) => recover(reason || 'manual'),
+      get recoveryActive() { return recoveryPromise !== null; },
+    });
+  }
+
   function createPeritaApplication(options) {
     const settings = options || {};
     const indexedDB = settings.indexedDB || (typeof globalThis !== 'undefined' && globalThis.indexedDB);
@@ -362,15 +475,65 @@
     const backup = settings.backup || Backup.createPeritaBackup({
       storage, indexedDB, now, sha256, onDeleteBlocked: settings.onDeleteBlocked,
     });
-    const channel = Object.prototype.hasOwnProperty.call(settings, 'channel')
-      ? settings.channel
-      : (typeof BroadcastChannel === 'function' ? new BroadcastChannel('perita-v110-events') : null);
+    const hasInjectedChannel = Object.prototype.hasOwnProperty.call(settings, 'channel');
+    const channelFactory = typeof settings.channelFactory === 'function'
+      ? settings.channelFactory
+      : hasInjectedChannel
+        ? () => null
+        : () => {
+          try {
+            return typeof BroadcastChannel === 'function'
+              ? new BroadcastChannel('perita-v110-events')
+              : null;
+          } catch (_) {
+            return null;
+          }
+        };
+    const scheduleInterval = settings.setInterval ||
+      (typeof setInterval === 'function' ? setInterval : null);
+    const cancelInterval = settings.clearInterval ||
+      (typeof clearInterval === 'function' ? clearInterval : null);
+    let channel = hasInjectedChannel ? settings.channel : channelFactory();
     let writerEpoch = null;
+    let ownedWriterEpoch = null;
     let heartbeatHandle = null;
+    let heartbeatGeneration = 0;
     let lastState = null;
     let stateListener = null;
     let stateDeliveryPauseDepth = 0;
     let pendingStateDelivery = null;
+    let suspended = false;
+    let closed = false;
+    let suspensionVersion = 0;
+    let resumePromise = null;
+
+    function bindChannelListener() {
+      if (!channel) return;
+      channel.onmessage = stateListener
+        ? (event) => {
+          if (!event.data || event.data.tabId === tabId) return;
+          refresh().catch(() => undefined);
+        }
+        : null;
+    }
+
+    function ensureChannel() {
+      if (channel || closed) return channel;
+      try {
+        channel = channelFactory();
+      } catch (_) {
+        channel = null;
+      }
+      bindChannelListener();
+      return channel;
+    }
+
+    function disconnectChannel() {
+      if (!channel) return;
+      try { channel.onmessage = null; } catch (_) {}
+      try { channel.close(); } catch (_) {}
+      channel = null;
+    }
 
     async function readSnapshot() {
       await storage.open();
@@ -399,7 +562,12 @@
     }
 
     function emit(type) {
-      if (channel) channel.postMessage({ type, tabId, at: now() });
+      if (!channel) return;
+      try {
+        channel.postMessage({ type, tabId, at: now() });
+      } catch (_) {
+        disconnectChannel();
+      }
     }
 
     async function acquireWriter() {
@@ -409,6 +577,7 @@
         leaseDurationMs: LEASE_DURATION_MS,
       });
       writerEpoch = writer.epoch;
+      ownedWriterEpoch = writer.epoch;
       return writer;
     }
 
@@ -423,13 +592,22 @@
     }
 
     function startHeartbeat(onLeaseLost) {
-      if (heartbeatHandle !== null || writerEpoch === null || typeof setInterval !== 'function') return;
-      heartbeatHandle = setInterval(async () => {
+      if (
+        heartbeatHandle !== null || writerEpoch === null || suspended || closed ||
+        typeof scheduleInterval !== 'function'
+      ) return;
+      heartbeatGeneration += 1;
+      const generation = heartbeatGeneration;
+      heartbeatHandle = scheduleInterval(async () => {
+        const expectedEpoch = writerEpoch;
+        if (expectedEpoch === null || suspended || closed || generation !== heartbeatGeneration) return;
         try {
-          await runtime.heartbeat({ expectedEpoch: writerEpoch, leaseDurationMs: LEASE_DURATION_MS });
+          await runtime.heartbeat({ expectedEpoch, leaseDurationMs: LEASE_DURATION_MS });
         } catch (error) {
+          if (suspended || closed || generation !== heartbeatGeneration || writerEpoch !== expectedEpoch) return;
           stopHeartbeat();
           writerEpoch = null;
+          ownedWriterEpoch = null;
           if (onLeaseLost) onLeaseLost(errorView(error));
           emit('writer-lost');
         }
@@ -437,8 +615,11 @@
     }
 
     function stopHeartbeat() {
-      if (heartbeatHandle !== null && typeof clearInterval === 'function') clearInterval(heartbeatHandle);
+      if (heartbeatHandle !== null && typeof cancelInterval === 'function') {
+        cancelInterval(heartbeatHandle);
+      }
       heartbeatHandle = null;
+      heartbeatGeneration += 1;
     }
 
     function hasLegacySource() {
@@ -450,6 +631,16 @@
     }
 
     async function initialize() {
+      if (closed) {
+        return immutable({
+          phase: 'error',
+          state: null,
+          error: errorView(new Error('La instancia de Perita ya fue cerrada.')),
+          writer: false,
+        });
+      }
+      suspended = false;
+      ensureChannel();
       try {
         const state = await refresh();
         const runtimeState = state.runtime;
@@ -458,6 +649,8 @@
           try {
             await acquireWriter();
           } catch (error) {
+            writerEpoch = null;
+            ownedWriterEpoch = null;
             return immutable({ phase: 'read_only', state, error: errorView(error), writer: false });
           }
           if (hasLegacySource()) {
@@ -477,6 +670,8 @@
         try {
           await acquireWriter();
         } catch (error) {
+          writerEpoch = null;
+          ownedWriterEpoch = null;
           return immutable({ phase: 'ready_read_only', state, error: errorView(error), writer: false });
         }
         const report = await ensureIntegrityAndWriting();
@@ -511,6 +706,7 @@
       });
       stopHeartbeat();
       writerEpoch = null;
+      ownedWriterEpoch = null;
       await acquireWriter();
       const report = await ensureIntegrityAndWriting();
       emit('migration-completed');
@@ -626,6 +822,7 @@
         if (['WRITER_EPOCH_LOST', 'WRITER_LEASE_EXPIRED'].includes(error && error.code)) {
           stopHeartbeat();
           writerEpoch = null;
+          ownedWriterEpoch = null;
         }
         throw error;
       }
@@ -704,6 +901,7 @@
       const result = await backup.restoreBackup({ backup: targetBackup, preventiveBackup });
       stopHeartbeat();
       writerEpoch = null;
+      ownedWriterEpoch = null;
       await acquireWriter();
       const report = await ensureIntegrityAndWriting();
       emit('backup-restored');
@@ -714,11 +912,13 @@
       const result = await backup.deleteAllData({ backup: externalBackup, confirmation });
       stopHeartbeat();
       writerEpoch = null;
+      ownedWriterEpoch = null;
       emit('database-deleted');
       return result;
     }
 
     async function takeOverWriter() {
+      if (suspended || closed) throw new Error('Perita debe reanudarse antes de tomar el escritor.');
       const writer = await acquireWriter();
       const report = await ensureIntegrityAndWriting();
       emit('writer-acquired');
@@ -727,35 +927,63 @@
 
     function subscribe(listener) {
       stateListener = typeof listener === 'function' ? listener : null;
-      if (channel) {
-        channel.onmessage = (event) => {
-          if (!event.data || event.data.tabId === tabId) return;
-          refresh().catch(() => undefined);
-        };
-      }
+      bindChannelListener();
       return () => {
         stateListener = null;
-        if (channel) channel.onmessage = null;
+        bindChannelListener();
       };
     }
 
+    async function resume() {
+      if (closed) {
+        throw new Error('La instancia de Perita ya fue cerrada y no puede reanudarse.');
+      }
+      if (resumePromise) return resumePromise;
+      const requestedVersion = suspensionVersion;
+      resumePromise = (async () => {
+        stopHeartbeat();
+        writerEpoch = null;
+        suspended = false;
+        ensureChannel();
+        const initialized = await initialize();
+        if (suspended || suspensionVersion !== requestedVersion) {
+          stopHeartbeat();
+          writerEpoch = null;
+          disconnectChannel();
+          storage.close();
+        }
+        return initialized;
+      })().finally(() => {
+        resumePromise = null;
+      });
+      return resumePromise;
+    }
+
     async function close() {
+      if (closed) return;
+      closed = true;
+      suspensionVersion += 1;
       stopHeartbeat();
-      if (writerEpoch !== null) {
-        try { await runtime.releaseWriter({ expectedEpoch: writerEpoch }); } catch (_) {}
+      if (resumePromise) {
+        try { await resumePromise; } catch (_) {}
+      }
+      const releasableEpoch = writerEpoch === null ? ownedWriterEpoch : writerEpoch;
+      if (releasableEpoch !== null) {
+        try { await runtime.releaseWriter({ expectedEpoch: releasableEpoch }); } catch (_) {}
       }
       writerEpoch = null;
-      if (channel) channel.close();
+      ownedWriterEpoch = null;
+      disconnectChannel();
       storage.close();
     }
 
     function suspend() {
-      // Page teardown cannot reliably await IndexedDB. Preserve the short
-      // lease and stable per-tab identity so a reload can renew it without an
-      // asynchronous release racing the next application instance.
+      if (closed || suspended) return;
+      suspended = true;
+      suspensionVersion += 1;
       stopHeartbeat();
       writerEpoch = null;
-      if (channel) channel.close();
+      disconnectChannel();
       storage.close();
     }
 
@@ -775,9 +1003,13 @@
       stopHeartbeat,
       subscribe,
       suspend,
+      resume,
       close,
       errorView,
       get writerEpoch() { return writerEpoch; },
+      get suspended() { return suspended; },
+      get closed() { return closed; },
+      get heartbeatActive() { return heartbeatHandle !== null; },
       get state() { return lastState; },
     });
   }
@@ -796,6 +1028,7 @@
     navigationType,
     sessionTabId,
     snapshotToView,
+    createLifecycleController,
     createPeritaApplication,
   });
 });

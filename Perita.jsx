@@ -2142,6 +2142,13 @@ const StartupCard = ({title,children}) => <div style={{minHeight:'100vh',display
   <div className="card" style={{maxWidth:560,width:'100%'}}><div className="modal-title">{title}</div>{children}</div>
 </div>;
 
+const RecoveryOverlay = () => <div className="modal-backdrop" style={{zIndex:800}} aria-live="polite" aria-busy="true">
+  <div className="modal" style={{maxWidth:360,textAlign:'center'}}>
+    <div className="modal-title">Reconectando Perita…</div>
+    <p className="text-sm text-gray">Revalidando tus datos y el control seguro de escritura.</p>
+  </div>
+</div>;
+
 const SetupScreen = ({app,onComplete,notify}) => {
   const [form,setForm]=useState({periodKey:today().slice(0,7),salary:0});
   const [account,setAccount]=useState({name:'Cuenta principal',openingBalance:0});
@@ -2200,6 +2207,8 @@ const App = () => {
   const [state, setStateRaw] = useState(emptyView);
   const [notifs, setNotifs] = useState([]);
   const [updateWaiting, setUpdateWaiting] = useState(null); // holds waiting SW
+  const [recovering, setRecovering] = useState(false);
+  const lifecycleRef=useRef(null);
   let notifId = useRef(0);
 
   const notify = useCallback((msg, type='info') => {
@@ -2208,26 +2217,49 @@ const App = () => {
     setTimeout(()=>setNotifs(n=>n.filter(x=>x.id!==id)), 5000);
   }, []);
 
-  const activate=useCallback(async(initialState)=>{
-    const initialized=await app.initialize();
+  const handleLeaseLost=useCallback(error=>{
+    setBoot(current=>({...current,phase:'ready_read_only',writer:false,error}));
+    notify('Se perdió el control de escritura; esta pestaña quedó en solo lectura','warn');
+  },[notify]);
+
+  const activate=useCallback(async()=>{
+    if(lifecycleRef.current) return lifecycleRef.current.resume('setup-completed');
+    const initialized=await app.resume();
     setBoot(initialized);
     if(initialized.state)setStateRaw(initialized.state);
-    if(initialized.writer){
-      app.startHeartbeat(error=>{setBoot(current=>({...current,phase:'ready_read_only',writer:false,error}));notify('Se perdió el control de escritura; esta pestaña quedó en solo lectura','warn');});
-    }
-  },[app,notify]);
+    if(initialized.writer)app.startHeartbeat(handleLeaseLost);
+    return initialized;
+  },[app,handleLeaseLost]);
 
   useEffect(()=>{
     let active=true;
     const unsubscribe=app.subscribe(next=>{if(active)setStateRaw(next);});
-    app.initialize().then(initialized=>{
-      if(!active)return;
-      setBoot(initialized);
-      if(initialized.state)setStateRaw(initialized.state);
-      if(initialized.writer)app.startHeartbeat(error=>{setBoot(current=>({...current,phase:'ready_read_only',writer:false,error}));notify('Se perdió el writer lease','warn');});
+    const lifecycle=PeritaApp.createLifecycleController({
+      application:app,
+      eventTarget:window,
+      visibilitySource:document,
+      onRecovering:({reason})=>{if(active&&reason!=='initial')setRecovering(true);},
+      onResult:initialized=>{
+        if(!active)return;
+        setBoot(initialized);
+        if(initialized.state)setStateRaw(initialized.state);
+        if(initialized.writer)app.startHeartbeat(handleLeaseLost);
+      },
+      onError:error=>{
+        if(!active)return;
+        setBoot({phase:'error',state:null,error:app.errorView(error),writer:false});
+      },
+      onSettled:()=>{if(active)setRecovering(false);},
     });
-    return()=>{active=false;unsubscribe();app.suspend();};
-  },[app,notify]);
+    lifecycleRef.current=lifecycle;
+    lifecycle.start();
+    return()=>{
+      active=false;
+      lifecycleRef.current=null;
+      lifecycle.stop();
+      unsubscribe();
+    };
+  },[app,handleLeaseLost]);
 
   // Service worker update detection
   useEffect(() => {
@@ -2313,13 +2345,18 @@ const App = () => {
   },[page]);
 
   if(boot.phase==='loading') return <StartupCard title="Abriendo Perita V1.1.0"><p className="text-sm text-gray">Leyendo IndexedDB y verificando el runtime…</p></StartupCard>;
-  if(boot.phase==='error') return <StartupCard title="No se pudo abrir Perita"><div className="alert alert-error">{boot.error?.code}: {boot.error?.message}</div><p className="text-sm text-gray mt-3">No se creó una instalación vacía. Conserva esta pantalla para diagnóstico.</p></StartupCard>;
-  if(boot.phase==='setup_required') return <><Notifs notifs={notifs} dismiss={dismiss}/><SetupScreen app={app} notify={notify} onComplete={activate}/></>;
-  if(['migration_pending','migration_blocked'].includes(boot.phase)) return <><Notifs notifs={notifs} dismiss={dismiss}/><MigrationScreen app={app} boot={boot} notify={notify} onComplete={activate}/></>;
+  if(boot.phase==='error') return <StartupCard title="No se pudo abrir Perita">
+    <div className="alert alert-error">{boot.error?.code}: {boot.error?.message}</div>
+    <p className="text-sm text-gray mt-3">La instancia quedó detenida de forma segura. Reintenta la conexión sin cerrar Perita.</p>
+    <button className="btn btn-primary w-full mt-4" disabled={recovering} onClick={()=>lifecycleRef.current?.resume('manual-retry')}>{recovering?'Reconectando…':'Reintentar conexión'}</button>
+  </StartupCard>;
+  if(boot.phase==='setup_required') return <><Notifs notifs={notifs} dismiss={dismiss}/>{recovering&&<RecoveryOverlay/>}<SetupScreen app={app} notify={notify} onComplete={activate}/></>;
+  if(['migration_pending','migration_blocked'].includes(boot.phase)) return <><Notifs notifs={notifs} dismiss={dismiss}/>{recovering&&<RecoveryOverlay/>}<MigrationScreen app={app} boot={boot} notify={notify} onComplete={activate}/></>;
 
   return (
     <div id="app">
       <Notifs notifs={notifs} dismiss={dismiss} />
+      {recovering&&<RecoveryOverlay/>}
 
       {['ready_read_only','read_only','diagnostic','warning','restricted'].includes(boot.phase) && <div className={`runtime-banner alert ${['warning','restricted'].includes(boot.phase)?'alert-warn':'alert-error'}`}>
         <strong>{boot.phase==='diagnostic'?'Modo diagnóstico':boot.phase==='warning'?'Integridad con advertencias':boot.phase==='restricted'?'Integridad restringida':'Modo solo lectura'}</strong> · {boot.report?.summary||boot.error?.message||'La escritura no está habilitada para esta pestaña.'}
