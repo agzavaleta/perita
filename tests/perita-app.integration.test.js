@@ -293,6 +293,105 @@ test('savings-goal onboarding preserves zero or preexisting balance without mont
   assert.equal(initialized.state.summary.netSavingsAmount, 0);
 });
 
+test('account edit processes name, balance, or both through canonical commands', async (t) => {
+  const app = application(new IDBFactory(), { prefix: 'a1400000' });
+  t.after(() => app.close());
+  await app.initialize();
+  const setup = await app.completeSetup(setupPayload());
+  const accountId = setup.state.accounts[0].id;
+
+  const named = await app.updateAccountWithBalance({
+    accountId, name: 'Cuenta renombrada', currentBalance: 100000, operationDate: DATE,
+  });
+  assert.equal(named.state.accounts.find((item) => item.id === accountId).name, 'Cuenta renombrada');
+  assert.equal(named.state.operations.length, 0);
+
+  const balanced = await app.updateAccountWithBalance({
+    accountId, name: 'Cuenta renombrada', currentBalance: 125000, operationDate: DATE,
+  });
+  assert.equal(balanced.state.accounts.find((item) => item.id === accountId).balance, 125000);
+  assert.equal(balanced.state.movements.at(-1).delta, 25000);
+
+  const both = await app.updateAccountWithBalance({
+    accountId, name: 'Cuenta final', currentBalance: 90000, operationDate: DATE,
+  });
+  const account = both.state._snapshot.accounts.find((item) => item.id === accountId);
+  assert.equal(account.name, 'Cuenta final');
+  assert.equal(account.currentBalance, 90000);
+  assert.equal(both.state.movements.at(-1).delta, -35000);
+});
+
+test('savings edit adjusts balance with or without descriptive changes and excludes monthly savings', async (t) => {
+  const app = application(new IDBFactory(), { prefix: 'a1450000' });
+  t.after(() => app.close());
+  await app.initialize();
+  await app.completeSetup(setupPayload());
+  const created = await app.createSavingsGoalWithBalance({
+    name: 'Meta editable', targetAmount: 300000, plannedMonthlyAmount: 10000,
+    currentBalance: 0, operationDate: DATE,
+  });
+
+  const balanced = await app.updateSavingsGoalWithBalance({
+    goalId: created.goalId, name: 'Meta editable', targetAmount: 300000,
+    plannedMonthlyAmount: 10000, currentBalance: 50000, operationDate: DATE,
+  });
+  assert.equal(balanced.state.wallets.find((item) => item.id === created.goalId).balance, 50000);
+  assert.equal(balanced.state.summary.netSavingsAmount, 0);
+  assert.equal(balanced.state.operations.at(-1).type, 'balance_adjustment');
+
+  const both = await app.updateSavingsGoalWithBalance({
+    goalId: created.goalId, name: 'Meta actualizada', targetAmount: 400000,
+    plannedMonthlyAmount: 15000, currentBalance: 80000, operationDate: DATE,
+  });
+  const goal = both.state._snapshot.savingsGoals.find((item) => item.id === created.goalId);
+  assert.equal(goal.name, 'Meta actualizada');
+  assert.equal(goal.targetAmount, 400000);
+  assert.equal(goal.plannedMonthlyAmount, 15000);
+  assert.equal(goal.currentBalance, 80000);
+  assert.equal(both.state.movements.at(-1).delta, 30000);
+  assert.equal(both.state.summary.netSavingsAmount, 0);
+});
+
+test('debt edit processes descriptive data, total, or both from one integration action', async (t) => {
+  const app = application(new IDBFactory(), { prefix: 'a1470000' });
+  t.after(() => app.close());
+  await app.initialize();
+  await app.completeSetup(setupPayload());
+  const debtId = id(30);
+  await app.execute('debt.create', { currentCivilDate: DATE, debt: {
+    id: debtId, name: 'Deuda inicial', totalAmount: 200000,
+    openingOutstanding: 200000, outstandingAmount: 200000,
+    dueDate: '2026-12-01', lifecycleStatus: 'active', paymentStatus: 'active',
+    revision: 1, createdAt: NOW, updatedAt: NOW,
+  } });
+
+  const details = await app.updateDebtDetailsAndTotal({
+    debtId, name: 'Deuda renombrada', dueDate: '2026-11-01',
+    totalAmount: 200000, operationDate: DATE,
+  });
+  assert.equal(details.state.debts.find((item) => item.id === debtId).name, 'Deuda renombrada');
+  assert.equal(details.state.operations.length, 0);
+
+  const total = await app.updateDebtDetailsAndTotal({
+    debtId, name: 'Deuda renombrada', dueDate: '2026-11-01',
+    totalAmount: 240000, operationDate: DATE,
+  });
+  assert.equal(total.state.debts.find((item) => item.id === debtId).total, 240000);
+  assert.equal(total.state.operations.at(-1).type, 'debt_total_adjustment');
+
+  const both = await app.updateDebtDetailsAndTotal({
+    debtId, name: 'Deuda final', dueDate: '2027-01-15',
+    totalAmount: 260000, operationDate: DATE,
+  });
+  const debt = both.state._snapshot.debts.find((item) => item.id === debtId);
+  assert.equal(debt.name, 'Deuda final');
+  assert.equal(debt.dueDate, '2027-01-15');
+  assert.equal(debt.totalAmount, 260000);
+  assert.equal(debt.outstandingAmount, 260000);
+  assert.equal(debt.openingOutstanding, 200000);
+  assert.equal(both.state.movements.at(-1).delta, 20000);
+});
+
 test('a failed initial balance adjustment leaves the newly created account explicitly at zero', async (t) => {
   const factory = new IDBFactory();
   const createUuid = sequence('a1500000');

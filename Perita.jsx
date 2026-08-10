@@ -474,7 +474,7 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
         if(error?.code==='ACCOUNT_BALANCE_ADJUSTMENT_FAILED') {
           if(app.state)setState(app.state);
           const causeCode=error.context?.causeCode?` (${error.context.causeCode})`:'';
-          notify(`${error.message} Usa “Ajustar saldo” para completarlo.${causeCode}`,'error');
+          notify(`${error.message} Edita la cuenta para completar el saldo.${causeCode}`,'error');
           resetModal();
           return;
         }
@@ -482,8 +482,14 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
         return;
       }
     } else {
-      const completed=await run('account.update',{accountId:form.id,changes:{name:form.name.trim()}},'Cuenta actualizada');
-      if(!completed)return;
+      try {
+        const completed=await app.updateAccountWithBalance({
+          accountId:form.id,name:form.name.trim(),currentBalance:form.balance,
+          operationDate:today(),reason:'Ajuste de saldo al editar la cuenta',
+        });
+        setState(completed.state);
+        notify('Cuenta actualizada','success');
+      } catch(error) { notify(presentError(error),'error'); return; }
     }
     resetModal();
   };
@@ -498,16 +504,8 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
     await run('account.deactivate',{accountId:a.id},'Cuenta desactivada');
   };
 
-  const adjustModal = useState(null);
-  const [adjustForm, setAdjustForm] = useState({id:null,balance:0,name:''});
   const [transferModal,setTransferModal]=useState(false);
   const [transferForm,setTransferForm]=useState({source:'',destination:'',amount:0,date:today()});
-
-  const adjustBalance = (a) => {
-    if(a.status!=='active') { notify('Esta cuenta está desactivada y no admite operaciones.','warn'); return; }
-    setAdjustForm({id:a.id, balance:a.balance, name:a.name});
-    adjustModal[1](true);
-  };
 
   const {totalAvailable:total} = dashboardTotals(state);
   const transferTargets=[
@@ -519,34 +517,6 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
     <div>
       {ConfirmNode}{GuardNode}
 
-      {/* Adjust balance modal */}
-      {adjustModal[0] && (
-        <div className="modal-backdrop" onClick={()=>adjustModal[1](false)}>
-          <div className="modal" style={{maxWidth:360}} onClick={e=>e.stopPropagation()}>
-            <div className="modal-title">Ajustar saldo — {adjustForm.name}</div>
-            <div className="form-group">
-              <label className="form-label">Nuevo saldo</label>
-              <MoneyInput className="form-input" value={adjustForm.balance}
-                onChange={balance=>setAdjustForm(f=>({...f,balance}))} autoFocus />
-            </div>
-            <div className="form-actions mt-4">
-              <button className="btn btn-ghost" onClick={()=>adjustModal[1](false)}>Cancelar</button>
-              <button className="btn btn-primary" onClick={async()=>{
-                const current=accounts.find(account=>account.id===adjustForm.id);
-                if(!current){notify('Esta cuenta está desactivada y no admite operaciones.','warn');adjustModal[1](false);return;}
-                const delta=adjustForm.balance-current.balance;
-                if(delta===0){adjustModal[1](false);return;}
-                const completed=await run('balance-adjustment.create',{
-                  accountId:current.id,operationDate:today(),delta,
-                  reason:'Ajuste solicitado desde la interfaz',
-                },'Saldo actualizado');
-                if(!completed)return;
-                adjustModal[1](false);
-              }}>Guardar</button>
-            </div>
-          </div>
-        </div>
-      )}
       {transferModal&&<div className="modal-backdrop" onClick={()=>setTransferModal(false)}><div className="modal" onClick={e=>e.stopPropagation()}>
         <div className="modal-title">Transferir entre cuentas y metas</div>
         {[['Origen','source'],['Destino','destination']].map(([label,key])=><div className="form-group" key={key}><label className="form-label">{label}</label><select className="form-input form-select" value={transferForm[key]} onChange={e=>setTransferForm(current=>({...current,[key]:e.target.value}))}><option value="">Seleccionar…</option>{transferTargets.map(target=><option key={target.value} value={target.value}>{target.label}</option>)}</select></div>)}
@@ -581,7 +551,6 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
             <div className="stat-label">Cuenta</div>
             <div style={{fontSize:16,fontWeight:600,color:'var(--gray-800)',marginBottom:4}}>{a.name}</div>
             <div style={{fontSize:24,fontWeight:700,letterSpacing:'-.02em',color:'var(--gray-900)',margin:'6px 0'}}>{fmt(a.balance)}</div>
-            <button className="btn btn-ghost btn-sm w-full mt-2" onClick={()=>adjustBalance(a)}>Ajustar saldo</button>
           </div>
         ))}
         {accounts.length===0 && <EmptyState icon="accounts" title="Aún no has agregado ninguna cuenta." description="Agrega tu primera cuenta bancaria o de efectivo para empezar a registrar tus movimientos." actionLabel="Agregar cuenta" onAction={openNew}/>}
@@ -597,7 +566,7 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
             </div>
             <div className="form-group">
               <label className="form-label">Saldo actual</label>
-              <MoneyInput className="form-input" disabled={modal==='edit'} value={form.balance} onChange={balance=>setForm(f=>({...f,balance}))} />
+              <MoneyInput className="form-input" value={form.balance} onChange={balance=>setForm(f=>({...f,balance}))} />
               <div className="text-xs text-gray mt-1">La apertura técnica será $0. Si indicas un saldo, se registrará mediante un ajuste trazable.</div>
             </div>
             <div className="form-actions mt-4">
@@ -652,9 +621,15 @@ const Wallets = ({state, setState, notify, run, app}) => {
         return;
       }
     } else {
-      const completed=await setState(s=>({...s, wallets:s.wallets.map(w=>w.id===form.id?form:w)}));
-      if(!completed)return;
-      notify('Ahorro actualizado','success');
+      try {
+        const completed=await app.updateSavingsGoalWithBalance({
+          goalId:form.id,name:form.name.trim(),targetAmount:form.goal,
+          plannedMonthlyAmount:form.monthly,currentBalance:form.balance,
+          operationDate:today(),reason:'Ajuste de saldo al editar la meta de ahorro',
+        });
+        setState(completed.state);
+        notify('Ahorro actualizado','success');
+      } catch(error) { notify(presentError(error),'error'); return; }
     }
     resetModal();
   };
@@ -746,9 +721,9 @@ const Wallets = ({state, setState, notify, run, app}) => {
             ].map(f=>(
               <div key={f.key} className="form-group">
                 <label className="form-label">{f.label}</label>
-                <MoneyInput className="form-input" value={form[f.key]} disabled={f.key==='balance'&&modal==='edit'}
+                <MoneyInput className="form-input" value={form[f.key]}
                   onChange={value=>setForm(x=>({...x,[f.key]:value}))} />
-                {f.key==='balance'&&<div className="text-xs text-gray mt-1">{modal==='new'?'Dinero que ya tenías ahorrado antes de usar Perita. Se registrará como saldo preexistente, no como aporte del mes.':'El saldo se modifica mediante depósitos, retiros o transferencias trazables.'}</div>}
+                {f.key==='balance'&&<div className="text-xs text-gray mt-1">{modal==='new'?'Dinero que ya tenías ahorrado antes de usar Perita. Se registrará como saldo preexistente, no como aporte del mes.':'Si cambias el saldo, se registrará mediante un ajuste trazable que no cuenta como aporte del mes.'}</div>}
               </div>
             ))}
             <div className="form-actions mt-4">
@@ -1340,7 +1315,7 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
 const DEBT_STATUSES = ['activa','pausada','pagada'];
 const emptyDebt = () => ({name:'',total:0,paid:0,monthly:0,dueDate:today(),status:'activa'});
 
-const DebtTracker = ({state, setState, notify, run}) => {
+const DebtTracker = ({state, setState, notify, run, app}) => {
   const debts = state.debts || [];
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState(emptyDebt());
@@ -1368,9 +1343,14 @@ const DebtTracker = ({state, setState, notify, run}) => {
       if(!completed)return;
       notify('Deuda agregada','success');
     } else {
-      const completed=await setState(s=>({...s, debts:(s.debts||[]).map(d=>d.id===form.id?form:d)}));
-      if(!completed)return;
-      notify('Deuda actualizada','success');
+      try {
+        const completed=await app.updateDebtDetailsAndTotal({
+          debtId:form.id,name:form.name.trim(),dueDate:form.dueDate,
+          totalAmount:form.total,operationDate:today(),
+        });
+        setState(completed.state);
+        notify('Deuda actualizada','success');
+      } catch(error) { notify(presentError(error),'error'); return; }
     }
     resetModal();
   };
@@ -1949,7 +1929,7 @@ const translateLegacyIntent = async (app, previous, next) => {
 
   const addedAccount=(next.accounts||[]).find(item=>!(previous.accounts||[]).some(old=>old.id===item.id));
   if(addedAccount){
-    if(addedAccount.balance!==0) throw new Error('La cuenta debe crearse en cero. Usa “Ajustar saldo” para incorporar dinero existente.');
+    if(addedAccount.balance!==0) throw new Error('La cuenta debe crearse en cero. Incorpora el saldo desde “Editar Cuenta”.');
     return app.execute('account.create',{account:{
       id:recordId(),name:addedAccount.name,openingBalance:0,currentBalance:0,status:'active',
       revision:1,createdAt:timestamp,updatedAt:timestamp,
@@ -1961,12 +1941,11 @@ const translateLegacyIntent = async (app, previous, next) => {
   if(changedAccount){
     const current=next.accounts.find(item=>item.id===changedAccount.id);
     if(current.balance!==changedAccount.balance){
-      return app.execute('balance-adjustment.create',{
-        accountId:current.id,operationDate:today(),delta:current.balance-changedAccount.balance,
-        reason:'Ajuste solicitado desde la interfaz',
-      });
+      return app.updateAccountWithBalance({accountId:current.id,name:current.name,
+        currentBalance:current.balance,operationDate:today(),reason:'Ajuste de saldo al editar la cuenta'});
     }
-    if(current.name!==changedAccount.name) return app.execute('account.update',{accountId:current.id,changes:{name:current.name}});
+    if(current.name!==changedAccount.name) return app.updateAccountWithBalance({accountId:current.id,
+      name:current.name,currentBalance:current.balance,operationDate:today()});
     throw new Error('El contrato vigente de cuentas solo permite editar el nombre.');
   }
 
@@ -1998,15 +1977,17 @@ const translateLegacyIntent = async (app, previous, next) => {
           operationDate:today(),amount:Math.abs(delta),concept:null,observation:null,
         });
       }
-      return app.execute(delta>0?'savings-deposit.create':'savings-withdrawal.create',{
-        goalId:current.id,operationDate:today(),amount:Math.abs(delta),concept:null,observation:null,
-      });
+      return app.updateSavingsGoalWithBalance({goalId:current.id,name:current.name,
+        targetAmount:current.goal,plannedMonthlyAmount:current.monthly,currentBalance:current.balance,
+        operationDate:today(),reason:'Ajuste de saldo al editar la meta de ahorro'});
     }
     const changes={};
     if(current.name!==changedGoal.name) changes.name=current.name;
     if(current.goal!==changedGoal.goal) changes.targetAmount=current.goal;
     if(current.monthly!==changedGoal.monthly) changes.plannedMonthlyAmount=current.monthly;
-    if(Object.keys(changes).length) return app.execute('savings-goal.update',{goalId:current.id,changes});
+    if(Object.keys(changes).length) return app.updateSavingsGoalWithBalance({goalId:current.id,
+      name:current.name,targetAmount:current.goal,plannedMonthlyAmount:current.monthly,
+      currentBalance:current.balance,operationDate:today()});
     throw new Error('Banco y emoji son preferencias visuales y no forman parte del contrato de la meta.');
   }
 
@@ -2098,13 +2079,8 @@ const translateLegacyIntent = async (app, previous, next) => {
     }
     const totalChanged=current.total!==changedDebt.total;
     const detailsChanged=current.name!==changedDebt.name||current.dueDate!==changedDebt.dueDate;
-    if(totalChanged&&detailsChanged) throw new Error('Guarda el ajuste de total separado del cambio de nombre o vencimiento.');
-    if(totalChanged) return app.execute('debt-total-adjustment.create',{
-      debtId:current.id,operationDate:today(),newTotalAmount:current.total,
-    });
-    if(detailsChanged) return app.execute('debt.update-name-and-due-date',{
-      debtId:current.id,changes:{name:current.name,dueDate:current.dueDate},
-    });
+    if(totalChanged||detailsChanged) return app.updateDebtDetailsAndTotal({debtId:current.id,
+      name:current.name,dueDate:current.dueDate,totalAmount:current.total,operationDate:today()});
     throw new Error('La edición no contiene cambios financieros válidos.');
   }
   throw new Error('La acción solicitada no corresponde a un comando V1.1.0 disponible.');

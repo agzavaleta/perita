@@ -952,6 +952,121 @@
       }
     }
 
+    async function updateAccountWithBalance(input) {
+      const request = input || {};
+      const state = lastState || await refresh();
+      const account = state._snapshot.accounts.find((item) => item.id === request.accountId);
+      if (!account) throw new Error('La cuenta solicitada no existe.');
+      const currentBalance = Contracts.assertMoney(request.currentBalance, {
+        field: 'currentBalance', allowZero: true, allowNegative: true,
+      });
+      const nameChanged = request.name !== account.name;
+      const balanceDelta = currentBalance - account.currentBalance;
+      let completed = null;
+      stateDeliveryPauseDepth += 1;
+      try {
+        if (nameChanged) {
+          completed = await execute('account.update', {
+            accountId: account.id,
+            changes: { name: request.name },
+          });
+        }
+        if (balanceDelta !== 0) {
+          completed = await execute('balance-adjustment.create', {
+            accountId: account.id,
+            operationDate: request.operationDate,
+            delta: balanceDelta,
+            reason: request.reason || 'Ajuste de saldo al editar la cuenta',
+          });
+        }
+        return immutable({
+          accountId: account.id,
+          nameUpdated: nameChanged,
+          adjustment: balanceDelta === 0 ? null : completed.result,
+          state: completed ? completed.state : state,
+        });
+      } finally {
+        stateDeliveryPauseDepth -= 1;
+        flushPendingStateDelivery();
+      }
+    }
+
+    async function updateSavingsGoalWithBalance(input) {
+      const request = input || {};
+      const state = lastState || await refresh();
+      const goal = state._snapshot.savingsGoals.find((item) => item.id === request.goalId);
+      if (!goal) throw new Error('La meta de ahorro solicitada no existe.');
+      const currentBalance = Contracts.assertMoney(request.currentBalance, {
+        field: 'currentBalance', allowZero: true, allowNegative: false,
+      });
+      const changes = {};
+      if (request.name !== goal.name) changes.name = request.name;
+      if (request.targetAmount !== goal.targetAmount) changes.targetAmount = request.targetAmount;
+      if (request.plannedMonthlyAmount !== goal.plannedMonthlyAmount) {
+        changes.plannedMonthlyAmount = request.plannedMonthlyAmount;
+      }
+      const balanceDelta = currentBalance - goal.currentBalance;
+      let completed = null;
+      stateDeliveryPauseDepth += 1;
+      try {
+        if (Object.keys(changes).length > 0) {
+          completed = await execute('savings-goal.update', { goalId: goal.id, changes });
+        }
+        if (balanceDelta !== 0) {
+          completed = await execute('balance-adjustment.create', {
+            goalId: goal.id,
+            operationDate: request.operationDate,
+            delta: balanceDelta,
+            reason: request.reason || 'Ajuste de saldo al editar la meta de ahorro',
+          });
+        }
+        return immutable({
+          goalId: goal.id,
+          detailsUpdated: Object.keys(changes).length > 0,
+          adjustment: balanceDelta === 0 ? null : completed.result,
+          state: completed ? completed.state : state,
+        });
+      } finally {
+        stateDeliveryPauseDepth -= 1;
+        flushPendingStateDelivery();
+      }
+    }
+
+    async function updateDebtDetailsAndTotal(input) {
+      const request = input || {};
+      const state = lastState || await refresh();
+      const debt = state._snapshot.debts.find((item) => item.id === request.debtId);
+      if (!debt) throw new Error('La deuda solicitada no existe.');
+      const detailsChanged = request.name !== debt.name || request.dueDate !== debt.dueDate;
+      const totalChanged = request.totalAmount !== debt.totalAmount;
+      let completed = null;
+      stateDeliveryPauseDepth += 1;
+      try {
+        if (detailsChanged) {
+          completed = await execute('debt.update-name-and-due-date', {
+            debtId: debt.id,
+            changes: { name: request.name, dueDate: request.dueDate },
+          });
+        }
+        if (totalChanged) {
+          completed = await execute('debt-total-adjustment.create', {
+            debtId: debt.id,
+            operationDate: request.operationDate,
+            newTotalAmount: request.totalAmount,
+          });
+        }
+        return immutable({
+          debtId: debt.id,
+          detailsUpdated: detailsChanged,
+          totalAdjustment: totalChanged ? completed.result : null,
+          state: completed ? completed.state : state,
+        });
+      } finally {
+        stateDeliveryPauseDepth -= 1;
+        flushPendingStateDelivery();
+      }
+    }
+
     async function exportBackup() {
       return backup.exportBackup();
     }
@@ -1055,6 +1170,9 @@
       execute,
       createAccountWithBalance,
       createSavingsGoalWithBalance,
+      updateAccountWithBalance,
+      updateSavingsGoalWithBalance,
+      updateDebtDetailsAndTotal,
       exportBackup,
       validateBackup: backup.validateBackup,
       restoreBackup,
