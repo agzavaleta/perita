@@ -612,7 +612,7 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
 };
 
 // ── Wallets ────────────────────────────────────────────────────────────────────
-const Wallets = ({state, setState, notify, run}) => {
+const Wallets = ({state, setState, notify, run, app}) => {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({emoji:'💰',name:'',bank:'',balance:0,monthly:0,goal:0});
   const [initForm, setInitForm] = useState(null);
@@ -628,11 +628,29 @@ const Wallets = ({state, setState, notify, run}) => {
 
   const save = async () => {
     if(!form.name) return;
-    if(modal==='new' && form.balance!==0) { notify('Una meta nueva comienza en cero; deposita o transfiere después de crearla','warn'); return; }
+    if(modal==='new' && form.balance<0) { notify('El saldo actual del ahorro no puede ser negativo','warn'); return; }
     if(modal==='new'){
-      const completed=await setState(s=>({...s, wallets:[...s.wallets,{...form,id:s.nextId}], nextId:s.nextId+1}));
-      if(!completed)return;
-      notify('Ahorro creado','success');
+      try {
+        const completed=await app.createSavingsGoalWithBalance({
+          name:form.name.trim(),
+          targetAmount:form.goal,
+          plannedMonthlyAmount:form.monthly,
+          currentBalance:form.balance,
+          operationDate:today(),
+          reason:'Saldo preexistente al crear la meta de ahorro',
+        });
+        setState(completed.state);
+        notify('Ahorro creado','success');
+      } catch(error) {
+        if(error?.code==='SAVINGS_GOAL_BALANCE_ADJUSTMENT_FAILED') {
+          if(app.state)setState(app.state);
+          notify(`${error.message} Puedes completar el saldo mediante un ajuste trazable.`,'error');
+          resetModal();
+          return;
+        }
+        notify(presentError(error),'error');
+        return;
+      }
     } else {
       const completed=await setState(s=>({...s, wallets:s.wallets.map(w=>w.id===form.id?form:w)}));
       if(!completed)return;
@@ -728,9 +746,9 @@ const Wallets = ({state, setState, notify, run}) => {
             ].map(f=>(
               <div key={f.key} className="form-group">
                 <label className="form-label">{f.label}</label>
-                <MoneyInput className="form-input" value={form[f.key]} disabled={f.key==='balance'}
+                <MoneyInput className="form-input" value={form[f.key]} disabled={f.key==='balance'&&modal==='edit'}
                   onChange={value=>setForm(x=>({...x,[f.key]:value}))} />
-                {f.key==='balance'&&<div className="text-xs text-gray mt-1">El saldo se modifica mediante depósitos, retiros o transferencias trazables.</div>}
+                {f.key==='balance'&&<div className="text-xs text-gray mt-1">{modal==='new'?'Dinero que ya tenías ahorrado antes de usar Perita. Se registrará como saldo preexistente, no como aporte del mes.':'El saldo se modifica mediante depósitos, retiros o transferencias trazables.'}</div>}
               </div>
             ))}
             <div className="form-actions mt-4">

@@ -223,6 +223,76 @@ test('post-setup account creation records the requested real balance as a canoni
   assert.equal(app.state._snapshot.accounts.some((item) => item.name === 'Línea utilizada'), false);
 });
 
+test('savings-goal onboarding preserves zero or preexisting balance without monthly savings', async (t) => {
+  const factory = new IDBFactory();
+  const app = application(factory, { prefix: 'a1250000' });
+  await app.initialize();
+  await app.completeSetup(setupPayload());
+
+  const zero = await app.createSavingsGoalWithBalance({
+    name: 'Meta desde cero',
+    targetAmount: 300000,
+    plannedMonthlyAmount: 0,
+    currentBalance: 0,
+    operationDate: DATE,
+  });
+  const zeroGoal = zero.state._snapshot.savingsGoals.find((item) => item.id === zero.goalId);
+  assert.equal(zeroGoal.openingBalance, 0);
+  assert.equal(zeroGoal.currentBalance, 0);
+  assert.equal(zero.adjustment, null);
+  assert.equal(
+    zero.state.operations.some((operation) => operation.details.goalId === zero.goalId),
+    false
+  );
+
+  const preexisting = await app.createSavingsGoalWithBalance({
+    name: 'Ahorro anterior a Perita',
+    targetAmount: 500000,
+    plannedMonthlyAmount: 25000,
+    currentBalance: 175000,
+    operationDate: DATE,
+  });
+  const goal = preexisting.state._snapshot.savingsGoals.find((item) => item.id === preexisting.goalId);
+  const opening = preexisting.state._snapshot.periodOpenings.find(
+    (item) => item.targetType === 'savings_goal' && item.targetId === preexisting.goalId
+  );
+  const operation = preexisting.state.operations.find(
+    (item) => item.type === 'balance_adjustment' && item.details.goalId === preexisting.goalId
+  );
+  const movement = preexisting.state.movements.find((item) => item.operationId === operation.id);
+
+  assert.equal(goal.openingBalance, 0);
+  assert.equal(goal.currentBalance, 175000);
+  assert.equal(opening.openingAmount, 0);
+  assert.equal(operation.amount, 175000);
+  assert.deepEqual(operation.details, {
+    goalId: preexisting.goalId,
+    reason: 'Saldo preexistente al crear la meta de ahorro',
+  });
+  assert.equal(movement.targetType, 'savings_goal');
+  assert.equal(movement.targetId, preexisting.goalId);
+  assert.equal(movement.delta, 175000);
+  assert.equal(preexisting.state.summary.netSavingsAmount, 0);
+  assert.equal(
+    preexisting.state.operations.some((item) => ['savings_deposit', 'transfer'].includes(item.type)),
+    false
+  );
+
+  await app.close();
+  const reloaded = application(factory, {
+    prefix: 'a1350000',
+    tabId: 'savings-onboarding-reload',
+  });
+  t.after(() => reloaded.close());
+  const initialized = await reloaded.initialize();
+  const persisted = initialized.state._snapshot.savingsGoals.find(
+    (item) => item.id === preexisting.goalId
+  );
+  assert.equal(initialized.phase, 'ok');
+  assert.equal(persisted.currentBalance, 175000);
+  assert.equal(initialized.state.summary.netSavingsAmount, 0);
+});
+
 test('a failed initial balance adjustment leaves the newly created account explicitly at zero', async (t) => {
   const factory = new IDBFactory();
   const createUuid = sequence('a1500000');

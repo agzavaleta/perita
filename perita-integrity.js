@@ -976,15 +976,31 @@
         return;
       }
       const movement = related[0];
-      if (movement.targetType !== 'account' || movement.effectType !== 'asset_balance') {
+      const targetField = movement.targetType === 'account'
+        ? 'accountId'
+        : movement.targetType === 'savings_goal'
+          ? 'goalId'
+          : null;
+      const details = operation.details && typeof operation.details === 'object'
+        ? operation.details
+        : null;
+      if (
+        targetField === null || movement.effectType !== 'asset_balance' ||
+        !details || details[targetField] !== movement.targetId
+      ) {
         missingRelation(issues, {
           code: 'BALANCE_ADJUSTMENT_TARGET_INVALID',
           scopeType: movement.targetType,
           scopeId: movement.targetId,
           storeName: 'movements',
           recordId: movement.id,
-          message: 'balance_adjustment movement must target an account balance',
-          context: { targetType: movement.targetType, effectType: movement.effectType },
+          message: 'balance_adjustment movement must target an account or savings-goal balance',
+          context: {
+            targetType: movement.targetType,
+            targetId: movement.targetId,
+            effectType: movement.effectType,
+            details,
+          },
         });
       }
     });

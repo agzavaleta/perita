@@ -892,6 +892,66 @@
       }
     }
 
+    async function createSavingsGoalWithBalance(input) {
+      const request = input || {};
+      const currentBalance = Contracts.assertMoney(
+        request.currentBalance === undefined ? 0 : request.currentBalance,
+        { field: 'currentBalance', allowZero: true, allowNegative: false }
+      );
+      const goalId = request.goalId || createUuid();
+      const timestamp = request.timestamp || now();
+      const operationDate = request.operationDate || civilDate(new Date(timestamp));
+      let created = null;
+      let completed = null;
+      stateDeliveryPauseDepth += 1;
+      try {
+        created = await execute('savings-goal.create', {
+          goal: {
+            id: goalId,
+            name: request.name,
+            targetAmount: request.targetAmount,
+            openingBalance: 0,
+            currentBalance: 0,
+            plannedMonthlyAmount: request.plannedMonthlyAmount,
+            lifecycleStatus: 'active',
+            progressStatus: 'in_progress',
+            closedAt: null,
+            revision: 1,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          },
+        });
+        completed = created;
+        if (currentBalance > 0) {
+          completed = await execute('balance-adjustment.create', {
+            goalId,
+            operationDate,
+            delta: currentBalance,
+            reason: request.reason || 'Saldo preexistente al crear la meta de ahorro',
+          });
+        }
+        return immutable({
+          goalId,
+          created: created.result,
+          adjustment: currentBalance === 0 ? null : completed.result,
+          state: completed.state,
+        });
+      } catch (cause) {
+        if (created !== null) {
+          throw new Contracts.PeritaError(
+            'SAVINGS_GOAL_BALANCE_ADJUSTMENT_FAILED',
+            'La meta se creó en $0, pero no fue posible incorporar el saldo preexistente.',
+            { goalId, currentBalance, causeCode: cause && cause.code ? cause.code : null },
+            cause
+          );
+        }
+        throw cause;
+      } finally {
+        stateDeliveryPauseDepth -= 1;
+        flushPendingStateDelivery();
+      }
+    }
+
     async function exportBackup() {
       return backup.exportBackup();
     }
@@ -994,6 +1054,7 @@
       confirmMigration,
       execute,
       createAccountWithBalance,
+      createSavingsGoalWithBalance,
       exportBackup,
       validateBackup: backup.validateBackup,
       restoreBackup,

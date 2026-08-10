@@ -128,6 +128,12 @@
     'operations',
     'movements',
   ]);
+  const SAVINGS_BALANCE_ADJUSTMENT_CREATE_STORES = Object.freeze([
+    'periods',
+    'savingsGoals',
+    'operations',
+    'movements',
+  ]);
   const FINANCIAL_OPERATION_CHANGE_STORES = Object.freeze([
     ...FINANCIAL_OPERATION_CREATE_STORES,
     'operationRevisions',
@@ -521,6 +527,10 @@
     return Object.freeze({ accountId, reason });
   }
 
+  function savingsGoalBalanceAdjustmentDetails(goalId, reason) {
+    return Object.freeze({ goalId, reason });
+  }
+
   function validateBalanceAdjustmentOperation(operation, movement, accountId) {
     const validOperation = Domain.validateOperation(operation);
     const validMovement = Domain.assertMovementMatchesOperation(validOperation, movement);
@@ -709,9 +719,18 @@
     let valid = false;
     switch (validOperation.type) {
       case 'balance_adjustment': {
-        const details = requireOperationDetails(validOperation, ['accountId', 'reason']);
-        valid = related.length === 1 && related[0].targetType === 'account' &&
-          related[0].targetId === details.accountId && Math.abs(related[0].delta) === amount;
+        if (related.length !== 1) break;
+        const movement = related[0];
+        const targetField = movement.targetType === 'account'
+          ? 'accountId'
+          : movement.targetType === 'savings_goal'
+            ? 'goalId'
+            : null;
+        if (targetField === null) break;
+        const details = requireOperationDetails(validOperation, [targetField, 'reason']);
+        valid = movement.targetId === details[targetField] &&
+          movement.effectType === 'asset_balance' &&
+          Math.abs(movement.delta) === amount;
         break;
       }
       case 'salary_receipt': {
@@ -3283,13 +3302,34 @@
 
     async function createBalanceAdjustment(input) {
       const request = requireRecord(input, 'balance-adjustment.create');
-      const fields = [
+      const required = [
         'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
-        'accountId', 'expectedAccountRevision', 'operationDate', 'delta', 'reason',
+        'operationDate', 'delta', 'reason',
       ];
-      validateCommandHeader(request, 'balance-adjustment.create', fields);
-      assertUuid(request.accountId, { field: 'accountId' });
-      assertRevision(request.expectedAccountRevision, { field: 'expectedAccountRevision' });
+      const allowed = [
+        ...required,
+        'accountId', 'expectedAccountRevision',
+        'goalId', 'expectedGoalRevision',
+      ];
+      validateCommandHeader(request, 'balance-adjustment.create', required, allowed);
+      const hasAccountTarget = hasOwn(request, 'accountId') || hasOwn(request, 'expectedAccountRevision');
+      const hasGoalTarget = hasOwn(request, 'goalId') || hasOwn(request, 'expectedGoalRevision');
+      if (hasAccountTarget === hasGoalTarget) {
+        throw domainError(
+          ERROR_CODES.INVALID_DOMAIN_FIELD,
+          'balance-adjustment.create requires exactly one Account or SavingsGoal target',
+          { hasAccountTarget, hasGoalTarget }
+        );
+      }
+      const targetType = hasAccountTarget ? 'account' : 'savings_goal';
+      const targetId = hasAccountTarget ? request.accountId : request.goalId;
+      const expectedTargetRevision = hasAccountTarget
+        ? request.expectedAccountRevision
+        : request.expectedGoalRevision;
+      assertUuid(targetId, { field: hasAccountTarget ? 'accountId' : 'goalId' });
+      assertRevision(expectedTargetRevision, {
+        field: hasAccountTarget ? 'expectedAccountRevision' : 'expectedGoalRevision',
+      });
       assertCivilDate(request.operationDate, { field: 'operationDate' });
       assertSafeDelta(request.delta, { field: 'delta' });
       requireNonEmptyString(request.reason, 'reason');
@@ -3308,14 +3348,16 @@
         updatedAt: occurredAt,
         voidedAt: null,
         voidReason: null,
-        details: balanceAdjustmentDetails(request.accountId, request.reason),
+        details: hasAccountTarget
+          ? balanceAdjustmentDetails(targetId, request.reason)
+          : savingsGoalBalanceAdjustmentDetails(targetId, request.reason),
       });
       const movement = Domain.validateMovement({
         id: createIdentifier(createUuid, 'movement.id', generatedIds),
         operationId: operation.id,
         periodId: request.periodId,
-        targetType: 'account',
-        targetId: request.accountId,
+        targetType,
+        targetId,
         effectType: 'asset_balance',
         delta: request.delta,
         status: 'posted',
@@ -3327,12 +3369,14 @@
         commandType: 'balance-adjustment.create',
         expectedDataRevision: request.expectedDataRevision,
         expectedWriterEpoch: request.expectedWriterEpoch,
-        affectedStores: FINANCIAL_OPERATION_CREATE_STORES,
+        affectedStores: hasAccountTarget
+          ? FINANCIAL_OPERATION_CREATE_STORES
+          : SAVINGS_BALANCE_ADJUSTMENT_CREATE_STORES,
         affectedScopes: movementScopes(request.periodId, [movement]),
         metadata: {
           periodId: request.periodId,
           operationId: operation.id,
-          accountId: request.accountId,
+          ...(hasAccountTarget ? { accountId: targetId } : { goalId: targetId }),
         },
         execute: async (transaction, context) => {
           const storedPeriod = await transaction.get('periods', request.periodId);
@@ -3341,17 +3385,20 @@
           );
           Domain.assertOperationDateContext(operation, period, currentCivilDate);
           const target = requireFinancialTarget(
-            'account',
-            await transaction.get('accounts', request.accountId),
-            request.accountId,
-            request.expectedAccountRevision
+            targetType,
+            await transaction.get(
+              hasAccountTarget ? 'accounts' : 'savingsGoals',
+              targetId
+            ),
+            targetId,
+            expectedTargetRevision
           );
-          const account = simulateTargetChange(target, null, movement.delta, {
+          const entity = simulateTargetChange(target, null, movement.delta, {
             operationId: operation.id,
-            targetType: 'account',
-            targetId: request.accountId,
+            targetType,
+            targetId,
             occurredAt,
-            allowCurrentNegative: true,
+            allowCurrentNegative: hasAccountTarget,
           });
           if (
             await transaction.get('operations', operation.id) !== undefined ||
@@ -3363,10 +3410,16 @@
               { operationId: operation.id, movementId: movement.id }
             );
           }
-          if (account !== target.entity) await transaction.put('accounts', account);
+          if (entity !== target.entity) {
+            await transaction.put(hasAccountTarget ? 'accounts' : 'savingsGoals', entity);
+          }
           await transaction.add('operations', operation);
           await transaction.add('movements', movement);
-          return Object.freeze({ operation, movement, account });
+          return Object.freeze({
+            operation,
+            movement,
+            ...(hasAccountTarget ? { account: entity } : { savingsGoal: entity }),
+          });
         },
       });
     }

@@ -86,6 +86,7 @@ async function addOperation(storage, overrides) {
     operationDate: '2026-08-05',
     amount: 50,
     status: 'posted',
+    details: { accountId: 'account-1', reason: 'Ajuste de prueba' },
     ...(overrides || {}),
   };
   await storage.add('operations', operation);
