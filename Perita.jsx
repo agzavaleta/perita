@@ -325,38 +325,38 @@ const Dashboard = ({state, notify}) => {
 
       {/* Hero row — Available + Savings + Net Worth */}
       <div className="grid-2 mb-6">
-        <div className="card" style={{background:'var(--green)',color:'#fff',border:'none',cursor:'pointer'}}
+        <div className="card" style={{background:'#fff',border:'2px solid var(--green)',cursor:'pointer'}}
           onClick={()=>setShowAccBreakdown(true)}>
           <div className="flex justify-between items-start">
             <div>
-              <div className="stat-label" style={{color:'rgba(255,255,255,.75)'}}>Disponible</div>
-              <div style={{fontSize:32,fontWeight:700,letterSpacing:'-.02em',margin:'8px 0 4px'}}>{fmt(totalAvailable)}</div>
-              <div style={{fontSize:14,color:'rgba(255,255,255,.7)'}}>{accs.length} cuenta{accs.length!==1?'s':''} · toca para ver</div>
+              <div className="stat-label" style={{color:'var(--gray-600)'}}>Disponible</div>
+              <div style={{fontSize:32,fontWeight:700,letterSpacing:'-.02em',margin:'8px 0 4px',color:'var(--green)'}}>{fmt(totalAvailable)}</div>
+              <div style={{fontSize:14,color:'var(--gray-500)'}}>{accs.length} cuenta{accs.length!==1?'s':''} · toca para ver</div>
             </div>
-            <div style={{background:'rgba(255,255,255,.15)',borderRadius:10,padding:10}}><Icon name="accounts" size={20} color="#fff"/></div>
+            <div style={{background:'var(--green-light)',borderRadius:10,padding:10}}><Icon name="accounts" size={20} color="var(--green)"/></div>
           </div>
         </div>
-        <div className="card" style={{background:'var(--blue)',color:'#fff',border:'none',cursor:'pointer'}}
+        <div className="card" style={{background:'#fff',border:'2px solid var(--blue)',cursor:'pointer'}}
           onClick={()=>setShowSavBreakdown(true)}>
           <div className="flex justify-between items-start">
             <div>
-              <div className="stat-label" style={{color:'rgba(255,255,255,.75)'}}>Ahorros</div>
-              <div style={{fontSize:32,fontWeight:700,letterSpacing:'-.02em',margin:'8px 0 4px'}}>{fmt(totalSavings)}</div>
-              <div style={{fontSize:14,color:'rgba(255,255,255,.7)'}}>{wallets.length} meta{wallets.length!==1?'s':''} · toca para ver</div>
+              <div className="stat-label" style={{color:'var(--gray-600)'}}>Ahorros</div>
+              <div style={{fontSize:32,fontWeight:700,letterSpacing:'-.02em',margin:'8px 0 4px',color:'var(--blue)'}}>{fmt(totalSavings)}</div>
+              <div style={{fontSize:14,color:'var(--gray-500)'}}>{wallets.length} meta{wallets.length!==1?'s':''} · toca para ver</div>
             </div>
-            <div style={{background:'rgba(255,255,255,.15)',borderRadius:10,padding:10}}><Icon name="save2" size={20} color="#fff"/></div>
+            <div style={{background:'#eff6ff',borderRadius:10,padding:10}}><Icon name="save2" size={20} color="var(--blue)"/></div>
           </div>
         </div>
       </div>
 
       {/* Net Worth banner */}
-      <div className="card mb-6" style={{background:'var(--gray-800)',color:'#fff',border:'none'}}>
+      <div className="card mb-6" style={{background:'#fff',border:'2px solid var(--gray-800)'}}>
         <div className="flex justify-between items-center">
           <div>
-            <div className="stat-label" style={{color:'rgba(255,255,255,.6)'}}>Patrimonio Neto</div>
-            <div style={{fontSize:28,fontWeight:700,letterSpacing:'-.02em',marginTop:4}}>{fmt(netWorth)}</div>
+            <div className="stat-label" style={{color:'var(--gray-600)'}}>Patrimonio Neto</div>
+            <div style={{fontSize:28,fontWeight:700,letterSpacing:'-.02em',marginTop:4,color:'var(--gray-800)'}}>{fmt(netWorth)}</div>
           </div>
-          <div style={{textAlign:'right',fontSize:13,color:'rgba(255,255,255,.5)'}}>
+          <div style={{textAlign:'right',fontSize:13,color:'var(--gray-500)'}}>
             <div>{fmt(totalAvailable)} disponible</div>
             <div>+ {fmt(totalSavings)} ahorros</div>
           </div>
@@ -667,7 +667,7 @@ const Wallets = ({state, setState, notify, run}) => {
       {ConfirmNode}
       <div className="page-toolbar mb-6">
         <div className="card-sm toolbar-summary" style={{padding:'10px 16px'}}><span className="text-gray text-sm">Total ahorrado: </span><span className="font-bold text-green">{fmt(totalSavings)}</span></div>
-        <div className="toolbar-actions"><button className="btn btn-primary" onClick={openNew}><Icon name="plus" size={14}/> Nuevo ahorro</button></div>
+        <div className="toolbar-actions toolbar-actions-single"><button className="btn btn-primary" onClick={openNew}><Icon name="plus" size={14}/> Nuevo ahorro</button></div>
       </div>
 
       {state.wallets.length === 0 ? (
@@ -1246,7 +1246,7 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
       )}
 
       {/* Filters + tabs */}
-      <div className="tab-group" style={{display:'flex',marginBottom:16}}>
+      <div className="tab-group" style={{marginBottom:16}}>
         {['list','monthChart'].map(t=>(
           <button key={t} className={`tab-btn ${tab===t?'active':''}`} onClick={()=>setTab(t)}>
             {t==='list'?'Variables':'Por mes'}
