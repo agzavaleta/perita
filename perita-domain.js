@@ -362,6 +362,8 @@
     ], 'SavingsGoal');
     validateMutableIdentity(record, 'SavingsGoal');
     assertString(record.name, 'SavingsGoal.name');
+    const bank = record.bank === undefined ? null : record.bank;
+    assertNullableString(bank, 'SavingsGoal.bank');
     assertPositiveMoney(record.targetAmount, { field: 'SavingsGoal.targetAmount' });
     for (const field of ['openingBalance', 'currentBalance', 'plannedMonthlyAmount']) {
       assertMoney(record[field], { field: `SavingsGoal.${field}`, allowZero: true });
@@ -391,7 +393,7 @@
         { goalId: record.id }
       );
     }
-    return immutableCopy(record, 'SavingsGoal');
+    return immutableCopy({ ...record, bank }, 'SavingsGoal');
   }
 
   function validateDebt(value) {
@@ -405,6 +407,27 @@
     assertPositiveMoney(record.totalAmount, { field: 'Debt.totalAmount' });
     assertMoney(record.openingOutstanding, { field: 'Debt.openingOutstanding', allowZero: true });
     assertMoney(record.outstandingAmount, { field: 'Debt.outstandingAmount', allowZero: true });
+    const monthlyPaymentAmount = hasOwn(record, 'monthlyPaymentAmount')
+      ? record.monthlyPaymentAmount
+      : null;
+    const paymentDay = hasOwn(record, 'paymentDay') ? record.paymentDay : null;
+    if (monthlyPaymentAmount !== null) {
+      assertPositiveMoney(monthlyPaymentAmount, { field: 'Debt.monthlyPaymentAmount' });
+    }
+    if (paymentDay !== null && (!Number.isSafeInteger(paymentDay) || paymentDay < 1 || paymentDay > 31)) {
+      throw domainError(
+        ERROR_CODES.INVALID_DOMAIN_FIELD,
+        'Debt.paymentDay must be an integer between 1 and 31 or null',
+        { field: 'Debt.paymentDay', value: paymentDay }
+      );
+    }
+    if ((monthlyPaymentAmount === null) !== (paymentDay === null)) {
+      throw domainError(
+        ERROR_CODES.DOMAIN_STATE_INVALID,
+        'Debt.monthlyPaymentAmount and Debt.paymentDay must both be defined or both be null',
+        { monthlyPaymentAmount, paymentDay }
+      );
+    }
     if (record.dueDate !== null) assertCivilDate(record.dueDate, { field: 'Debt.dueDate' });
     assertEnum(record.lifecycleStatus, DEBT_LIFECYCLE_STATUSES, 'Debt.lifecycleStatus');
     assertEnum(record.paymentStatus, DEBT_PAYMENT_STATUSES, 'Debt.paymentStatus');
@@ -429,7 +452,81 @@
         { debtId: record.id, outstandingAmount: record.outstandingAmount }
       );
     }
-    return immutableCopy(record, 'Debt');
+    return immutableCopy({ ...record, monthlyPaymentAmount, paymentDay }, 'Debt');
+  }
+
+  function daysInMonth(year, month) {
+    if (month === 2) {
+      const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+      return leap ? 29 : 28;
+    }
+    return [4, 6, 9, 11].includes(month) ? 30 : 31;
+  }
+
+  function scheduledCivilDate(year, month, paymentDay) {
+    const day = Math.min(paymentDay, daysInMonth(year, month));
+    return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  function advanceScheduledMonth(year, month, offset) {
+    const zeroBased = (year * 12) + (month - 1) + offset;
+    return Object.freeze({
+      year: Math.floor(zeroBased / 12),
+      month: (zeroBased % 12) + 1,
+    });
+  }
+
+  function deriveDebtSchedule(value, currentCivilDate) {
+    const input = requireRecord(value, 'DebtScheduleInput');
+    requireFields(
+      input,
+      ['outstandingAmount', 'monthlyPaymentAmount', 'paymentDay'],
+      'DebtScheduleInput'
+    );
+    assertCivilDate(currentCivilDate, { field: 'currentCivilDate' });
+    assertMoney(input.outstandingAmount, { field: 'DebtScheduleInput.outstandingAmount', allowZero: true });
+    if (input.monthlyPaymentAmount === null && input.paymentDay === null) {
+      return immutableCopy({
+        remainingInstallments: null,
+        nextPaymentDate: null,
+        estimatedEndDate: null,
+      });
+    }
+    assertPositiveMoney(input.monthlyPaymentAmount, {
+      field: 'DebtScheduleInput.monthlyPaymentAmount',
+    });
+    if (!Number.isSafeInteger(input.paymentDay) || input.paymentDay < 1 || input.paymentDay > 31) {
+      throw domainError(
+        ERROR_CODES.INVALID_DOMAIN_FIELD,
+        'DebtScheduleInput.paymentDay must be an integer between 1 and 31',
+        { field: 'DebtScheduleInput.paymentDay', value: input.paymentDay }
+      );
+    }
+    if (input.outstandingAmount === 0) {
+      return immutableCopy({
+        remainingInstallments: 0,
+        nextPaymentDate: null,
+        estimatedEndDate: null,
+      });
+    }
+    const [year, month] = currentCivilDate.split('-').map(Number);
+    let scheduled = advanceScheduledMonth(year, month, 0);
+    let nextPaymentDate = scheduledCivilDate(scheduled.year, scheduled.month, input.paymentDay);
+    if (nextPaymentDate < currentCivilDate) {
+      scheduled = advanceScheduledMonth(year, month, 1);
+      nextPaymentDate = scheduledCivilDate(scheduled.year, scheduled.month, input.paymentDay);
+    }
+    const remainingInstallments = Math.ceil(input.outstandingAmount / input.monthlyPaymentAmount);
+    const finalMonth = advanceScheduledMonth(
+      scheduled.year,
+      scheduled.month,
+      remainingInstallments - 1
+    );
+    return immutableCopy({
+      remainingInstallments,
+      nextPaymentDate,
+      estimatedEndDate: scheduledCivilDate(finalMonth.year, finalMonth.month, input.paymentDay),
+    });
   }
 
   function validateCategory(value) {
@@ -984,6 +1081,7 @@
     validateAccount,
     validateSavingsGoal,
     validateDebt,
+    deriveDebtSchedule,
     validateCategory,
     validateFixedExpenseTemplate,
     validateFixedExpenseInstance,

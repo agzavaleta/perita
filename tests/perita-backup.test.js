@@ -98,6 +98,7 @@ function goal() {
   return {
     id: GOAL,
     name: 'Emergencia',
+    bank: 'BancoEstado',
     targetAmount: 500000,
     openingBalance: 0,
     currentBalance: 0,
@@ -118,7 +119,9 @@ function debt() {
     totalAmount: 300000,
     openingOutstanding: 300000,
     outstandingAmount: 300000,
-    dueDate: '2026-12-31',
+    dueDate: null,
+    monthlyPaymentAmount: 50000,
+    paymentDay: 31,
     lifecycleStatus: 'active',
     paymentStatus: 'active',
     revision: 1,
@@ -332,6 +335,7 @@ function changingBeforeRestoreStorage(base) {
 test('V1.1.0 backup export', async (t) => {
   await t.test('exports a complete deterministic read-only document with exact hash', async (t2) => {
     const f = await fixture(t2);
+    await f.commands.savingsGoal.create({ ...await header(f), goal: goal() });
     const beforeRuntime = await f.storage.get('system', 'runtime');
     const beforeCommits = await f.storage.getAll('commits');
     const first = await f.backup.exportBackup();
@@ -342,6 +346,7 @@ test('V1.1.0 backup export', async (t) => {
     assert.equal(first.schemaVersion, '1.1.0');
     assert.equal(first.appVersion, '1.1.0');
     assert.equal(first.timezone, 'America/Santiago');
+    assert.equal(first.data.savingsGoals[0].bank, 'BancoEstado');
     assert.deepEqual(Object.keys(first.data).sort(), Backup.BACKUP_STORE_NAMES.slice().sort());
     const payload = { ...first };
     delete payload.integrity;
@@ -351,6 +356,16 @@ test('V1.1.0 backup export', async (t) => {
     assert.ok(Object.isFrozen(first));
     assert.deepEqual(await f.storage.get('system', 'runtime'), beforeRuntime);
     assert.deepEqual(await f.storage.getAll('commits'), beforeCommits);
+  });
+
+  await t.test('preserves the canonical debt payment schedule', async (t2) => {
+    const f = await fixture(t2);
+    await f.commands.debt.create({
+      ...await header(f), currentCivilDate: '2026-08-31', debt: debt(),
+    });
+    const backup = await f.backup.exportBackup();
+    assert.equal(backup.data.debts[0].monthlyPaymentAmount, 50000);
+    assert.equal(backup.data.debts[0].paymentDay, 31);
   });
 });
 
@@ -368,6 +383,10 @@ test('V1.1.0 backup validation', async (t) => {
     const legacyBackup = await rehash(backup, (copy) => {
       copy.data.periods[0].variableExpenseBudgetAmount = 123456;
       copy.data.periods[0].plannedSavingsAmount = 654321;
+      copy.data.debts.forEach((record) => {
+        delete record.monthlyPaymentAmount;
+        delete record.paymentDay;
+      });
     });
     assert.equal((await f.backup.validateBackup(legacyBackup)).status, 'valid');
   });
@@ -437,6 +456,11 @@ test('V1.1.0 backup restoration', async (t) => {
     const exported = await source.backup.exportBackup();
     const legacyBackup = await rehash(exported, (copy) => {
       copy.data.accounts.forEach((record) => { delete record.bank; });
+      copy.data.savingsGoals.forEach((record) => { delete record.bank; });
+      copy.data.debts.forEach((record) => {
+        delete record.monthlyPaymentAmount;
+        delete record.paymentDay;
+      });
       copy.data.periods.forEach((record) => {
         record.variableExpenseBudgetAmount = 123456;
         record.plannedSavingsAmount = 654321;
@@ -461,6 +485,9 @@ test('V1.1.0 backup restoration', async (t) => {
     const preventiveBackup = await service.exportBackup();
     await service.restoreBackup({ backup: legacyBackup, preventiveBackup });
     assert.equal((await storage.get('accounts', ACCOUNT)).bank, null);
+    assert.equal((await storage.get('savingsGoals', GOAL)).bank, null);
+    assert.equal((await storage.get('debts', DEBT)).monthlyPaymentAmount, null);
+    assert.equal((await storage.get('debts', DEBT)).paymentDay, null);
     for (const restoredPeriod of await storage.getAll('periods')) {
       assert.equal(Object.hasOwn(restoredPeriod, 'variableExpenseBudgetAmount'), false);
       assert.equal(Object.hasOwn(restoredPeriod, 'plannedSavingsAmount'), false);

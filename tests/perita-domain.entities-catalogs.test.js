@@ -151,6 +151,7 @@ function goal(number, overrides) {
   return {
     id: id(number || 30),
     name: `Meta ${number || 30}`,
+    bank: null,
     targetAmount: 500000,
     openingBalance: 0,
     currentBalance: 0,
@@ -172,7 +173,9 @@ function debt(number, overrides) {
     totalAmount: 300000,
     openingOutstanding: 300000,
     outstandingAmount: 300000,
-    dueDate: '2026-12-31',
+    dueDate: null,
+    monthlyPaymentAmount: 50000,
+    paymentDay: 31,
     lifecycleStatus: 'active',
     paymentStatus: 'active',
     revision: 1,
@@ -566,7 +569,7 @@ test('V1.1.0 savings-goal management commands', async (t) => {
   await t.test('create starts active at zero and creates one exact PeriodOpening', async (t2) => {
     const f = await fixture(t2);
     await bootstrap(f);
-    const newGoal = goal();
+    const newGoal = goal(30, { bank: 'BancoEstado' });
     const completed = await f.commands.savingsGoal.create({
       ...await commonInput(f.storage), goal: newGoal,
     });
@@ -612,11 +615,13 @@ test('V1.1.0 savings-goal management commands', async (t) => {
       goalId: id(30),
       expectedGoalRevision: 1,
       name: 'Meta editada',
+      bank: 'Efectivo',
       targetAmount: 50000,
       plannedMonthlyAmount: 25000,
     });
     const updated = completed.result.goal;
     assert.equal(updated.name, 'Meta editada');
+    assert.equal(updated.bank, 'Efectivo');
     assert.equal(updated.targetAmount, 50000);
     assert.equal(updated.plannedMonthlyAmount, 25000);
     assert.equal(updated.progressStatus, 'completed');
@@ -697,19 +702,14 @@ test('V1.1.0 debt management commands', async (t) => {
     assert.deepEqual(completed.commit.affectedStores, DomainCommands.DEBT_CREATE_STORES);
   });
 
-  await t.test('create derives overdue status and rejects inconsistent opening or duplicate ID', async (t2) => {
-    const overdue = await fixture(t2);
-    await bootstrap(overdue);
-    const overdueDebt = debt(40, { dueDate: '2026-07-31', paymentStatus: 'overdue' });
-    const completed = await overdue.commands.debt.create({
-      ...await commonInput(overdue.storage), currentCivilDate: CURRENT_DATE, debt: overdueDebt,
-    });
-    assert.equal(completed.result.debt.paymentStatus, 'overdue');
-
+  await t.test('create requires a payment schedule and rejects inconsistent opening or duplicate ID', async (t2) => {
     for (const override of [
       { openingOutstanding: 200000 },
       { outstandingAmount: 200000 },
       { paymentStatus: 'overdue' },
+      { monthlyPaymentAmount: null, paymentDay: null },
+      { monthlyPaymentAmount: 0 },
+      { paymentDay: 32 },
     ]) {
       const f = await fixture(t2);
       await bootstrap(f);
@@ -726,11 +726,12 @@ test('V1.1.0 debt management commands', async (t) => {
     }))).code, Contracts.ERROR_CODES.DOMAIN_RELATION_MISMATCH);
   });
 
-  await t.test('update changes name, due date, or both and preserves all financial amounts', async (t2) => {
+  await t.test('update changes name, monthly payment, payment day, or all and preserves financial amounts', async (t2) => {
     const patches = [
       { name: 'Deuda editada' },
-      { dueDate: '2026-07-31' },
-      { name: 'Deuda completa', dueDate: null },
+      { monthlyPaymentAmount: 60000 },
+      { paymentDay: 15 },
+      { name: 'Deuda completa', monthlyPaymentAmount: 75000, paymentDay: 28 },
     ];
     for (const patchValue of patches) {
       const f = await fixture(t2);
@@ -749,8 +750,8 @@ test('V1.1.0 debt management commands', async (t) => {
         assert.equal(updated[field], previous[field], field);
       }
       assert.equal(updated.revision, 2);
-      if (patchValue.dueDate === '2026-07-31') assert.equal(updated.paymentStatus, 'overdue');
-      if (patchValue.dueDate === null) assert.equal(updated.paymentStatus, 'active');
+      assert.equal(updated.dueDate, previous.dueDate);
+      assert.equal(updated.paymentStatus, previous.paymentStatus);
       assertAudit(completed.result.auditEvent, {
         subjectType: 'debt', subjectId: id(40),
         action: 'updated', commandType: 'debt.update-name-and-due-date',

@@ -26,6 +26,48 @@ function sha256(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+test('presentation translates operation types and domain errors without exposing technical names', () => {
+  const expectedLabels = {
+    balance_adjustment: 'Ajuste de saldo',
+    salary_receipt: 'Sueldo recibido',
+    additional_income: 'Ingreso adicional',
+    variable_expense: 'Gasto variable',
+    fixed_expense_payment: 'Pago de gasto fijo',
+    debt_payment: 'Pago de deuda',
+    debt_total_adjustment: 'Ajuste de deuda',
+    savings_deposit: 'Aporte a ahorro',
+    savings_withdrawal: 'Retiro de ahorro',
+    transfer: 'Transferencia',
+  };
+  for (const [type, label] of Object.entries(expectedLabels)) {
+    assert.equal(PeritaApp.operationTypeLabel(type), label);
+  }
+  assert.equal(PeritaApp.operationTypeLabel('future_operation'), 'Movimiento');
+
+  const invalidField = PeritaApp.userErrorMessage({
+    code: 'INVALID_DOMAIN_FIELD', message: 'technical validation details', context: { field: 'paymentDay' },
+  });
+  assert.equal(invalidField, 'Revisa el día habitual de pago: el valor ingresado no es válido. Corrígelo e intenta nuevamente.');
+  assert.doesNotMatch(invalidField, /INVALID_DOMAIN_FIELD|technical validation details/);
+
+  const inactive = PeritaApp.userErrorMessage({
+    code: 'DOMAIN_STATE_INVALID', message: 'only an active Account can receive this operation',
+  });
+  assert.match(inactive, /seleccionada está inactiva/i);
+  assert.doesNotMatch(inactive, /DOMAIN_STATE_INVALID|only an active Account/);
+
+  const writer = PeritaApp.userErrorMessage({
+    code: 'WRITER_ALREADY_OWNED', message: 'another tab currently owns the writer lease',
+  });
+  assert.match(writer, /Otra ventana de Perita/);
+  assert.doesNotMatch(writer, /writer|lease/i);
+
+  assert.equal(
+    PeritaApp.userErrorMessage({ code: 'UNEXPECTED_ENGINE_FAILURE', message: 'private diagnostics' }),
+    'No pudimos completar la acción. Intenta nuevamente.'
+  );
+});
+
 function legacyStorage(raw) {
   const writes = [];
   return {
@@ -135,6 +177,7 @@ function application(factory, options) {
     channelFactory: settings.channelFactory,
     setInterval: settings.setInterval,
     clearInterval: settings.clearInterval,
+    setTimeout: settings.setTimeout || ((callback) => { queueMicrotask(callback); return 1; }),
   });
 }
 
@@ -185,6 +228,58 @@ test('application integration initializes a new install without touching legacy 
   assert.equal(source.writes.length, 0);
 });
 
+test('zero salary reference keeps real income and fixed-expense availability canonical', async (t) => {
+  const app = application(new IDBFactory(), { prefix: 'f2100000' });
+  t.after(() => app.close());
+  await app.initialize();
+  const setup = setupPayload();
+  setup.financialSettings.salaryReferenceAmount = 0;
+  setup.period.periodKey = '2026-07';
+  setup.period.plannedSalaryAmount = 0;
+  await app.completeSetup(setup);
+
+  const templateId = id(81);
+  await app.execute('fixed-expense-template.create', { template: {
+    id: templateId, name: 'Internet', referenceAmount: 20000, status: 'active',
+    revision: 1, createdAt: NOW, updatedAt: NOW,
+  } });
+  const opened = await app.execute('period.close-and-open-next', {});
+  assert.equal(opened.state.period.periodKey, '2026-08');
+  assert.equal(opened.state.settings.salary, 0);
+  assert.equal(opened.state.summary.fixedExpensePlannedAmount, 20000);
+  assert.equal(opened.state.summary.fixedExpensePaidAmount, 0);
+  assert.equal(opened.state.summary.fixedExpenseUnpaidAmount, 20000);
+  assert.equal(opened.state.summary.availableAmount, 0);
+
+  const salary = await app.execute('salary-receipt.create', {
+    accountId: id(2), operationDate: DATE, amount: 100000,
+  });
+  assert.equal(salary.state.summary.receivedSalaryAmount, 100000);
+  assert.equal(salary.state.summary.additionalIncomeAmount, 0);
+  assert.equal(salary.state.summary.totalIncomeAmount, 100000);
+  assert.equal(salary.state.summary.availableAmount, 100000);
+
+  const additional = await app.execute('additional-income.create', {
+    accountId: id(2), operationDate: DATE, amount: 50000,
+    concept: 'Trabajo adicional', observation: null,
+  });
+  assert.equal(additional.state.summary.receivedSalaryAmount, 100000);
+  assert.equal(additional.state.summary.additionalIncomeAmount, 50000);
+  assert.equal(additional.state.summary.totalIncomeAmount, 150000);
+  assert.equal(additional.state.summary.availableAmount, 150000);
+
+  const instance = additional.state._snapshot.fixedExpenseInstances.find(
+    (item) => item.templateId === templateId && item.periodId === additional.state.period.id
+  );
+  const paid = await app.execute('fixed-expense-payment.create', {
+    accountId: id(2), fixedExpenseInstanceId: instance.id,
+    operationDate: DATE, amount: 20000,
+  });
+  assert.equal(paid.state.summary.fixedExpensePaidAmount, 20000);
+  assert.equal(paid.state.summary.fixedExpenseUnpaidAmount, 0);
+  assert.equal(paid.state.summary.availableAmount, 130000);
+});
+
 test('post-setup account creation records the requested real balance as a canonical adjustment', async (t) => {
   const factory = new IDBFactory();
   const app = application(factory, { prefix: 'a1000000' });
@@ -216,6 +311,12 @@ test('post-setup account creation records the requested real balance as a canoni
   assert.equal(movement.targetId, completed.accountId);
   assert.equal(movement.delta, 500000);
   assert.equal(completed.state.accounts.find((item) => item.id === completed.accountId).balance, 500000);
+  const projectedAdjustment = completed.state.expenses.find((item) => item.id === operation.id);
+  assert.equal(projectedAdjustment.type, 'movement');
+  assert.equal(projectedAdjustment.description, 'Ajuste de saldo');
+  assert.equal(completed.state.expenses.some((item) => item.id === operation.id && item.type === 'expense'), false);
+  assert.equal(completed.state.summary.totalIncomeAmount, 0);
+  assert.equal(completed.state.summary.variableExpenseAmount, 0);
   assert.deepEqual(deliveredStates.map((state) => state.accounts.find((item) => item.id === completed.accountId)?.balance), [500000]);
 
   const withoutBank = await app.createAccountWithBalance({
@@ -282,6 +383,15 @@ test('savings-goal onboarding preserves zero or preexisting balance without mont
   assert.equal(movement.targetType, 'savings_goal');
   assert.equal(movement.targetId, preexisting.goalId);
   assert.equal(movement.delta, 175000);
+  const projectedAdjustment = preexisting.state.expenses.find((item) => item.id === operation.id);
+  assert.equal(projectedAdjustment.type, 'movement');
+  assert.equal(projectedAdjustment.description, 'Ajuste de saldo');
+  assert.equal(
+    preexisting.state.expenses.some((item) => item.id === operation.id && item.type === 'expense'),
+    false
+  );
+  assert.equal(preexisting.state.summary.totalIncomeAmount, 0);
+  assert.equal(preexisting.state.summary.variableExpenseAmount, 0);
   assert.equal(preexisting.state.summary.netSavingsAmount, 0);
   assert.equal(
     preexisting.state.operations.some((item) => ['savings_deposit', 'transfer'].includes(item.type)),
@@ -364,44 +474,95 @@ test('savings edit adjusts balance with or without descriptive changes and exclu
   assert.equal(both.state.summary.netSavingsAmount, 0);
 });
 
+test('savings location supports bank, cash, custom text, and editing without financial effects', async (t) => {
+  const app = application(new IDBFactory(), { prefix: 'a1460000' });
+  t.after(() => app.close());
+  await app.initialize();
+  await app.completeSetup(setupPayload());
+
+  const bankGoal = await app.createSavingsGoalWithBalance({
+    name: 'Ahorro bancario', bank: 'BancoEstado', targetAmount: 300000,
+    plannedMonthlyAmount: 10000, currentBalance: 0, operationDate: DATE,
+  });
+  const cashGoal = await app.createSavingsGoalWithBalance({
+    name: 'Ahorro efectivo', bank: 'Efectivo', targetAmount: 200000,
+    plannedMonthlyAmount: 5000, currentBalance: 0, operationDate: DATE,
+  });
+  const customGoal = await app.createSavingsGoalWithBalance({
+    name: 'Ahorro cooperativa', bank: 'Cooperativa local', targetAmount: 400000,
+    plannedMonthlyAmount: 15000, currentBalance: 0, operationDate: DATE,
+  });
+  assert.equal(bankGoal.state.wallets.find((item) => item.id === bankGoal.goalId).bank, 'BancoEstado');
+  assert.equal(cashGoal.state.wallets.find((item) => item.id === cashGoal.goalId).bank, 'Efectivo');
+  assert.equal(customGoal.state.wallets.find((item) => item.id === customGoal.goalId).bank, 'Cooperativa local');
+
+  const before = customGoal.state._snapshot.savingsGoals.find((item) => item.id === customGoal.goalId);
+  const operationCount = customGoal.state.operations.length;
+  const movementCount = customGoal.state.movements.length;
+  const edited = await app.updateSavingsGoalWithBalance({
+    goalId: customGoal.goalId, name: before.name, bank: 'Banco de Chile',
+    targetAmount: before.targetAmount, plannedMonthlyAmount: before.plannedMonthlyAmount,
+    currentBalance: before.currentBalance, operationDate: DATE,
+  });
+  const after = edited.state._snapshot.savingsGoals.find((item) => item.id === customGoal.goalId);
+  assert.equal(after.bank, 'Banco de Chile');
+  for (const field of ['openingBalance', 'currentBalance', 'targetAmount', 'plannedMonthlyAmount']) {
+    assert.equal(after[field], before[field], field);
+  }
+  assert.equal(edited.state.operations.length, operationCount);
+  assert.equal(edited.state.movements.length, movementCount);
+});
+
 test('debt edit processes descriptive data, total, or both from one integration action', async (t) => {
   const app = application(new IDBFactory(), { prefix: 'a1470000' });
   t.after(() => app.close());
   await app.initialize();
   await app.completeSetup(setupPayload());
-  const debtId = id(30);
-  await app.execute('debt.create', { currentCivilDate: DATE, debt: {
-    id: debtId, name: 'Deuda inicial', totalAmount: 200000,
-    openingOutstanding: 200000, outstandingAmount: 200000,
-    dueDate: '2026-12-01', lifecycleStatus: 'active', paymentStatus: 'active',
-    revision: 1, createdAt: NOW, updatedAt: NOW,
-  } });
+  const created = await app.createDebt({
+    debtId: id(30), name: 'Deuda inicial', totalAmount: 200000,
+    monthlyPaymentAmount: 80000, paymentDay: 31, timestamp: NOW,
+  });
+  const debtId = created.debtId;
+  assert.equal(created.state.debts.find((item) => item.id === debtId).estimatedEndDate, '2026-10-31');
 
   const details = await app.updateDebtDetailsAndTotal({
-    debtId, name: 'Deuda renombrada', dueDate: '2026-11-01',
+    debtId, name: 'Deuda renombrada', monthlyPaymentAmount: 100000, paymentDay: 15,
     totalAmount: 200000, operationDate: DATE,
   });
   assert.equal(details.state.debts.find((item) => item.id === debtId).name, 'Deuda renombrada');
+  assert.equal(details.state.debts.find((item) => item.id === debtId).estimatedEndDate, '2026-09-15');
   assert.equal(details.state.operations.length, 0);
 
   const total = await app.updateDebtDetailsAndTotal({
-    debtId, name: 'Deuda renombrada', dueDate: '2026-11-01',
+    debtId, name: 'Deuda renombrada', monthlyPaymentAmount: 100000, paymentDay: 15,
     totalAmount: 240000, operationDate: DATE,
   });
   assert.equal(total.state.debts.find((item) => item.id === debtId).total, 240000);
+  assert.equal(total.state.debts.find((item) => item.id === debtId).estimatedEndDate, '2026-10-15');
   assert.equal(total.state.operations.at(-1).type, 'debt_total_adjustment');
 
   const both = await app.updateDebtDetailsAndTotal({
-    debtId, name: 'Deuda final', dueDate: '2027-01-15',
+    debtId, name: 'Deuda final', monthlyPaymentAmount: 120000, paymentDay: 31,
     totalAmount: 260000, operationDate: DATE,
   });
   const debt = both.state._snapshot.debts.find((item) => item.id === debtId);
   assert.equal(debt.name, 'Deuda final');
-  assert.equal(debt.dueDate, '2027-01-15');
+  assert.equal(debt.monthlyPaymentAmount, 120000);
+  assert.equal(debt.paymentDay, 31);
+  assert.equal(debt.dueDate, null);
   assert.equal(debt.totalAmount, 260000);
   assert.equal(debt.outstandingAmount, 260000);
   assert.equal(debt.openingOutstanding, 200000);
   assert.equal(both.state.movements.at(-1).delta, 20000);
+  assert.equal(both.state.debts.find((item) => item.id === debtId).estimatedEndDate, '2026-10-31');
+
+  const paid = await app.execute('debt-payment.create', {
+    accountId: id(2), debtId, operationDate: DATE, amount: 50000,
+    concept: null, observation: null,
+  });
+  const afterPayment = paid.state._snapshot.debts.find((item) => item.id === debtId);
+  assert.equal(afterPayment.outstandingAmount, 210000);
+  assert.equal(paid.state.debts.find((item) => item.id === debtId).estimatedEndDate, '2026-09-30');
 });
 
 test('a failed initial balance adjustment leaves the newly created account explicitly at zero', async (t) => {
@@ -555,6 +716,7 @@ test('an incomplete setup renews its writer after page teardown and reload', asy
     now: () => NOW,
     createUuid: sequence(prefix),
     channel: null,
+    setTimeout: (callback) => { queueMicrotask(callback); return 1; },
   });
   const first = create('f3100000', 'navigate');
   const initial = await first.initialize();
@@ -703,6 +865,83 @@ test('resume reacquires an expired writer canonically and respects another winne
   assert.equal(readOnly.writer, false);
   assert.equal(readOnly.error.code, 'WRITER_ALREADY_OWNED');
   assert.equal(first.writerEpoch, null);
+});
+
+test('a residual iOS writer lease is awaited once and then reacquired without duplicate heartbeat', async (t) => {
+  const factory = new IDBFactory();
+  const clock = mutableClock();
+  const abandoned = application(factory, {
+    tabId: 'ios-residual-a', prefix: 'f3370000', now: clock.now,
+  });
+  await abandoned.initialize();
+  await abandoned.completeSetup(setupPayload());
+  const previousEpoch = abandoned.writerEpoch;
+  abandoned.suspend();
+
+  const intervals = intervalHarness();
+  const delays = [];
+  const reopened = application(factory, {
+    tabId: 'ios-residual-b', prefix: 'f3380000', now: clock.now,
+    setInterval: intervals.setInterval,
+    clearInterval: intervals.clearInterval,
+    setTimeout: (callback, delay) => {
+      delays.push(delay);
+      clock.advance(delay);
+      queueMicrotask(callback);
+      return 1;
+    },
+  });
+  t.after(async () => { await reopened.close(); await abandoned.close(); });
+  const initialized = await reopened.initialize();
+  assert.equal(delays.length, 1);
+  assert.ok(delays[0] > 0 && delays[0] <= PeritaApp.LEASE_DURATION_MS + 1);
+  assert.equal(initialized.phase, 'ok');
+  assert.equal(initialized.writer, true);
+  assert.equal(initialized.writerEpoch, previousEpoch + 1);
+  reopened.startHeartbeat();
+  reopened.startHeartbeat();
+  assert.equal(intervals.activeCount, 1);
+  assert.equal(intervals.createdCount, 1);
+});
+
+test('service worker waiting and newly installed updates remain detectable without reload loops', async () => {
+  const container = eventTargetHarness();
+  container.controller = { id: 'current-controller' };
+  const registration = eventTargetHarness();
+  let updateCalls = 0;
+  const waiting = { id: 'waiting-worker' };
+  registration.waiting = waiting;
+  registration.installing = null;
+  registration.update = async () => { updateCalls += 1; };
+  container.ready = Promise.resolve(registration);
+  const detected = [];
+  let reloads = 0;
+  const updates = PeritaApp.createServiceWorkerUpdateController({
+    serviceWorker: container,
+    onWaiting: (worker) => detected.push(worker),
+    reload: () => { reloads += 1; },
+  });
+
+  await updates.start();
+  assert.equal(updateCalls, 1);
+  assert.equal(detected.includes(waiting), true);
+
+  const installing = eventTargetHarness();
+  installing.state = 'installing';
+  registration.waiting = null;
+  registration.installing = installing;
+  registration.dispatch('updatefound');
+  installing.state = 'installed';
+  installing.dispatch('statechange');
+  assert.equal(detected.includes(installing), true);
+
+  await updates.check();
+  assert.equal(updateCalls, 2);
+  container.dispatch('controllerchange');
+  container.dispatch('controllerchange');
+  assert.equal(reloads, 1);
+  updates.stop();
+  assert.equal(container.listenerCount('controllerchange'), 0);
 });
 
 test('a failed resume remains retryable and never reuses a closed storage connection', async (t) => {
@@ -876,6 +1115,7 @@ test('a duplicated or separate tab never reuses the active writer identity', asy
     now: () => NOW,
     createUuid: sequence(prefix),
     channel: null,
+    setTimeout: (callback) => { queueMicrotask(callback); return 1; },
   });
   const first = create('f3500000', firstSession);
   t.after(() => first.close());
@@ -1178,6 +1418,24 @@ test('definitive deletion integration requires external backup and exact ELIMINA
   assert.equal(source.writes.length, 0);
 });
 
+test('responsive record views select tables or cards without duplicating filters and actions', () => {
+  const html = readFileSync(`${__dirname}/../index.html`, 'utf8');
+  const jsx = readFileSync(`${__dirname}/../Perita.jsx`, 'utf8');
+
+  assert.match(jsx, /const ResponsiveDataView = \(\{desktop,mobile\}\) => useMobileRecords\(\) \? mobile : desktop/);
+  assert.equal((jsx.match(/<ResponsiveDataView/g)||[]).length, 4);
+  assert.equal((jsx.match(/table-wrap table-compact/g)||[]).length, 5);
+  assert.match(jsx, /incomeList\.map\(e=><MobileRecordCard[\s\S]*actions=\{incomeActions\(e\)\}/);
+  assert.match(jsx, /filtered\.map\(e=><MobileRecordCard[\s\S]*actions=\{expenseActions\(e\)\}/);
+  assert.match(jsx, /debts\.map\(d=><MobileRecordCard[\s\S]*actions=\{debtActions\(d\)\}/);
+  assert.match(jsx, /activeOperations\.map\(operation=><MobileRecordCard[\s\S]*actions=\{operationActions\(operation\)\}/);
+  assert.match(jsx, /if\(e\.type!=='expense'\) return false;[\s\S]*filtered\.map\(e=>/);
+
+  assert.match(html, /@media\(max-width:700px\)[\s\S]*\.table-compact table\{min-width:0;table-layout:fixed\}/);
+  assert.match(html, /\.mobile-record-list\{display:grid;gap:10px;min-width:0\}/);
+  assert.match(html, /\.mobile-record-actions\{display:flex;justify-content:flex-end/);
+});
+
 test('static integration loads V1.1.0 modules in order and caches the complete offline shell', () => {
   const html = readFileSync(`${__dirname}/../index.html`, 'utf8');
   const jsx = readFileSync(`${__dirname}/../Perita.jsx`, 'utf8');
@@ -1215,12 +1473,34 @@ test('UI integration keeps setup, navigation, icons, hierarchy, and unsaved guar
   assert.match(jsx, /window\.scrollTo\(\{top:0,left:0,behavior:'auto'\}\)/);
   assert.match(jsx, /EmptyState icon="document" title="Aún no hay meses cerrados\."/);
   assert.match(jsx, /Agregar gasto fijo<\/button>/);
-  assert.match(jsx, /className="btn btn-ghost" disabled=.*salary_receipt/);
+  assert.match(jsx, /Referencia configurada: \{fmt\(state\.settings\.salary\)\}/);
+  assert.match(jsx, /Cuenta destino: \{salaryDestination\?\.name/);
+  assert.match(jsx, /Distribución de ingresos/);
+  assert.doesNotMatch(jsx, /Distribución del Sueldo/);
+  assert.match(jsx, /Registra un ingreso para ver la distribución del mes\./);
+  assert.match(jsx, /Total fijos del mes/);
+  assert.match(jsx, /Los gastos fijos se descuentan del disponible cuando los marcas como pagados\./);
+  const dashboardSource = jsx.slice(jsx.indexOf('const Dashboard ='), jsx.indexOf('// ── Accounts'));
+  const fixedSource = jsx.slice(jsx.indexOf('const Budget ='), jsx.indexOf('const IngresosPanel ='));
+  const incomeSource = jsx.slice(jsx.indexOf('const IngresosPanel ='), jsx.indexOf('const ExpenseTracker ='));
+  assert.doesNotMatch(dashboardSource, /settings\.salary/);
+  assert.doesNotMatch(fixedSource, /settings\.salary|Total ahorro|Uso del sueldo/);
+  assert.doesNotMatch(incomeSource, /state\.settings\.salary\s*>\s*0\s*&&\s*\(/);
   assert.match(jsx, /Sin ahorros registrados\./);
+  for (const location of [
+    'BancoEstado', 'Banco de Chile', 'Banco Santander', 'BCI', 'Scotiabank', 'Itaú',
+    'Banco Falabella', 'Banco Ripley', 'Banco BICE', 'Banco Security', 'Banco Consorcio',
+    'Banco Internacional', 'Tenpo Bank', 'Tanner Banco Digital', 'Efectivo',
+  ]) assert.match(jsx, new RegExp(location));
+  assert.match(jsx, /form\.bankChoice==='Otro'/);
+  assert.match(jsx, /Nombre de la institución/);
   assert.match(jsx, /app\.createAccountWithBalance/);
   assert.match(jsx, /title:'Desactivar cuenta'/);
-  assert.match(jsx, /Para desactivar esta cuenta, primero deja su saldo en \$0\./);
-  assert.match(jsx, /Esta cuenta está desactivada y no admite operaciones\./);
+  assert.match(jsx, /const presentError = \(error\) => PeritaApp\.userErrorMessage\(error\)/);
+  assert.match(jsx, /PeritaApp\.operationTypeLabel\(operation\.type\)/);
+  assert.doesNotMatch(jsx, /operationType==='additional_income'\?'additional-income':'variable-expense'/);
+  assert.match(jsx, /operation\.type!=='balance_adjustment'/);
+  assert.doesNotMatch(jsx, /\{operation\.type\}<\/td>|Revisiones<\/th>|\$\{error\?\.code|\$\{error\.code/);
   assert.match(jsx, /const RecoveryOverlay = \(\) =>/);
   assert.match(jsx, /PeritaApp\.createLifecycleController/);
   assert.match(jsx, /Revalidando tus datos y el control seguro de escritura\./);

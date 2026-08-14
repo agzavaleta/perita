@@ -103,10 +103,11 @@
   const FIXED_TEMPLATE_EDITABLE_FIELDS = Object.freeze(['name', 'referenceAmount']);
   const SAVINGS_GOAL_EDITABLE_FIELDS = Object.freeze([
     'name',
+    'bank',
     'targetAmount',
     'plannedMonthlyAmount',
   ]);
-  const DEBT_EDITABLE_FIELDS = Object.freeze(['name', 'dueDate']);
+  const DEBT_EDITABLE_FIELDS = Object.freeze(['name', 'monthlyPaymentAmount', 'paymentDay']);
   const CATEGORY_FIELDS = Object.freeze([
     'id', 'name', 'status', 'revision', 'createdAt', 'updatedAt',
   ]);
@@ -114,13 +115,14 @@
     'id', 'name', 'referenceAmount', 'status', 'revision', 'createdAt', 'updatedAt',
   ]);
   const SAVINGS_GOAL_FIELDS = Object.freeze([
-    'id', 'name', 'targetAmount', 'openingBalance', 'currentBalance',
+    'id', 'name', 'bank', 'targetAmount', 'openingBalance', 'currentBalance',
     'plannedMonthlyAmount', 'lifecycleStatus', 'progressStatus', 'closedAt',
     'revision', 'createdAt', 'updatedAt',
   ]);
   const DEBT_FIELDS = Object.freeze([
     'id', 'name', 'totalAmount', 'openingOutstanding', 'outstandingAmount',
-    'dueDate', 'lifecycleStatus', 'paymentStatus', 'revision', 'createdAt', 'updatedAt',
+    'dueDate', 'monthlyPaymentAmount', 'paymentDay', 'lifecycleStatus', 'paymentStatus',
+    'revision', 'createdAt', 'updatedAt',
   ]);
   const FINANCIAL_OPERATION_CREATE_STORES = Object.freeze([
     'periods',
@@ -2662,22 +2664,22 @@
       assertCivilDate(request.currentCivilDate, { field: 'currentCivilDate' });
       requireOnlyFields(requireRecord(request.debt, 'Debt'), DEBT_FIELDS, 'Debt');
       const debt = Domain.validateDebt(request.debt);
-      const expectedPaymentStatus = debt.dueDate !== null && debt.dueDate < request.currentCivilDate
-        ? 'overdue'
-        : 'active';
       if (
         debt.revision !== 1 || debt.lifecycleStatus !== 'active' ||
-        debt.paymentStatus !== expectedPaymentStatus
+        debt.paymentStatus !== 'active' || debt.dueDate !== null ||
+        debt.monthlyPaymentAmount === null || debt.paymentDay === null
       ) {
         throw domainError(
           ERROR_CODES.DOMAIN_STATE_INVALID,
-          'a new Debt must use its exact initial active state and revision 1',
+          'a new Debt requires a monthly payment and payment day in its exact initial active state',
           {
             debtId: debt.id,
             revision: debt.revision,
             lifecycleStatus: debt.lifecycleStatus,
             paymentStatus: debt.paymentStatus,
-            expectedPaymentStatus,
+            dueDate: debt.dueDate,
+            monthlyPaymentAmount: debt.monthlyPaymentAmount,
+            paymentDay: debt.paymentDay,
           }
         );
       }
@@ -2739,9 +2741,6 @@
       const changedFields = editableFieldsFrom(
         request, DEBT_EDITABLE_FIELDS, 'debt.update-name-and-due-date'
       );
-      if (hasOwn(request, 'dueDate') && request.dueDate !== null) {
-        assertCivilDate(request.dueDate, { field: 'dueDate' });
-      }
       const occurredAt = canonicalTimestamp(now);
       const auditEventId = createIdentifier(createUuid, 'auditEvent.id', new Set());
       return runtime.executeCommand({
@@ -2782,8 +2781,7 @@
           );
           const patch = {};
           for (const field of changedFields) patch[field] = request[field];
-          const dueDate = hasOwn(patch, 'dueDate') ? patch.dueDate : previousValue.dueDate;
-          const paymentStatus = dueDate !== null && dueDate < request.currentCivilDate
+          const paymentStatus = previousValue.dueDate !== null && previousValue.dueDate < request.currentCivilDate
             ? 'overdue'
             : 'active';
           const nextValue = Domain.validateDebt({

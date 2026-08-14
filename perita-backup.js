@@ -325,6 +325,8 @@
     const copy = JSON.parse(JSON.stringify(data));
     copy.periods = copy.periods.map((record) => Domain.validatePeriod(record));
     copy.accounts = copy.accounts.map((record) => Domain.validateAccount(record));
+    copy.savingsGoals = copy.savingsGoals.map((record) => Domain.validateSavingsGoal(record));
+    copy.debts = copy.debts.map((record) => Domain.validateDebt(record));
     copy.system = copy.system.map((record) => (
       record.key === 'runtime' ? safeRuntime(record) : record
     ));
@@ -383,6 +385,10 @@
                   ? records.map(Domain.validatePeriod)
                   : storeName === 'accounts'
                     ? records.map(Domain.validateAccount)
+                    : storeName === 'savingsGoals'
+                      ? records.map(Domain.validateSavingsGoal)
+                    : storeName === 'debts'
+                      ? records.map(Domain.validateDebt)
                     : records,
               ]);
             }

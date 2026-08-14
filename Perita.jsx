@@ -32,20 +32,12 @@ const MoneyInput = ({value,onChange,emptyZero=true,placeholder='0',...props}) =>
 };
 const pct = (a,b) => b ? Math.min(100,Math.round((a/b)*100)) : 0;
 const today = () => PeritaApp.civilDate(new Date());
-const expectedDomainErrorMessage = (error) => {
-  if(!error || error.code!=='DOMAIN_STATE_INVALID') return null;
-  if(/balance must be zero before deactivation/i.test(error.message||'')) {
-    return 'Para desactivar esta cuenta, primero deja su saldo en $0.';
-  }
-  if(/financial movement target must exist and be active|only an active Account/i.test(error.message||'')) {
-    return 'Esta cuenta está desactivada y no admite operaciones.';
-  }
-  if(/post-setup Account balance adjustment cannot leave the Account negative/i.test(error.message||'')) {
-    return 'El saldo de una cuenta nueva no puede ser negativo porque el ajuste trazable no permite dejarla bajo $0.';
-  }
-  return null;
+const formatCivilDate = (value) => {
+  if(!value)return '—';
+  const [year,month,day]=value.split('-').map(Number);
+  return new Date(year,month-1,day).toLocaleDateString('es-CL');
 };
-const presentError = (error) => expectedDomainErrorMessage(error) || `${error?.code||'ERROR'}: ${error?.message||'Ocurrió un error inesperado'}`;
+const presentError = (error) => PeritaApp.userErrorMessage(error);
 const monthsLeft = (current,goal,monthly) => {
   if(monthly<=0) return '∞';
   const left = goal - current;
@@ -145,6 +137,44 @@ const EmptyState = ({icon, title, description, actionLabel, onAction}) => (
     {actionLabel && onAction && (
       <button className="btn btn-primary empty-state-action" onClick={onAction}><Icon name="plus" size={14}/> {actionLabel}</button>
     )}
+  </div>
+);
+
+const MOBILE_RECORDS_QUERY = '(max-width: 700px)';
+const useMobileRecords = () => {
+  const read = () => typeof window.matchMedia==='function'
+    ? window.matchMedia(MOBILE_RECORDS_QUERY).matches
+    : window.innerWidth<=700;
+  const [mobile,setMobile]=useState(read);
+  useEffect(()=>{
+    if(typeof window.matchMedia!=='function')return undefined;
+    const query=window.matchMedia(MOBILE_RECORDS_QUERY);
+    const update=()=>setMobile(query.matches);
+    update();
+    if(typeof query.addEventListener==='function')query.addEventListener('change',update);
+    else query.addListener(update);
+    return ()=>{
+      if(typeof query.removeEventListener==='function')query.removeEventListener('change',update);
+      else query.removeListener(update);
+    };
+  },[]);
+  return mobile;
+};
+
+const ResponsiveDataView = ({desktop,mobile}) => useMobileRecords() ? mobile : desktop;
+
+const MobileRecordCard = ({title,amount,amountClass='',date,details=[],status,actions}) => (
+  <div className="card-sm mobile-record-card">
+    <div className="mobile-record-head">
+      <div className="mobile-record-title">{title||'Movimiento'}</div>
+      {amount!==undefined&&<div className={`mobile-record-amount ${amountClass}`}>{amount}</div>}
+    </div>
+    {date&&<div className="mobile-record-date">{date}</div>}
+    {details.filter(item=>item?.value!==null&&item?.value!==undefined&&item?.value!=='').map(item=><div className="mobile-record-detail" key={item.label}>
+      <span>{item.label}</span><strong>{item.value}</strong>
+    </div>)}
+    {status&&<div className="mobile-record-status">{status}</div>}
+    {actions&&<div className="mobile-record-actions">{actions}</div>}
   </div>
 );
 
@@ -253,14 +283,14 @@ const ChartCanvas = ({id,config,height=220}) => {
 // ── Draggable list hook ────────────────────────────────────────────────────────
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 const Dashboard = ({state, notify}) => {
-  const {settings,wallets,debts,accounts} = state;
+  const {wallets,debts,accounts} = state;
   const accs = (accounts || []).filter(account=>account.status==='active');
 
   // Canonical totals are projected from V1.1.0 operations and movements.
   const {
     totalAvailable, totalSavings, netWorth, totalDebt,
     totalIncomeDash, totalVariable, monthlySavings, totalFixed, monthlyDebt,
-    incomeSrc, savingsRate, remaining,
+    savingsRate, remaining,
   } = dashboardTotals(state);
 
   const [showAccBreakdown, setShowAccBreakdown] = useState(false);
@@ -367,7 +397,7 @@ const Dashboard = ({state, notify}) => {
       <div className="grid-4 mb-6">
         {[
           {label:'Ahorro Mensual',value:monthlySavings,icon:'wallet',color:'icon-purple',sub:`Tasa: ${savingsRate}%`},
-          {label:'Gastos Fijos',value:totalFixed,icon:'budget',color:'icon-amber',sub:`${pct(totalFixed,settings.salary)}% del sueldo`},
+          {label:'Gastos Fijos',value:totalFixed,icon:'budget',color:'icon-amber',sub:totalIncomeDash>0?`${pct(totalFixed,totalIncomeDash)}% de los ingresos`:'Sin ingresos reales'},
           {label:'Sobrante Mensual',value:remaining,icon:'target',color:remaining>=0?'icon-green':'icon-amber',sub:'Después de gastos y ahorro'},
         ].map((k,i)=>(
           <div key={i} className="card">
@@ -381,12 +411,13 @@ const Dashboard = ({state, notify}) => {
 
       <div className="card mb-6">
         <div className="section-header">
-          <div><div className="section-title">Distribución del Sueldo</div><div className="section-sub">{fmt(settings.salary)} mensual</div></div>
+          <div><div className="section-title">Distribución de ingresos</div><div className="section-sub">{fmt(totalIncomeDash)} recibidos este mes</div></div>
         </div>
-        {[
-          {label:'Gastos fijos',value:totalFixed,total:settings.salary,color:'fill-red'},
-          {label:'Ahorro mensual',value:monthlySavings,total:settings.salary,color:'fill-green'},
-          {label:'Disponible',value:Math.max(0,remaining),total:settings.salary,color:'fill-blue'},
+        {totalIncomeDash===0 && <div className="text-sm text-gray mt-3">Registra un ingreso para ver la distribución del mes.</div>}
+        {totalIncomeDash>0 && [
+          {label:'Gastos fijos',value:totalFixed,total:totalIncomeDash,color:'fill-red'},
+          {label:'Ahorro mensual',value:monthlySavings,total:totalIncomeDash,color:'fill-green'},
+          {label:'Disponible',value:Math.max(0,remaining),total:totalIncomeDash,color:'fill-blue'},
         ].map((r,i)=>(
           <div key={i} className="mt-3">
             <div className="flex justify-between text-sm mb-1">
@@ -474,8 +505,7 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
       } catch(error) {
         if(error?.code==='ACCOUNT_BALANCE_ADJUSTMENT_FAILED') {
           if(app.state)setState(app.state);
-          const causeCode=error.context?.causeCode?` (${error.context.causeCode})`:'';
-          notify(`${error.message} Edita la cuenta para completar el saldo.${causeCode}`,'error');
+          notify(presentError(error),'error');
           resetModal();
           return;
         }
@@ -588,27 +618,41 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
 };
 
 // ── Wallets ────────────────────────────────────────────────────────────────────
+const SAVINGS_LOCATION_OPTIONS = Object.freeze([
+  'BancoEstado', 'Banco de Chile', 'Banco Santander', 'BCI', 'Scotiabank', 'Itaú',
+  'Banco Falabella', 'Banco Ripley', 'Banco BICE', 'Banco Security', 'Banco Consorcio',
+  'Banco Internacional', 'Tenpo Bank', 'Tanner Banco Digital', 'Efectivo',
+]);
+const savingsLocationFields = (bank) => ({
+  bank: bank || '',
+  bankChoice: !bank ? '' : SAVINGS_LOCATION_OPTIONS.includes(bank) ? bank : 'Otro',
+});
+
 const Wallets = ({state, setState, notify, run, app}) => {
   const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({emoji:'💰',name:'',bank:'',balance:0,monthly:0,goal:0});
+  const emptyForm = () => ({emoji:'💰',name:'',balance:0,monthly:0,goal:0,...savingsLocationFields(null)});
+  const [form, setForm] = useState(emptyForm);
   const [initForm, setInitForm] = useState(null);
   const {ask, ConfirmNode} = useConfirm();
   const isDirty = modal && initForm && JSON.stringify(form) !== JSON.stringify(initForm);
   const {guardClose, GuardNode} = useUnsavedGuard(isDirty);
   const {totalSavings} = dashboardTotals(state);
-  const resetModal = () => { setModal(null); setInitForm(null); setForm({emoji:'💰',name:'',bank:'',balance:0,monthly:0,goal:0}); };
+  const resetModal = () => { setModal(null); setInitForm(null); setForm(emptyForm()); };
   const closeModal = () => guardClose(resetModal);
 
-  const openEdit = (w) => { const f={...w}; setForm(f); setInitForm(f); setModal('edit'); };
-  const openNew = () => { const f={emoji:'💰',name:'',bank:'',balance:0,monthly:0,goal:0}; setForm(f); setInitForm(f); setModal('new'); };
+  const openEdit = (w) => { const f={...w,...savingsLocationFields(w.bank)}; setForm(f); setInitForm(f); setModal('edit'); };
+  const openNew = () => { const f=emptyForm(); setForm(f); setInitForm(f); setModal('new'); };
 
   const save = async () => {
     if(!form.name) return;
+    const bank = form.bankChoice==='Otro' ? form.bank.trim() : form.bankChoice||null;
+    if((modal==='new'||form.bankChoice==='Otro')&&!bank) { notify('Selecciona dónde está guardado el ahorro.','warn'); return; }
     if(modal==='new' && form.balance<0) { notify('El saldo actual del ahorro no puede ser negativo','warn'); return; }
     if(modal==='new'){
       try {
         const completed=await app.createSavingsGoalWithBalance({
           name:form.name.trim(),
+          bank,
           targetAmount:form.goal,
           plannedMonthlyAmount:form.monthly,
           currentBalance:form.balance,
@@ -620,7 +664,7 @@ const Wallets = ({state, setState, notify, run, app}) => {
       } catch(error) {
         if(error?.code==='SAVINGS_GOAL_BALANCE_ADJUSTMENT_FAILED') {
           if(app.state)setState(app.state);
-          notify(`${error.message} Puedes completar el saldo mediante un ajuste trazable.`,'error');
+          notify(presentError(error),'error');
           resetModal();
           return;
         }
@@ -631,7 +675,7 @@ const Wallets = ({state, setState, notify, run, app}) => {
       try {
         const completed=await app.updateSavingsGoalWithBalance({
           goalId:form.id,name:form.name.trim(),targetAmount:form.goal,
-          plannedMonthlyAmount:form.monthly,currentBalance:form.balance,
+          bank,plannedMonthlyAmount:form.monthly,currentBalance:form.balance,
           operationDate:today(),reason:'Ajuste de saldo al editar la meta de ahorro',
         });
         setState(completed.state);
@@ -721,6 +765,23 @@ const Wallets = ({state, setState, notify, run, app}) => {
                   onChange={e=>setForm(x=>({...x,[f.key]:e.target.value}))} />
               </div>
             ))}
+            <div className="form-group">
+              <label className="form-label">Banco o efectivo</label>
+              <select className="form-select" value={form.bankChoice||''} onChange={e=>setForm(x=>({
+                ...x,
+                bankChoice:e.target.value,
+                bank:e.target.value==='Otro'?'':e.target.value,
+              }))}>
+                <option value="">Selecciona una opción</option>
+                {SAVINGS_LOCATION_OPTIONS.map(option=><option key={option} value={option}>{option}</option>)}
+                <option value="Otro">Otro</option>
+              </select>
+            </div>
+            {form.bankChoice==='Otro'&&<div className="form-group">
+              <label className="form-label">Nombre de la institución</label>
+              <input className="form-input" placeholder="Escribe dónde está guardado" value={form.bank||''}
+                onChange={e=>setForm(x=>({...x,bank:e.target.value}))}/>
+            </div>}
             {[
               {label:'Saldo actual',key:'balance',type:'number'},
               {label:'Aporte mensual',key:'monthly',type:'number'},
@@ -775,7 +836,7 @@ const Wallets = ({state, setState, notify, run, app}) => {
 
 // ── Budget ────────────────────────────────────────────────────────────────────
 const Budget = ({state, setState, notify, run}) => {
-  const {settings, budget, wallets} = state;
+  const {budget} = state;
   const [form, setForm] = useState({name:'',amount:0});
   const [editing, setEditing] = useState(null);
   const [editForm,setEditForm]=useState({name:'',referenceAmount:0});
@@ -785,7 +846,11 @@ const Budget = ({state, setState, notify, run}) => {
 
   const currentAmount = (item) => item.instance ? item.instance.plannedAmount : item.amount;
   const totalBudget = budget.reduce((a,b)=>a+currentAmount(b),0);
-  const totalSavings = wallets.reduce((a,w)=>a+w.monthly,0);
+  const summary = state.summary || {};
+  const totalFixedMonth = summary.fixedExpensePlannedAmount || 0;
+  const paidFixedMonth = summary.fixedExpensePaidAmount || 0;
+  const pendingFixedMonth = summary.fixedExpenseUnpaidAmount || 0;
+  const realIncome = summary.totalIncomeAmount || 0;
   // "Disponible" is the same concept as Dashboard's "Sobrante Mensual" — always
   // Canonical posted operations determine the available amount.
   const { remaining } = dashboardTotals(state);
@@ -862,9 +927,9 @@ const Budget = ({state, setState, notify, run}) => {
       </div></div>}
       <div className="grid-2 mb-6">
         {[
-          {label:'Sueldo',value:settings.salary,color:'text-green'},
-          {label:'Total fijos',value:totalBudget,color:'text-red'},
-          {label:'Total ahorro',value:totalSavings,color:'text-green'},
+          {label:'Total fijos del mes',value:totalFixedMonth,color:'text-red'},
+          {label:'Pagado',value:paidFixedMonth,color:'text-green'},
+          {label:'Pendiente',value:pendingFixedMonth,color:'text-amber'},
           {label:'Disponible',value:remaining,color:remaining>=0?'text-green':'text-red'},
         ].map((k,i)=>(
           <div key={i} className="card-sm flex justify-between items-center">
@@ -873,6 +938,7 @@ const Budget = ({state, setState, notify, run}) => {
           </div>
         ))}
       </div>
+      <p className="text-sm text-gray mb-4">Los gastos fijos se descuentan del disponible cuando los marcas como pagados.</p>
 
       <div className="grid-2 gap-4">
         <div className="card">
@@ -902,7 +968,7 @@ const Budget = ({state, setState, notify, run}) => {
                   </button>
                   <span className="text-sm" style={{flex:1,textDecoration:isPaid(b.id)?'line-through':'none',opacity:isPaid(b.id)?0.5:1}}>{b.name}</span>
                   <span className="font-semibold text-sm">{fmt(currentAmount(b))}</span>
-                  <span className="text-xs text-gray">{pct(currentAmount(b),settings.salary)}%</span>
+                  <span className="text-xs text-gray">{realIncome>0?`${pct(currentAmount(b),realIncome)}%`:'—'}</span>
                   {b.instance&&<button className="btn btn-ghost btn-sm btn-icon" title="Editar monto del periodo" onClick={()=>setPlannedEdit({name:b.name,instance:b.instance,amount:b.instance.plannedAmount})}><Icon name="budget" size={13}/></button>}
                   <button className="btn btn-ghost btn-sm btn-icon" title="Editar nombre y referencia futura" onClick={()=>{setEditing(b.id);setEditForm({name:b.name,referenceAmount:b.amount});}}><Icon name="pencil" size={13}/></button>
                   <button className="btn btn-danger btn-sm btn-icon" onClick={()=>delItem(b)}><Icon name="trash" size={13}/></button>
@@ -922,8 +988,10 @@ const Budget = ({state, setState, notify, run}) => {
           <div className="section-title mb-4">Distribución</div>
           <div className="chart-box"><ChartCanvas id="budget-chart" config={chartData} /></div>
           <div className="divider" />
-          <ProgressBar value={totalBudget+totalSavings} max={settings.salary} color={totalBudget+totalSavings>settings.salary?'fill-red':'fill-green'}
-            label="Uso del sueldo" sublabel={pct(totalBudget+totalSavings,settings.salary)+'%'} />
+          {realIncome>0
+            ? <ProgressBar value={totalFixedMonth} max={realIncome} color={totalFixedMonth>realIncome?'fill-red':'fill-green'}
+                label="Fijos respecto de ingresos" sublabel={pct(totalFixedMonth,realIncome)+'%'} />
+            : <div className="text-sm text-gray">Registra un ingreso para comparar los gastos fijos del mes.</div>}
         </div>
       </div>
     </div>
@@ -991,6 +1059,19 @@ const IngresosPanel = ({state, setState, notify, run}) => {
   });
   const hasAnyIncome = expenses.some(e=>e.type==='income');
   const totalIncome = incomeList.reduce((a,e)=>a+e.amount, 0);
+  const postedSalary = (state.operations||[]).find(operation=>
+    operation.periodId===state.period?.id&&operation.type==='salary_receipt'&&operation.status==='posted'
+  );
+  const salaryDestination = postedSalary
+    ? accounts.find(account=>account.id===postedSalary.details?.accountId)
+    : null;
+  const summary = state.summary || {};
+  const incomeTitle = (item) => item.operationType==='salary_receipt'?'Sueldo recibido':item.description||'Ingreso';
+  const incomeAccountName = (item) => accounts.find(account=>account.id===item.account)?.name||'Cuenta no disponible';
+  const incomeActions = (item) => <>
+    <button className="btn btn-ghost btn-sm btn-icon" aria-label={`Editar ${incomeTitle(item)}`} onClick={()=>openEdit(item)}><Icon name="pencil" size={12}/></button>
+    <button className="btn btn-danger btn-sm btn-icon" aria-label={`Anular ${incomeTitle(item)}`} onClick={()=>del(item)}><Icon name="trash" size={12}/></button>
+  </>;
 
   const submitAndClose = () => {
     const valid = editingId!=null ? saveEdit() : addIncome();
@@ -1033,23 +1114,34 @@ const IngresosPanel = ({state, setState, notify, run}) => {
         </div>
       )}
 
-      {state.settings.salary > 0 && (
-        <div className="card-sm mb-4" style={{padding:'10px 16px'}}>
-          <span className="text-gray text-sm">Sueldo de referencia: </span>
-          <span className="font-bold text-green">{fmt(state.settings.salary)}</span>
+      <div className="card-sm mb-4" style={{padding:'10px 16px'}}>
+        {postedSalary ? <>
+          <div className="text-sm text-gray">Sueldo recibido</div>
+          <div className="font-bold text-green" style={{fontSize:20}}>{fmt(postedSalary.amount)}</div>
+          <div className="text-sm text-gray mt-1">Cuenta destino: {salaryDestination?.name||'Cuenta no disponible'}</div>
+        </> : <>
+          <div className="font-semibold">Registrar sueldo recibido</div>
+          {state.settings.salary>0 && <div className="text-sm text-gray mt-1">Referencia configurada: {fmt(state.settings.salary)}</div>}
           <div className="inline-form mt-3">
             <MoneyInput className="form-input" value={salaryAmount} onChange={setSalaryAmount} style={{flex:'1 1 120px'}} />
             <select className="form-input form-select" value={salaryAccount} onChange={e=>setSalaryAccount(e.target.value)} style={{flex:'1 1 150px'}}>
               <option value="">Cuenta destino…</option>
               {accounts.filter(a=>a.status==='active').map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
             </select>
-            <button className="btn btn-ghost" disabled={(state.operations||[]).some(op=>op.periodId===state.period?.id&&op.type==='salary_receipt'&&op.status==='posted')} onClick={()=>{
+            <button className="btn btn-ghost" onClick={()=>{
               if(!salaryAccount||!salaryAmount){notify('Selecciona cuenta y monto','warn');return;}
               run('salary-receipt.create',{accountId:salaryAccount,operationDate:today(),amount:salaryAmount},'Sueldo recibido registrado');
             }}>Registrar sueldo recibido</button>
           </div>
-        </div>
-      )}
+        </>}
+      </div>
+      <div className="grid-3 mb-4">
+        {[
+          {label:'Sueldo recibido',value:summary.receivedSalaryAmount||0},
+          {label:'Otros ingresos',value:summary.additionalIncomeAmount||0},
+          {label:'Total ingresos',value:summary.totalIncomeAmount||0},
+        ].map(item=><div key={item.label} className="card-sm"><div className="text-sm text-gray">{item.label}</div><div className="font-bold amount-positive">{fmt(item.value)}</div></div>)}
+      </div>
       <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
         <button className="btn btn-primary" style={{width:'100%'}} onClick={openNew}><Icon name="plus" size={13}/> Agregar ingreso</button>
         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
@@ -1070,30 +1162,27 @@ const IngresosPanel = ({state, setState, notify, run}) => {
           <span className="text-sm text-gray">{incomeList.length} {incomeList.length===1?'ingreso':'ingresos'}</span>
         </div>
         {incomeList.length === 0 && <EmptyState {...emptyStateProps(hasAnyIncome, "trending", {title:"Aún no has registrado ingresos.", description:"Registra tus ingresos y deposítalos directamente en una cuenta.", actionLabel:"Agregar ingreso", onAction:openNew})}/>}
-        {incomeList.length > 0 && (
-          <div className="table-wrap">
+        {incomeList.length > 0 && <ResponsiveDataView
+          desktop={<div className="table-wrap">
             <table>
               <thead><tr><th>Fecha</th><th>Descripción</th><th>Monto</th><th>Cuenta</th><th></th></tr></thead>
               <tbody>
-                {incomeList.map(e=>{
-                  const acc = accounts.find(a=>a.id===e.account);
-                  return (
+                {incomeList.map(e=>(
                     <tr key={e.id}>
                       <td className="text-sm">{e.date}</td>
-                      <td className="text-sm">{e.description||'—'}</td>
+                      <td className="text-sm">{incomeTitle(e)}</td>
                       <td className="amount-positive">{fmt(e.amount)}</td>
-                      <td className="text-sm text-gray">{acc?.name||'—'}</td>
-                      <td>
-                        <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>openEdit(e)}><Icon name="pencil" size={12}/></button>
-                        <button className="btn btn-danger btn-sm btn-icon" onClick={()=>del(e)}><Icon name="trash" size={12}/></button>
-                      </td>
+                      <td className="text-sm text-gray">{incomeAccountName(e)}</td>
+                      <td><div className="flex gap-2">{incomeActions(e)}</div></td>
                     </tr>
-                  );
-                })}
+                ))}
               </tbody>
             </table>
-          </div>
-        )}
+          </div>}
+          mobile={<div className="mobile-record-list">{incomeList.map(e=><MobileRecordCard key={e.id}
+            title={incomeTitle(e)} amount={fmt(e.amount)} amountClass="amount-positive" date={e.date}
+            details={[{label:'Cuenta',value:incomeAccountName(e)}]} actions={incomeActions(e)}/>)}</div>}
+        />}
       </div>
     </div>
   );
@@ -1170,9 +1259,18 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
     if(!ok) return;
     run('variable-expense.void',{operationId:e.id,accountId:e.account,categoryId:e.category,reason:'Anulado desde la interfaz'},'Gasto variable anulado');
   };
+  const expenseTitle = (item) => item.description||'Gasto variable';
+  const expenseActions = (item) => <>
+    <button className="btn btn-ghost btn-sm btn-icon" aria-label={`Editar ${expenseTitle(item)}`} onClick={()=>openEdit(item)}><Icon name="pencil" size={12}/></button>
+    <button className="btn btn-danger btn-sm btn-icon" aria-label={`Anular ${expenseTitle(item)}`} onClick={()=>del(item)}><Icon name="trash" size={12}/></button>
+  </>;
+  const expenseDetails = (item) => [
+    {label:'Categoría',value:item.categoryName||varCategories.find(category=>category.id===item.category)?.name},
+    {label:'Cuenta',value:(state.accounts||[]).find(account=>account.id===item.account)?.name},
+  ];
 
   const filtered = expenses.filter(e=>{
-    if(e.type==='income') return false;
+    if(e.type!=='expense') return false;
     if(filter.month && !e.date.startsWith(filter.month)) return false;
     if(filter.q && !(e.description+(e.notes||'')).toLowerCase().includes(filter.q.toLowerCase())) return false;
     return true;
@@ -1183,7 +1281,7 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
 
   // By month
   const byMonth = {};
-  expenses.forEach(e=>{
+  expenses.filter(e=>e.type==='expense').forEach(e=>{
     const m = e.date.slice(0,7);
     byMonth[m]=(byMonth[m]||0)+e.amount;
   });
@@ -1273,22 +1371,23 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
             </div>
             {filtered.length===0
               ? <EmptyState {...emptyStateProps(hasAnyExpense, "expense", {title:"Aún no has registrado gastos variables.", description:"Agrega tu primer gasto variable para llevar el control de tus gastos del mes.", actionLabel:"Agregar gasto", onAction:openNew})}/>
-              : <div className="table-wrap">
+              : <ResponsiveDataView desktop={<div className="table-wrap">
                 <table>
                   <thead><tr><th>Fecha</th><th>Nombre gasto</th><th>Monto</th><th></th></tr></thead>
                   <tbody>{filtered.map(e=>(
                     <tr key={e.id}>
                       <td className="text-sm">{e.date}</td>
-                      <td className="text-sm">{e.description}</td>
+                      <td className="text-sm">{expenseTitle(e)}</td>
                       <td className="amount-negative">{fmt(e.amount)}</td>
-                      <td>
-                        <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>openEdit(e)}><Icon name="pencil" size={12}/></button>
-                        <button className="btn btn-danger btn-sm btn-icon" onClick={()=>del(e)}><Icon name="trash" size={12}/></button>
-                      </td>
+                      <td><div className="flex gap-2">{expenseActions(e)}</div></td>
                     </tr>
                   ))}</tbody>
                 </table>
               </div>}
+              mobile={<div className="mobile-record-list">{filtered.map(e=><MobileRecordCard key={e.id}
+                title={expenseTitle(e)} amount={fmt(e.amount)} amountClass="amount-negative" date={e.date}
+                details={expenseDetails(e)} actions={expenseActions(e)}/>)}</div>}
+            />}
           </div>
         </>
       )}
@@ -1320,7 +1419,7 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
 
 // ── Debt Tracker ──────────────────────────────────────────────────────────────
 const DEBT_STATUSES = ['activa','pausada','pagada'];
-const emptyDebt = () => ({name:'',total:0,paid:0,monthly:0,dueDate:today(),status:'activa'});
+const emptyDebt = () => ({name:'',total:0,paid:0,monthly:0,paymentDay:Number(today().slice(8,10)),status:'activa'});
 
 const DebtTracker = ({state, setState, notify, run, app}) => {
   const debts = state.debts || [];
@@ -1344,15 +1443,26 @@ const DebtTracker = ({state, setState, notify, run, app}) => {
   const openEdit = (d) => { const f={...d}; setForm(f); setInitForm(f); setModal('edit'); };
 
   const saveDebt = async () => {
-    if(!form.name || !form.total) { notify('Completa nombre y monto','warn'); return; }
+    if(!form.name.trim()) { notify('Ingresa el nombre de la deuda','warn'); return; }
+    if(!Number.isSafeInteger(form.total)||form.total<=0) { notify('El monto total debe ser mayor que $0','warn'); return; }
+    if(!Number.isSafeInteger(form.monthly)||form.monthly<=0) { notify('La cuota mensual debe ser mayor que $0','warn'); return; }
+    if(!Number.isSafeInteger(Number(form.paymentDay))||Number(form.paymentDay)<1||Number(form.paymentDay)>31) {
+      notify('El día habitual de pago debe estar entre 1 y 31','warn'); return;
+    }
     if(modal==='new'){
-      const completed=await setState(s=>({...s, debts:[...( s.debts||[]), {...form, id:s.nextId}], nextId:s.nextId+1}));
-      if(!completed)return;
-      notify('Deuda agregada','success');
+      try {
+        const completed=await app.createDebt({
+          name:form.name.trim(),totalAmount:form.total,monthlyPaymentAmount:form.monthly,
+          paymentDay:Number(form.paymentDay),
+        });
+        setState(completed.state);
+        notify('Deuda agregada','success');
+      } catch(error) { notify(presentError(error),'error'); return; }
     } else {
       try {
         const completed=await app.updateDebtDetailsAndTotal({
-          debtId:form.id,name:form.name.trim(),dueDate:form.dueDate,
+          debtId:form.id,name:form.name.trim(),monthlyPaymentAmount:form.monthly,
+          paymentDay:Number(form.paymentDay),
           totalAmount:form.total,operationDate:today(),
         });
         setState(completed.state);
@@ -1379,6 +1489,19 @@ const DebtTracker = ({state, setState, notify, run, app}) => {
     },`Pago registrado: ${fmt(payAmt)}`);
     setPayModal(null); setPayAmt(0);
   };
+  const debtStatus = (debt) => <span className={`badge ${debt.status==='pagada'?'badge-green':debt.status==='pausada'?'badge-amber':'badge-red'}`}>
+    {debt.status.charAt(0).toUpperCase()+debt.status.slice(1)}
+  </span>;
+  const debtActions = (debt) => <>
+    {debt.status!=='pagada' && <button className="btn btn-ghost btn-sm btn-icon" aria-label={`Registrar pago de ${debt.name}`} title="Registrar pago" onClick={()=>{setPayModal(debt);setPayAmt(debt.monthly);}}><Icon name="plus" size={12}/></button>}
+    <button className="btn btn-ghost btn-sm btn-icon" aria-label={`Editar ${debt.name}`} onClick={()=>openEdit(debt)}><Icon name="pencil" size={12}/></button>
+  </>;
+  const debtDetails = (debt) => [
+    {label:'Monto total',value:fmt(debt.total)},
+    {label:'Cuota mensual',value:fmt(debt.monthly)},
+    {label:'Próximo pago',value:formatCivilDate(debt.nextPaymentDate)},
+    {label:'Término estimado',value:formatCivilDate(debt.estimatedEndDate)},
+  ];
 
   // Projection chart (sum of all active debts declining monthly)
   const months = totalMonthly > 0 ? Math.ceil(totalDebt / totalMonthly) : 0;
@@ -1406,10 +1529,22 @@ const DebtTracker = ({state, setState, notify, run, app}) => {
           </select>
         : type==='number'
           ? <MoneyInput className="form-input" value={form[key]} onChange={value=>setForm(f=>({...f,[key]:value}))} />
+          : type==='day'
+            ? <input className="form-input" type="number" min="1" max="31" inputMode="numeric" value={form[key]||''} onChange={e=>setForm(f=>({...f,[key]:e.target.value===''?'':Number(e.target.value)}))} />
           : <input className="form-input" type={type} placeholder={key==='name'?'Ej: Crédito automotriz':undefined} value={form[key]||''} onChange={e=>setForm(f=>({...f,[key]:e.target.value}))} />
       }
     </div>
   );
+
+  const formSchedule = (()=>{
+    try {
+      return PeritaDomain.deriveDebtSchedule({
+        outstandingAmount:Math.max(0,form.total-(form.paid||0)),
+        monthlyPaymentAmount:form.monthly>0?form.monthly:null,
+        paymentDay:form.monthly>0&&Number.isSafeInteger(Number(form.paymentDay))?Number(form.paymentDay):null,
+      },today());
+    } catch(_){ return {estimatedEndDate:null}; }
+  })();
 
   return (
     <div>
@@ -1428,43 +1563,36 @@ const DebtTracker = ({state, setState, notify, run, app}) => {
           <button className="btn btn-primary btn-sm" onClick={openNew}><Icon name="plus" size={13}/> Nueva deuda</button>
         </div>
         {debts.length===0 && <EmptyState icon="debt" title="Aún no has registrado deudas." description="¡Bien hecho! Agrega una deuda si necesitas hacer seguimiento de algún préstamo o crédito." actionLabel="Agregar deuda" onAction={openNew}/>}
-        {debts.length>0 && <div className="table-wrap"><table>
-            <thead><tr><th>Nombre</th><th>Total</th><th>Pagado</th><th>Restante</th><th>Mensual</th><th>Vence</th><th>Estado</th><th></th></tr></thead>
+        {debts.length>0 && <ResponsiveDataView desktop={<div className="table-wrap"><table>
+            <thead><tr><th>Nombre</th><th>Saldo pendiente</th><th>Monto total</th><th>Cuota mensual</th><th>Próximo pago</th><th>Término estimado</th><th>Estado</th><th></th></tr></thead>
             <tbody>
               {debts.map(d=>{
                 const rem = d.total - d.paid;
-                const p = pct(d.paid, d.total);
                 return (
                   <tr key={d.id}>
                     <td className="font-semibold">{d.name}</td>
-                    <td>{fmt(d.total)}</td>
-                    <td className="text-green">{fmt(d.paid)}</td>
                     <td className="text-red font-semibold">{fmt(rem)}</td>
+                    <td>{fmt(d.total)}</td>
                     <td>{fmt(d.monthly)}</td>
-                    <td className="text-sm text-gray">{d.dueDate}</td>
-                    <td>
-                      <span className={`badge ${d.status==='pagada'?'badge-green':d.status==='pausada'?'badge-amber':'badge-red'}`}>
-                        {d.status.charAt(0).toUpperCase()+d.status.slice(1)}
-                      </span>
-                    </td>
-                    <td>
-                      <div className="flex gap-2">
-                        {d.status!=='pagada' && <button className="btn btn-ghost btn-sm btn-icon" title="Registrar pago" onClick={()=>{setPayModal(d);setPayAmt(d.monthly);}}><Icon name="plus" size={12}/></button>}
-                        <button className="btn btn-ghost btn-sm btn-icon" onClick={()=>openEdit(d)}><Icon name="pencil" size={12}/></button>
-                      </div>
-                    </td>
+                    <td className="text-sm text-gray">{formatCivilDate(d.nextPaymentDate)}</td>
+                    <td className="text-sm text-gray">{formatCivilDate(d.estimatedEndDate)}</td>
+                    <td>{debtStatus(d)}</td>
+                    <td><div className="flex gap-2">{debtActions(d)}</div></td>
                   </tr>
                 );
               })}
             </tbody>
           </table></div>}
+          mobile={<div className="mobile-record-list">{debts.map(d=><MobileRecordCard key={d.id}
+            title={d.name} amount={fmt(d.total-d.paid)} amountClass="amount-negative"
+            details={debtDetails(d)} status={debtStatus(d)} actions={debtActions(d)}/>)}</div>}
+        />}
       </div>
 
       {/* Progress cards per debt */}
       {activeDebts.length>0 && <div className="grid-2 mb-6">
         {activeDebts.map(d=>{
           const rem = d.total - d.paid;
-          const ml = d.monthly>0 ? Math.ceil(rem/d.monthly) : null;
           return (
             <div key={d.id} className="card">
               <div className="flex justify-between items-start mb-2">
@@ -1472,10 +1600,10 @@ const DebtTracker = ({state, setState, notify, run, app}) => {
                 <span className="badge badge-red">{fmt(rem)}</span>
               </div>
               <ProgressBar value={d.paid} max={d.total} color="fill-red"
-                label={`${pct(d.paid,d.total)}% pagado`} sublabel={ml?addMonths(ml):'—'} />
+                label={`${pct(d.paid,d.total)}% pagado`} sublabel={formatCivilDate(d.estimatedEndDate)} />
               <div className="flex justify-between mt-3 text-sm">
-                <span className="text-gray">Mensual: <strong>{fmt(d.monthly)}</strong></span>
-                {ml && <span className="text-gray">Libre: <strong>{addMonths(ml)}</strong></span>}
+                <span className="text-gray">Cuota mensual: <strong>{fmt(d.monthly)}</strong></span>
+                <span className="text-gray">Próximo pago: <strong>{formatCivilDate(d.nextPaymentDate)}</strong></span>
               </div>
             </div>
           );
@@ -1496,7 +1624,12 @@ const DebtTracker = ({state, setState, notify, run, app}) => {
             <div className="modal-title">{modal==='new'?'Nueva Deuda':'Editar Deuda'}</div>
             {fld('Nombre','name','text')}
             {fld('Monto total','total')}
-            {fld('Fecha de pago / vencimiento','dueDate','date')}
+            {fld('Cuota mensual','monthly')}
+            {fld('Día habitual de pago','paymentDay','day')}
+            <div className="form-group">
+              <label className="form-label">Término estimado</label>
+              <input className="form-input" value={formatCivilDate(formSchedule.estimatedEndDate)} readOnly />
+            </div>
             <div className="form-actions mt-4">
               <button className="btn btn-ghost" onClick={closeModal}>Cancelar</button>
               <button className="btn btn-primary" onClick={saveDebt}>Guardar</button>
@@ -1551,6 +1684,16 @@ const HistorialMensual = ({state,run,notify}) => {
     setEditOperation(editable);setInitialEditOperation(editable);
   };
   const activeOperations=(state.operations||[]).filter(item=>item.periodId===state.period?.id).slice().sort((a,b)=>b.operationDate.localeCompare(a.operationDate));
+  const operationContext=(operation)=>{
+    if(operation.type!=='balance_adjustment')return operation.details?.concept||operation.details?.categoryName||'';
+    const movement=(state.movements||[]).find(item=>item.operationId===operation.id);
+    const accounts=state._snapshot?.accounts||state.accounts||[];
+    const goals=state._snapshot?.savingsGoals||state.wallets||[];
+    const target=movement?.targetType==='account'
+      ? accounts.find(item=>item.id===movement.targetId)
+      : goals.find(item=>item.id===movement?.targetId);
+    return [target?.name,operation.details?.reason].filter(Boolean).join(' · ');
+  };
   const commandPrefix={salary_receipt:'salary-receipt',additional_income:'additional-income',variable_expense:'variable-expense',fixed_expense_payment:'fixed-expense-payment',debt_payment:'debt-payment',savings_deposit:'savings-deposit',savings_withdrawal:'savings-withdrawal',transfer:'transfer',balance_adjustment:'balance-adjustment'};
   const accountEditableTypes=['salary_receipt','additional_income','variable_expense','fixed_expense_payment','debt_payment'];
   const transferTargets=[
@@ -1586,11 +1729,20 @@ const HistorialMensual = ({state,run,notify}) => {
     {editOperation.type==='transfer'&&<>{[['Origen','source'],['Destino','destination']].map(([label,key])=><div className="form-group" key={key}><label className="form-label">{label}</label><select className="form-input form-select" value={editOperation[key]} onChange={e=>setEditOperation(current=>({...current,[key]:e.target.value}))}>{transferTargets.map(target=><option key={target.value} value={target.value}>{target.label}</option>)}</select></div>)}</>}
     <div className="form-actions"><button className="btn btn-ghost" onClick={closeOperationEdit}>Cancelar</button><button className="btn btn-primary" onClick={saveOperationEdit}>Guardar</button></div>
   </div></div>;
+  const operationStatus=(operation)=><span className={`badge ${operation.status==='voided'?'badge-gray':'badge-green'}`}>{operation.status==='voided'?'Anulada':'Vigente'}</span>;
+  const operationActions=(operation)=>operation.status==='posted'&&operation.type!=='debt_total_adjustment'?<>
+    <button className="btn btn-ghost btn-sm" onClick={()=>openOperationEdit(operation)}>Editar</button>
+    <button className="btn btn-danger btn-sm" onClick={()=>voidCurrent(operation)}>Anular</button>
+  </>:null;
   const CurrentOperations=()=> <div className="card mb-4">
     <div className="section-title mb-3">Operaciones del periodo activo</div>
-    {activeOperations.length===0?<div className="text-sm text-gray">Sin operaciones canónicas.</div>:<div className="table-wrap"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>Monto</th><th>Estado</th><th>Revisiones</th><th></th></tr></thead><tbody>
-      {activeOperations.map(operation=><tr key={operation.id}><td>{operation.operationDate}</td><td>{operation.type}</td><td>{fmt(operation.amount)}</td><td><span className={`badge ${operation.status==='voided'?'badge-gray':'badge-green'}`}>{operation.status}</span></td><td>{(state.operationRevisions||[]).filter(revision=>revision.operationId===operation.id).length}</td><td>{operation.status==='posted'&&operation.type!=='debt_total_adjustment'&&<><button className="btn btn-ghost btn-sm" onClick={()=>openOperationEdit(operation)}>Editar</button><button className="btn btn-danger btn-sm" onClick={()=>voidCurrent(operation)}>Anular</button></>}</td></tr>)}
+    {activeOperations.length===0?<div className="text-sm text-gray">Sin operaciones registradas.</div>:<ResponsiveDataView desktop={<div className="table-wrap"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>Monto</th><th>Estado</th><th></th></tr></thead><tbody>
+      {activeOperations.map(operation=><tr key={operation.id}><td>{operation.operationDate}</td><td><div>{PeritaApp.operationTypeLabel(operation.type)}</div>{operationContext(operation)&&<div className="text-xs text-gray">{operationContext(operation)}</div>}</td><td>{fmt(operation.amount)}</td><td>{operationStatus(operation)}</td><td><div className="flex gap-2">{operationActions(operation)}</div></td></tr>)}
     </tbody></table></div>}
+    mobile={<div className="mobile-record-list">{activeOperations.map(operation=><MobileRecordCard key={operation.id}
+      title={PeritaApp.operationTypeLabel(operation.type)} amount={fmt(operation.amount)} date={operation.operationDate}
+      details={[{label:'Detalle',value:operationContext(operation)}]} status={operationStatus(operation)} actions={operationActions(operation)}/>)}</div>}
+    />}
     {(state.legacyEntries||[]).length>0&&<div className="alert alert-error mt-3">{state.legacyEntries.length} entradas legadas de solo lectura. No generan movimientos canónicos.</div>}
   </div>;
 
@@ -1640,7 +1792,7 @@ const HistorialMensual = ({state,run,notify}) => {
         {(detail.expenses||[]).filter(e=>e.type==='income').length > 0 && (
           <div className="card mb-4">
             <div className="section-title mb-3">Ingresos</div>
-            <div className="table-wrap">
+            <div className="table-wrap table-compact">
               <table><thead><tr><th>Fecha</th><th>Descripción</th><th>Monto</th></tr></thead>
               <tbody>{(detail.expenses||[]).filter(e=>e.type==='income').map((e,i)=>(
                 <tr key={i}><td className="text-sm">{e.date}</td><td className="text-sm">{e.description||'—'}</td><td className="amount-positive">{fmt(e.amount)}</td></tr>
@@ -1652,7 +1804,7 @@ const HistorialMensual = ({state,run,notify}) => {
         {(detail.expenses||[]).filter(e=>e.type==='expense').length > 0 && (
           <div className="card mb-4">
             <div className="section-title mb-3">Gastos Variables</div>
-            <div className="table-wrap">
+            <div className="table-wrap table-compact">
               <table><thead><tr><th>Fecha</th><th>Nombre</th><th>Monto</th></tr></thead>
               <tbody>{(detail.expenses||[]).filter(e=>e.type==='expense').map((e,i)=>(
                 <tr key={i}><td className="text-sm">{e.date}</td><td className="text-sm">{e.description||'—'}</td><td className="amount-negative">{fmt(e.amount)}</td></tr>
@@ -1664,7 +1816,7 @@ const HistorialMensual = ({state,run,notify}) => {
         {(detail.gastosFijosPagados||[]).length > 0 && (
           <div className="card mb-4">
             <div className="section-title mb-3">Gastos Fijos Pagados</div>
-            <div className="table-wrap">
+            <div className="table-wrap table-compact">
               <table><thead><tr><th>Nombre</th><th>Monto</th><th>Fecha</th></tr></thead>
               <tbody>{(detail.gastosFijosPagados||[]).map((g,i)=>(
                 <tr key={i}><td className="text-sm">{g.name}</td><td className="amount-negative">{fmt(g.amount)}</td><td className="text-sm">{g.date}</td></tr>
@@ -1676,7 +1828,7 @@ const HistorialMensual = ({state,run,notify}) => {
         {(detail.pagosDeuda||[]).length > 0 && (
           <div className="card mb-4">
             <div className="section-title mb-3">Pagos de Deuda</div>
-            <div className="table-wrap">
+            <div className="table-wrap table-compact">
               <table><thead><tr><th>Deuda</th><th>Monto</th><th>Fecha</th></tr></thead>
               <tbody>{(detail.pagosDeuda||[]).map((p,i)=>(
                 <tr key={i}><td className="text-sm">{p.debtName}</td><td className="amount-negative">{fmt(p.amount)}</td><td className="text-sm">{p.date}</td></tr>
@@ -1688,7 +1840,7 @@ const HistorialMensual = ({state,run,notify}) => {
         {(detail.aportesAhorro||[]).length > 0 && (
           <div className="card mb-4">
             <div className="section-title mb-3">Aportes de Ahorro</div>
-            <div className="table-wrap">
+            <div className="table-wrap table-compact">
               <table><thead><tr><th>Meta</th><th>Monto</th><th>Fecha</th></tr></thead>
               <tbody>{(detail.aportesAhorro||[]).map((a,i)=>(
                 <tr key={i}><td className="text-sm">{a.walletName}</td><td className="amount-positive">{fmt(a.amount)}</td><td className="text-sm">{a.date}</td></tr>
@@ -1769,14 +1921,14 @@ const Settings = ({state, setState, notify, run, app}) => {
       saveBackupFile(backup,`perita-v1.1.0-${today()}.json`);
       setLastBackup(backup);
       notify('Respaldo generado. Verifica que el archivo se haya guardado.','success');
-    }catch(error){notify(`${error.code||'ERROR'}: ${error.message}`,'error');}
+    }catch(error){notify(presentError(error),'error');}
   };
   const restoreFile = async (file) => {
     if(!file) return;
     try{
       const value=JSON.parse(await file.text());
       const validation=await app.validateBackup(value);
-      if(validation.status!=='valid') throw new Error(validation.errors.map(item=>item.message).join(' · '));
+      if(validation.status!=='valid') throw validation.errors[0]||{code:'BACKUP_INVALID'};
       const preventiveBackup=await app.exportBackup();
       saveBackupFile(preventiveBackup,`perita-pre-restauracion-${today()}.json`);
       const ok=await ask({title:'Restaurar respaldo',message:'Se descargó el respaldo preventivo del estado actual. Confirma que quedó guardado antes de reemplazar por completo la base. No se mezclarán datos.',confirmLabel:'Respaldo guardado; restaurar',destructive:true});
@@ -1784,7 +1936,7 @@ const Settings = ({state, setState, notify, run, app}) => {
       const restored=await app.restoreBackup(value);
       setState(restored.state);
       notify('Respaldo restaurado e integridad verificada','success');
-    }catch(error){notify(`${error.code||'BACKUP_INVALID'}: ${error.message}`,'error');}
+    }catch(error){notify(presentError(error),'error');}
   };
   const erase = async () => {
     if(deleteConfirmation!=='ELIMINAR'){notify('Escribe ELIMINAR exactamente','warn');return;}
@@ -1792,7 +1944,7 @@ const Settings = ({state, setState, notify, run, app}) => {
     const ok=await ask({title:'Eliminación definitiva',message:'No existe papelera, recuperación local ni deshacer. Solo podrás recuperar importando el respaldo externo.',confirmLabel:'Eliminar definitivamente',destructive:true});
     if(!ok)return;
     try{await app.deleteAllData(lastBackup,deleteConfirmation);window.location.reload();}
-    catch(error){notify(`${error.code||'DELETE_FAILED'}: ${error.message}`,'error');}
+    catch(error){notify(presentError(error),'error');}
   };
 
   // ── Monthly close helpers ─────────────────────────────────────────────────
@@ -1830,7 +1982,7 @@ const Settings = ({state, setState, notify, run, app}) => {
             <div className="modal-title">Resumen del mes — {curMonth}</div>
             <div className="text-sm text-gray mb-4">Revisa el resumen antes de cerrar el mes.</div>
             {[
-              {label:'Sueldo configurado', value:monthSalary, color:'text-gray'},
+              {label:'Sueldo recibido', value:monthSalary, color:'text-gray'},
               {label:'Ingresos adicionales', value:monthAdditionalIncome, color:'amount-positive'},
               {label:'Ingresos totales',value:monthIngresos,  color:'amount-positive'},
               {label:'Gastos fijos',    value:monthFijos,     color:'amount-negative'},
@@ -2046,6 +2198,7 @@ const translateLegacyIntent = async (app, previous, next) => {
       accountId:addedOperation.account,operationDate:addedOperation.date,amount:addedOperation.amount,
       concept:addedOperation.description||null,observation:addedOperation.notes||null,
     });
+    if(addedOperation.type!=='expense') throw new Error('La acción solicitada no corresponde a un ingreso o gasto variable.');
     if(!addedOperation.account||!addedOperation.category) throw new Error('Selecciona cuenta y categoría para el gasto.');
     return app.execute('variable-expense.create',{
       accountId:addedOperation.account,categoryId:addedOperation.category,operationDate:addedOperation.date,
@@ -2054,7 +2207,9 @@ const translateLegacyIntent = async (app, previous, next) => {
   }
   const removedOperation=(previous.expenses||[]).find(item=>!(next.expenses||[]).some(current=>current.id===item.id));
   if(removedOperation){
-    const prefix=removedOperation.operationType==='additional_income'?'additional-income':'variable-expense';
+    const prefix=removedOperation.operationType==='additional_income'?'additional-income':
+      removedOperation.operationType==='variable_expense'?'variable-expense':null;
+    if(!prefix) throw new Error('La acción solicitada no corresponde a un ingreso o gasto variable.');
     const payload={operationId:removedOperation.id,accountId:removedOperation.account,reason:'Anulada desde la interfaz'};
     if(prefix==='variable-expense') payload.categoryId=removedOperation.categoryId||previous.varCategories.find(c=>c.name===removedOperation.category)?.id;
     return app.execute(`${prefix}.void`,payload);
@@ -2062,7 +2217,9 @@ const translateLegacyIntent = async (app, previous, next) => {
   const changedOperation=findChanged(previous.expenses,next.expenses);
   if(changedOperation){
     const current=next.expenses.find(item=>item.id===changedOperation.id);
-    const prefix=changedOperation.operationType==='additional_income'?'additional-income':'variable-expense';
+    const prefix=changedOperation.operationType==='additional_income'?'additional-income':
+      changedOperation.operationType==='variable_expense'?'variable-expense':null;
+    if(!prefix) throw new Error('La acción solicitada no corresponde a un ingreso o gasto variable.');
     const payload={operationId:current.id,accountId:current.account,operationDate:current.date,amount:current.amount,
       concept:current.description||null,observation:current.notes||null};
     if(prefix==='variable-expense') payload.categoryId=current.category||changedOperation.categoryId;
@@ -2070,11 +2227,10 @@ const translateLegacyIntent = async (app, previous, next) => {
   }
 
   const addedDebt=(next.debts||[]).find(item=>!(previous.debts||[]).some(old=>old.id===item.id));
-  if(addedDebt) return app.execute('debt.create',{debt:{
-    id:recordId(),name:addedDebt.name,totalAmount:addedDebt.total,openingOutstanding:addedDebt.total,
-    outstandingAmount:addedDebt.total,dueDate:addedDebt.dueDate,lifecycleStatus:'active',
-    paymentStatus:addedDebt.dueDate<today()?'overdue':'active',revision:1,createdAt:timestamp,updatedAt:timestamp,
-  }});
+  if(addedDebt) return app.createDebt({
+    name:addedDebt.name,totalAmount:addedDebt.total,monthlyPaymentAmount:addedDebt.monthly,
+    paymentDay:Number(addedDebt.paymentDay),timestamp,
+  });
   const changedDebt=findChanged(previous.debts,next.debts);
   if(changedDebt){
     const current=next.debts.find(item=>item.id===changedDebt.id);
@@ -2085,9 +2241,11 @@ const translateLegacyIntent = async (app, previous, next) => {
         amount:current.paid-changedDebt.paid,concept:null,observation:null});
     }
     const totalChanged=current.total!==changedDebt.total;
-    const detailsChanged=current.name!==changedDebt.name||current.dueDate!==changedDebt.dueDate;
+    const detailsChanged=current.name!==changedDebt.name||current.monthly!==changedDebt.monthly||
+      current.paymentDay!==changedDebt.paymentDay;
     if(totalChanged||detailsChanged) return app.updateDebtDetailsAndTotal({debtId:current.id,
-      name:current.name,dueDate:current.dueDate,totalAmount:current.total,operationDate:today()});
+      name:current.name,monthlyPaymentAmount:current.monthly,paymentDay:Number(current.paymentDay),
+      totalAmount:current.total,operationDate:today()});
     throw new Error('La edición no contiene cambios financieros válidos.');
   }
   throw new Error('La acción solicitada no corresponde a un comando V1.1.0 disponible.');
@@ -2167,7 +2325,7 @@ const SetupScreen = ({app,onComplete,notify}) => {
       });
       if(account.openingBalance<0)notify('Advertencia registrada: la cuenta inicial comienza con saldo negativo','warn');
       await onComplete(result.state);
-    }catch(error){notify(`${error.code||'SETUP_FAILED'}: ${error.message}`,'error');}
+    }catch(error){notify(presentError(error),'error');}
     finally{setBusy(false);}
   };
   return <StartupCard title="Configurar Perita V1.1.0">
@@ -2187,11 +2345,11 @@ const SetupScreen = ({app,onComplete,notify}) => {
 const MigrationScreen = ({app,boot,onComplete,notify}) => {
   const [busy,setBusy]=useState(false);
   const dryRun=boot.dryRun;
-  const migrate=async()=>{setBusy(true);try{const result=await app.confirmMigration(dryRun);await onComplete(result.state);}catch(error){notify(`${error.code||'MIGRATION_FAILED'}: ${error.message}`,'error');}finally{setBusy(false);}};
+  const migrate=async()=>{setBusy(true);try{const result=await app.confirmMigration(dryRun);await onComplete(result.state);}catch(error){notify(presentError(error),'error');}finally{setBusy(false);}};
   return <StartupCard title="Migración V1 → V1.1.0">
     <p className="text-sm text-gray">Clasificación: <strong>{dryRun.classification}</strong></p>
     <p className="text-sm text-gray">Advertencias: {dryRun.warnings?.length||0} · Bloqueos: {dryRun.blockers?.length||0}</p>
-    {(dryRun.blockers||[]).map((item,index)=><div key={index} className="alert alert-error mt-2">{item.code}: {item.message}</div>)}
+    {(dryRun.blockers||[]).map((item,index)=><div key={index} className="alert alert-error mt-2">{presentError(item)}</div>)}
     <p className="text-xs text-gray mt-4">La fuente localStorage["perita_v1"] se conservará intacta. No se crearán movimientos pre-cutover.</p>
     <button className="btn btn-primary w-full mt-4" disabled={busy||dryRun.classification==='blocked'} onClick={migrate}>{busy?'Migrando…':'Confirmar migración'}</button>
   </StartupCard>;
@@ -2210,6 +2368,7 @@ const App = () => {
   const [updateWaiting, setUpdateWaiting] = useState(null); // holds waiting SW
   const [recovering, setRecovering] = useState(false);
   const lifecycleRef=useRef(null);
+  const swUpdatesRef=useRef(null);
   let notifId = useRef(0);
 
   const notify = useCallback((msg, type='info') => {
@@ -2242,6 +2401,7 @@ const App = () => {
       onRecovering:({reason})=>{if(active&&reason!=='initial')setRecovering(true);},
       onResult:initialized=>{
         if(!active)return;
+        swUpdatesRef.current?.check();
         setBoot(initialized);
         if(initialized.state)setStateRaw(initialized.state);
         if(initialized.writer)app.startHeartbeat(handleLeaseLost);
@@ -2265,33 +2425,16 @@ const App = () => {
   // Service worker update detection
   useEffect(() => {
     if(!('serviceWorker' in navigator)) return;
-    const hadController = Boolean(navigator.serviceWorker.controller);
     try {
-      navigator.serviceWorker.ready.then(reg => {
-        if(reg.waiting) setUpdateWaiting(reg.waiting);
-        reg.addEventListener('updatefound', () => {
-          const newWorker = reg.installing;
-          if(!newWorker) return;
-          newWorker.addEventListener('statechange', () => {
-            if(newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-              setUpdateWaiting(newWorker);
-            }
-          });
-        });
-      }).catch(()=>{});
+      const updates=PeritaApp.createServiceWorkerUpdateController({
+        serviceWorker:navigator.serviceWorker,
+        onWaiting:setUpdateWaiting,
+        reload:()=>window.location.reload(),
+      });
+      swUpdatesRef.current=updates;
+      updates.start().catch(()=>{});
+      return()=>{swUpdatesRef.current=null;updates.stop();};
     } catch(_) {}
-    let refreshing = false;
-    const handleControllerChange = () => {
-      if(!hadController || refreshing) return;
-      refreshing = true;
-      window.location.reload();
-    };
-    try {
-      navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
-    } catch(_) {}
-    return () => {
-      try { navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange); } catch(_) {}
-    };
   }, []);
 
   const run=useCallback(async(command,payload,success)=>{
@@ -2316,11 +2459,11 @@ const App = () => {
     try {
       const totalBudget = state.budget.reduce((a,b)=>a+b.amount,0);
       const monthlySavings = state.wallets.reduce((a,w)=>a+w.monthly,0);
-      if(totalBudget + monthlySavings > state.settings.salary){
+      if(state.settings.salary>0 && totalBudget + monthlySavings > state.settings.salary){
         const key = 'budget_warned_'+new Date().toDateString();
         if(!sessionStorage.getItem(key)){
           sessionStorage.setItem(key,'1');
-          setTimeout(()=>notify('⚠️ Presupuesto + ahorros superan el sueldo','warn'),1500);
+          setTimeout(()=>notify('⚠️ Presupuesto + ahorros superan la referencia configurada','warn'),1500);
         }
       }
       state.wallets.forEach(w=>{
@@ -2340,14 +2483,21 @@ const App = () => {
   const monthLabel = now.toLocaleDateString('es-CL',{month:'long',year:'numeric'});
 
   const pageProps = {state, setState, notify, run, app};
+  const runtimeBannerMessage = ['ready_read_only','read_only'].includes(boot.phase)
+    ? 'Otra ventana de Perita está realizando cambios. Puedes esperar o intentar tomar el control.'
+    : boot.phase==='diagnostic'
+      ? 'Perita necesita una revisión de integridad antes de permitir nuevos cambios.'
+      : boot.phase==='restricted'
+        ? 'Algunas acciones están temporalmente restringidas. Revisa la integridad antes de continuar.'
+        : 'Perita detectó advertencias de integridad. Revisa el estado antes de continuar.';
 
   useEffect(()=>{
     window.scrollTo({top:0,left:0,behavior:'auto'});
   },[page]);
 
-  if(boot.phase==='loading') return <StartupCard title="Abriendo Perita V1.1.0"><p className="text-sm text-gray">Leyendo IndexedDB y verificando el runtime…</p></StartupCard>;
+  if(boot.phase==='loading') return <StartupCard title="Reconectando Perita…"><p className="text-sm text-gray">Leyendo IndexedDB y verificando el runtime…</p></StartupCard>;
   if(boot.phase==='error') return <StartupCard title="No se pudo abrir Perita">
-    <div className="alert alert-error">{boot.error?.code}: {boot.error?.message}</div>
+    <div className="alert alert-error">{presentError(boot.error)}</div>
     <p className="text-sm text-gray mt-3">La instancia quedó detenida de forma segura. Reintenta la conexión sin cerrar Perita.</p>
     <button className="btn btn-primary w-full mt-4" disabled={recovering} onClick={()=>lifecycleRef.current?.resume('manual-retry')}>{recovering?'Reconectando…':'Reintentar conexión'}</button>
   </StartupCard>;
@@ -2360,8 +2510,8 @@ const App = () => {
       {recovering&&<RecoveryOverlay/>}
 
       {['ready_read_only','read_only','diagnostic','warning','restricted'].includes(boot.phase) && <div className={`runtime-banner alert ${['warning','restricted'].includes(boot.phase)?'alert-warn':'alert-error'}`}>
-        <strong>{boot.phase==='diagnostic'?'Modo diagnóstico':boot.phase==='warning'?'Integridad con advertencias':boot.phase==='restricted'?'Integridad restringida':'Modo solo lectura'}</strong> · {boot.report?.summary||boot.error?.message||'La escritura no está habilitada para esta pestaña.'}
-        {['ready_read_only','read_only'].includes(boot.phase)&&<button className="btn btn-ghost btn-sm runtime-banner-action" onClick={async()=>{try{const result=await app.takeOverWriter();setStateRaw(result.state);setBoot({phase:result.report.status==='diagnostic_only'?'diagnostic':result.report.status,state:result.state,report:result.report,writer:true});app.startHeartbeat();notify('Esta pestaña ahora controla la escritura','success');}catch(error){notify(`${error.code||'WRITER_BUSY'}: ${error.message}`,'warn');}}}>Intentar tomar control</button>}
+        <strong>{boot.phase==='diagnostic'?'Modo diagnóstico':boot.phase==='warning'?'Integridad con advertencias':boot.phase==='restricted'?'Integridad restringida':'Modo solo lectura'}</strong> · {runtimeBannerMessage}
+        {['ready_read_only','read_only'].includes(boot.phase)&&<button className="btn btn-ghost btn-sm runtime-banner-action" onClick={async()=>{try{const result=await app.takeOverWriter();setStateRaw(result.state);setBoot({phase:result.report.status==='diagnostic_only'?'diagnostic':result.report.status,state:result.state,report:result.report,writer:true});app.startHeartbeat();notify('Esta pestaña ahora controla la escritura','success');}catch(error){notify(presentError(error),'warn');}}}>Intentar tomar control</button>}
       </div>}
 
       {/* Update available modal */}
@@ -2448,7 +2598,7 @@ const App = () => {
             <div className="page-sub">{sub}</div>
           </div>
           <div className="flex items-center gap-2">
-            <span className="badge badge-green">{fmt(state.settings.salary)} / mes</span>
+            {state.settings.salary>0 && <span className="badge badge-green">Referencia: {fmt(state.settings.salary)}</span>}
           </div>
         </div>
         <div className="content">

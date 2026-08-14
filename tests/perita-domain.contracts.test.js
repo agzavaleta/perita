@@ -85,6 +85,7 @@ function validGoal(overrides) {
   return {
     id: id(4),
     name: 'Emergencias',
+    bank: null,
     targetAmount: 1000000,
     openingBalance: 0,
     currentBalance: 0,
@@ -107,6 +108,8 @@ function validDebt(overrides) {
     openingOutstanding: 500000,
     outstandingAmount: 500000,
     dueDate: '2026-09-30',
+    monthlyPaymentAmount: 100000,
+    paymentDay: 31,
     lifecycleStatus: 'active',
     paymentStatus: 'active',
     revision: 1,
@@ -308,6 +311,50 @@ test('V1.1.0 valid domain records', async (t) => {
 });
 
 test('V1.1.0 required fields, scalar contracts, and enums', async (t) => {
+  await t.test('SavingsGoal accepts a location and normalizes its absence for existing records', () => {
+    assert.equal(Domain.validateSavingsGoal(validGoal({ bank: 'BancoEstado' })).bank, 'BancoEstado');
+    const legacyGoal = validGoal();
+    delete legacyGoal.bank;
+    assert.equal(Domain.validateSavingsGoal(legacyGoal).bank, null);
+  });
+
+  await t.test('Debt normalizes the new schedule fields for existing records', () => {
+    const legacyDebt = validDebt();
+    delete legacyDebt.monthlyPaymentAmount;
+    delete legacyDebt.paymentDay;
+    const normalized = Domain.validateDebt(legacyDebt);
+    assert.equal(normalized.monthlyPaymentAmount, null);
+    assert.equal(normalized.paymentDay, null);
+    assert.equal(normalized.outstandingAmount, legacyDebt.outstandingAmount);
+  });
+
+  await t.test('Debt schedule derives clamped dates and a partial final installment', () => {
+    const schedule = Domain.deriveDebtSchedule({
+      outstandingAmount: 250000,
+      monthlyPaymentAmount: 100000,
+      paymentDay: 31,
+    }, '2027-02-10');
+    assert.deepEqual(schedule, {
+      remainingInstallments: 3,
+      nextPaymentDate: '2027-02-28',
+      estimatedEndDate: '2027-04-30',
+    });
+    assert.deepEqual(Domain.deriveDebtSchedule({
+      outstandingAmount: 0,
+      monthlyPaymentAmount: 100000,
+      paymentDay: 31,
+    }, '2027-02-10'), {
+      remainingInstallments: 0,
+      nextPaymentDate: null,
+      estimatedEndDate: null,
+    });
+    assert.equal(Domain.deriveDebtSchedule({
+      outstandingAmount: 100000,
+      monthlyPaymentAmount: 100000,
+      paymentDay: 15,
+    }, '2027-02-16').nextPaymentDate, '2027-03-15');
+  });
+
   await t.test('Period ignores retired monthly-planning fields from existing V1.1.0 data', () => {
     const result = Domain.validatePeriod(validPeriod({
       variableExpenseBudgetAmount: 123456,

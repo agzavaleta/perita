@@ -218,14 +218,108 @@
     });
   }
 
+  const OPERATION_TYPE_LABELS = Object.freeze({
+    balance_adjustment: 'Ajuste de saldo',
+    salary_receipt: 'Sueldo recibido',
+    additional_income: 'Ingreso adicional',
+    variable_expense: 'Gasto variable',
+    fixed_expense_payment: 'Pago de gasto fijo',
+    debt_payment: 'Pago de deuda',
+    debt_total_adjustment: 'Ajuste de deuda',
+    savings_deposit: 'Aporte a ahorro',
+    savings_withdrawal: 'Retiro de ahorro',
+    transfer: 'Transferencia',
+  });
+
+  function operationTypeLabel(type) {
+    return OPERATION_TYPE_LABELS[type] || 'Movimiento';
+  }
+
+  const DOMAIN_FIELD_LABELS = Object.freeze({
+    accountId: 'la cuenta',
+    amount: 'el monto',
+    categoryId: 'la categoría',
+    monthlyPaymentAmount: 'la cuota mensual',
+    name: 'el nombre',
+    operationDate: 'la fecha',
+    paymentDay: 'el día habitual de pago',
+    periodId: 'el periodo',
+    totalAmount: 'el monto total',
+  });
+
+  function domainFieldLabel(field) {
+    const name = typeof field === 'string' ? field.split('.').pop() : '';
+    return DOMAIN_FIELD_LABELS[name] || 'los datos ingresados';
+  }
+
+  function userErrorMessage(error) {
+    const view = errorView(error);
+    const code = view.code;
+    const message = view.message || '';
+    const field = view.context && view.context.field;
+
+    if (code === 'ACCOUNT_BALANCE_ADJUSTMENT_FAILED') {
+      return 'La cuenta se creó con saldo $0, pero no pudimos incorporar el saldo indicado. Abre la cuenta, revisa el monto e intenta guardarlo nuevamente.';
+    }
+    if (code === 'SAVINGS_GOAL_BALANCE_ADJUSTMENT_FAILED') {
+      return 'El ahorro se creó con saldo $0, pero no pudimos incorporar el saldo indicado. Abre el ahorro, revisa el monto e intenta guardarlo nuevamente.';
+    }
+    if (['WRITER_ALREADY_OWNED', 'WRITER_LEASE_EXPIRED', 'WRITER_EPOCH_LOST', 'WRITER_BUSY'].includes(code)) {
+      return 'Otra ventana de Perita está realizando cambios. Espera unos segundos o intenta tomar el control nuevamente.';
+    }
+    if (['BACKUP_INVALID', 'BACKUP_HASH_MISMATCH', 'DELETE_BACKUP_INVALID'].includes(code)) {
+      return 'El respaldo no se puede usar porque está incompleto o dañado. Selecciona un respaldo completo y vuelve a intentarlo.';
+    }
+    if (code === 'BACKUP_INCOMPATIBLE') {
+      return 'El respaldo pertenece a una versión incompatible. Selecciona un respaldo de Perita V1.1.0.';
+    }
+    if (code === 'RESTORE_FAILED') {
+      return 'No pudimos restaurar el respaldo. Tus datos actuales no cambiaron; revisa el archivo e intenta nuevamente.';
+    }
+    if (code === 'DELETE_BACKUP_REQUIRED') {
+      return 'Antes de eliminar los datos debes generar y guardar un respaldo completo.';
+    }
+    if (code === 'DELETE_CONFIRMATION_INVALID') {
+      return 'La confirmación no coincide. Escribe ELIMINAR exactamente y vuelve a intentarlo.';
+    }
+    if (code === 'DELETE_FAILED') {
+      return 'No pudimos eliminar los datos. Cierra otras ventanas de Perita e intenta nuevamente.';
+    }
+    if (/insufficient|saldo.+no alcanza|cannot leave.+negative|would leave.+negative/i.test(message)) {
+      return 'El saldo disponible no alcanza para completar la acción. Revisa el monto o elige otra cuenta o ahorro.';
+    }
+    if (/balance must be zero before deactivation/i.test(message)) {
+      return 'Para desactivar esta cuenta, primero deja su saldo en $0 y vuelve a intentarlo.';
+    }
+    if (/balance must be zero before closing/i.test(message)) {
+      return 'Para cerrar este ahorro, primero deja su saldo en $0 y vuelve a intentarlo.';
+    }
+    if (/must exist and be active|only an active|inactive/i.test(message)) {
+      return 'La cuenta o entidad seleccionada está inactiva. Elige una opción activa e intenta nuevamente.';
+    }
+    if (code === 'INVALID_DOMAIN_FIELD') {
+      return `Revisa ${domainFieldLabel(field)}: el valor ingresado no es válido. Corrígelo e intenta nuevamente.`;
+    }
+    if (code === 'DOMAIN_STATE_INVALID') {
+      return 'La acción no es válida para el estado actual. Revisa los datos y vuelve a intentarlo.';
+    }
+    if (code.startsWith('MIGRATION_')) {
+      return 'No pudimos preparar la migración con los datos anteriores. Revisa la información disponible e intenta nuevamente.';
+    }
+    return 'No pudimos completar la acción. Intenta nuevamente.';
+  }
+
   function operationToLegacy(operation) {
     const details = operation.details || {};
+    const presentationType = ['salary_receipt', 'additional_income'].includes(operation.type)
+      ? 'income'
+      : operation.type === 'variable_expense' ? 'expense' : 'movement';
     return {
       id: operation.id,
       date: operation.operationDate,
-      description: details.concept || details.categoryName || operation.type,
+      description: details.concept || details.categoryName || operationTypeLabel(operation.type),
       amount: operation.amount,
-      type: ['salary_receipt', 'additional_income'].includes(operation.type) ? 'income' : 'expense',
+      type: presentationType,
       account: details.accountId || '',
       category: details.categoryId || '',
       categoryName: details.categoryName || '',
@@ -237,7 +331,7 @@
     };
   }
 
-  function snapshotToView(snapshot) {
+  function snapshotToView(snapshot, currentCivilDate) {
     const runtime = snapshot.system.find((record) => record.key === 'runtime');
     const settings = snapshot.financialSettings.find((record) => record.key === 'current') || null;
     const storedActivePeriod = runtime && runtime.activePeriodId
@@ -264,17 +358,27 @@
       type: 'bank', bank: account.bank || '', status: account.status, revision: account.revision,
     }));
     const wallets = snapshot.savingsGoals.map((goal) => ({
-      id: goal.id, emoji: '💰', name: goal.name, bank: '', balance: goal.currentBalance,
+      id: goal.id, emoji: '💰', name: goal.name, bank: goal.bank || '', balance: goal.currentBalance,
       monthly: goal.plannedMonthlyAmount, goal: goal.targetAmount,
       status: goal.lifecycleStatus, progressStatus: goal.progressStatus, revision: goal.revision,
     }));
-    const debts = snapshot.debts.map((debt) => ({
-      id: debt.id, name: debt.name, total: debt.totalAmount,
-      paid: debt.totalAmount - debt.outstandingAmount, due: debt.dueDate, dueDate: debt.dueDate,
-      monthly: 0,
-      status: debt.paymentStatus === 'paid' ? 'pagada' : debt.paymentStatus,
-      lifecycleStatus: debt.lifecycleStatus, revision: debt.revision,
-    }));
+    const debts = snapshot.debts.map((storedDebt) => {
+      const debt = Domain.validateDebt(storedDebt);
+      const schedule = currentCivilDate
+        ? Domain.deriveDebtSchedule(debt, currentCivilDate)
+        : { remainingInstallments: null, nextPaymentDate: null, estimatedEndDate: null };
+      return {
+        id: debt.id, name: debt.name, total: debt.totalAmount,
+        paid: debt.totalAmount - debt.outstandingAmount,
+        monthly: debt.monthlyPaymentAmount || 0,
+        paymentDay: debt.paymentDay,
+        nextPaymentDate: schedule.nextPaymentDate,
+        estimatedEndDate: schedule.estimatedEndDate,
+        remainingInstallments: schedule.remainingInstallments,
+        status: debt.paymentStatus === 'paid' ? 'pagada' : debt.paymentStatus,
+        lifecycleStatus: debt.lifecycleStatus, revision: debt.revision,
+      };
+    });
     const budget = snapshot.fixedExpenseTemplates
       .filter((template) => template.status === 'active')
       .map((template) => ({
@@ -442,6 +546,66 @@
     });
   }
 
+  function createServiceWorkerUpdateController(options) {
+    const settings = options || {};
+    const serviceWorker = settings.serviceWorker;
+    const onWaiting = settings.onWaiting;
+    const reload = settings.reload;
+    if (!serviceWorker || !serviceWorker.ready || typeof serviceWorker.addEventListener !== 'function') {
+      throw new TypeError('createServiceWorkerUpdateController requires a service worker container');
+    }
+    let active = false;
+    let refreshing = false;
+    const hadController = Boolean(serviceWorker.controller);
+    let registration = null;
+    let boundRegistration = null;
+
+    const detectWaiting = (worker) => {
+      if (active && worker && typeof onWaiting === 'function') onWaiting(worker);
+    };
+    const bindInstalling = (worker) => {
+      if (!worker || typeof worker.addEventListener !== 'function') return;
+      worker.addEventListener('statechange', () => {
+        if (worker.state === 'installed' && serviceWorker.controller) detectWaiting(worker);
+      });
+    };
+    const bindRegistration = (value) => {
+      registration = value;
+      if (boundRegistration === value) return;
+      boundRegistration = value;
+      value.addEventListener('updatefound', () => bindInstalling(value.installing));
+    };
+    const handleControllerChange = () => {
+      if (refreshing || !hadController) return;
+      refreshing = true;
+      if (typeof reload === 'function') reload();
+    };
+    async function check() {
+      if (!active) return null;
+      const value = registration || await serviceWorker.ready;
+      if (!active) return null;
+      bindRegistration(value);
+      detectWaiting(value.waiting);
+      if (typeof value.update === 'function') {
+        try { await value.update(); } catch (_) {}
+      }
+      detectWaiting(value.waiting);
+      return value;
+    }
+    function start() {
+      if (active) return check();
+      active = true;
+      serviceWorker.addEventListener('controllerchange', handleControllerChange);
+      return check();
+    }
+    function stop() {
+      if (!active) return;
+      active = false;
+      serviceWorker.removeEventListener('controllerchange', handleControllerChange);
+    }
+    return Object.freeze({ start, stop, check });
+  }
+
   function createPeritaApplication(options) {
     const settings = options || {};
     const indexedDB = settings.indexedDB || (typeof globalThis !== 'undefined' && globalThis.indexedDB);
@@ -493,6 +657,8 @@
       (typeof setInterval === 'function' ? setInterval : null);
     const cancelInterval = settings.clearInterval ||
       (typeof clearInterval === 'function' ? clearInterval : null);
+    const scheduleTimeout = settings.setTimeout ||
+      (typeof setTimeout === 'function' ? setTimeout : null);
     let channel = hasInjectedChannel ? settings.channel : channelFactory();
     let writerEpoch = null;
     let ownedWriterEpoch = null;
@@ -546,7 +712,7 @@
 
     async function refresh() {
       const snapshot = await readSnapshot();
-      lastState = snapshotToView(snapshot);
+      lastState = snapshotToView(snapshot, civilDate(new Date(now())));
       if (stateListener) {
         if (stateDeliveryPauseDepth > 0) pendingStateDelivery = lastState;
         else stateListener(lastState);
@@ -579,6 +745,22 @@
       writerEpoch = writer.epoch;
       ownedWriterEpoch = writer.epoch;
       return writer;
+    }
+
+    async function acquireWriterAfterCurrentLease() {
+      try {
+        return await acquireWriter();
+      } catch (error) {
+        if (!error || error.code !== 'WRITER_ALREADY_OWNED' || typeof scheduleTimeout !== 'function') {
+          throw error;
+        }
+        const expiresAt = error.context && error.context.expiresAt;
+        const remaining = Date.parse(expiresAt) - Date.parse(now());
+        if (!Number.isFinite(remaining)) throw error;
+        await new Promise((resolve) => scheduleTimeout(resolve, Math.max(0, remaining + 1)));
+        if (suspended || closed) throw error;
+        return acquireWriter();
+      }
     }
 
     async function ensureIntegrityAndWriting() {
@@ -647,7 +829,7 @@
         if (!runtimeState) throw new Error('El runtime V1.1.0 no existe.');
         if (runtimeState.setupStatus === 'not_started') {
           try {
-            await acquireWriter();
+            await acquireWriterAfterCurrentLease();
           } catch (error) {
             writerEpoch = null;
             ownedWriterEpoch = null;
@@ -668,7 +850,7 @@
           return immutable({ phase: 'setup_required', state: await refresh(), writer: true, writerEpoch });
         }
         try {
-          await acquireWriter();
+          await acquireWriterAfterCurrentLease();
         } catch (error) {
           writerEpoch = null;
           ownedWriterEpoch = null;
@@ -730,7 +912,9 @@
         request.expectedSettingsRevision = state.financialSettings.revision;
       }
       if (commandName === 'period.update-planning') request.expectedPeriodRevision = state.period.revision;
-      if (commandName === 'debt.update-name-and-due-date') request.currentCivilDate = civilDate(new Date(now()));
+      if (['debt.create', 'debt.update-name-and-due-date'].includes(commandName)) {
+        request.currentCivilDate = civilDate(new Date(now()));
+      }
       if (request.operationId !== undefined) {
         const operation = state._snapshot.operations.find((item) => item.id === request.operationId);
         const details = operation && operation.details ? operation.details : {};
@@ -910,6 +1094,7 @@
           goal: {
             id: goalId,
             name: request.name,
+            bank: request.bank === undefined ? null : request.bank,
             targetAmount: request.targetAmount,
             openingBalance: 0,
             currentBalance: 0,
@@ -997,6 +1182,41 @@
       }
     }
 
+    async function createDebt(input) {
+      const request = input || {};
+      const totalAmount = Contracts.assertPositiveMoney(request.totalAmount, { field: 'totalAmount' });
+      const monthlyPaymentAmount = Contracts.assertPositiveMoney(request.monthlyPaymentAmount, {
+        field: 'monthlyPaymentAmount',
+      });
+      if (!Number.isSafeInteger(request.paymentDay) || request.paymentDay < 1 || request.paymentDay > 31) {
+        throw new Contracts.PeritaError(
+          Contracts.ERROR_CODES.INVALID_DOMAIN_FIELD,
+          'El día habitual de pago debe estar entre 1 y 31.',
+          { field: 'paymentDay', value: request.paymentDay }
+        );
+      }
+      const timestamp = request.timestamp || now();
+      const debtId = request.debtId || createUuid();
+      const completed = await execute('debt.create', {
+        debt: {
+          id: debtId,
+          name: request.name,
+          totalAmount,
+          openingOutstanding: totalAmount,
+          outstandingAmount: totalAmount,
+          dueDate: null,
+          monthlyPaymentAmount,
+          paymentDay: request.paymentDay,
+          lifecycleStatus: 'active',
+          paymentStatus: 'active',
+          revision: 1,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+      });
+      return immutable({ debtId, created: completed.result, state: completed.state });
+    }
+
     async function updateSavingsGoalWithBalance(input) {
       const request = input || {};
       const state = lastState || await refresh();
@@ -1007,6 +1227,10 @@
       });
       const changes = {};
       if (request.name !== goal.name) changes.name = request.name;
+      if (Object.prototype.hasOwnProperty.call(request, 'bank')) {
+        const bank = request.bank || null;
+        if (bank !== goal.bank) changes.bank = bank;
+      }
       if (request.targetAmount !== goal.targetAmount) changes.targetAmount = request.targetAmount;
       if (request.plannedMonthlyAmount !== goal.plannedMonthlyAmount) {
         changes.plannedMonthlyAmount = request.plannedMonthlyAmount;
@@ -1043,7 +1267,9 @@
       const state = lastState || await refresh();
       const debt = state._snapshot.debts.find((item) => item.id === request.debtId);
       if (!debt) throw new Error('La deuda solicitada no existe.');
-      const detailsChanged = request.name !== debt.name || request.dueDate !== debt.dueDate;
+      const detailsChanged = request.name !== debt.name ||
+        request.monthlyPaymentAmount !== debt.monthlyPaymentAmount ||
+        request.paymentDay !== debt.paymentDay;
       const totalChanged = request.totalAmount !== debt.totalAmount;
       let completed = null;
       stateDeliveryPauseDepth += 1;
@@ -1051,7 +1277,11 @@
         if (detailsChanged) {
           completed = await execute('debt.update-name-and-due-date', {
             debtId: debt.id,
-            changes: { name: request.name, dueDate: request.dueDate },
+            changes: {
+              name: request.name,
+              monthlyPaymentAmount: request.monthlyPaymentAmount,
+              paymentDay: request.paymentDay,
+            },
           });
         }
         if (totalChanged) {
@@ -1176,6 +1406,7 @@
       execute,
       createAccountWithBalance,
       createSavingsGoalWithBalance,
+      createDebt,
       updateAccountWithBalance,
       updateSavingsGoalWithBalance,
       updateDebtDetailsAndTotal,
@@ -1207,13 +1438,17 @@
     HEARTBEAT_INTERVAL_MS,
     READ_STORES,
     COMMANDS,
+    OPERATION_TYPE_LABELS,
     civilDate,
     browserSha256,
     errorView,
+    userErrorMessage,
+    operationTypeLabel,
     navigationType,
     sessionTabId,
     snapshotToView,
     createLifecycleController,
+    createServiceWorkerUpdateController,
     createPeritaApplication,
   });
 });

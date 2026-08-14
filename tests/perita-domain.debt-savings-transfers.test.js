@@ -109,6 +109,8 @@ function debt(overrides) {
     openingOutstanding: 100000,
     outstandingAmount: 100000,
     dueDate: '2026-08-01',
+    monthlyPaymentAmount: 25000,
+    paymentDay: 31,
     lifecycleStatus: 'active',
     paymentStatus: 'overdue',
     revision: 1,
