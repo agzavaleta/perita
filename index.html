@@ -548,7 +548,7 @@ const ProgressBar = ({value,max,color='fill-green',label,sublabel}) => {
 // collection has data but the active filters matched nothing — this shows the
 // standard "no results" copy instead of the screen's "you have nothing yet" copy.
 const emptyStateProps = (hasRecords, icon, props) => hasRecords
-  ? { icon, title: 'Sin resultados', description: 'No se encontraron elementos que coincidan con los filtros aplicados.' }
+  ? { icon, title: 'Sin resultados.', description: 'No se encontraron elementos que coincidan con los filtros aplicados.' }
   : { icon, ...props };
 
 const EmptyState = ({icon, title, description, actionLabel, onAction}) => (
@@ -727,7 +727,7 @@ const Dashboard = ({state, notify}) => {
         <div className="modal-backdrop" onClick={()=>setShowAccBreakdown(false)} style={{zIndex:300}}>
           <div className="modal" style={{maxWidth:400}} onClick={e=>e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
-              <div className="modal-title" style={{margin:0}}>Desglose — Disponible</div>
+              <div className="modal-title" style={{margin:0}}>Desglose — disponible</div>
               <button onClick={()=>setShowAccBreakdown(false)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--gray-400)',fontSize:18}}>×</button>
             </div>
             {accs.map(a=>(
@@ -753,7 +753,7 @@ const Dashboard = ({state, notify}) => {
         <div className="modal-backdrop" onClick={()=>setShowSavBreakdown(false)} style={{zIndex:300}}>
           <div className="modal" style={{maxWidth:400}} onClick={e=>e.stopPropagation()}>
             <div className="flex justify-between items-center mb-4">
-              <div className="modal-title" style={{margin:0}}>Desglose — Ahorros</div>
+              <div className="modal-title" style={{margin:0}}>Desglose — ahorros</div>
               <button onClick={()=>setShowSavBreakdown(false)} style={{background:'none',border:'none',cursor:'pointer',color:'var(--gray-400)',fontSize:18}}>×</button>
             </div>
             {wallets.map(w=>(
@@ -779,7 +779,7 @@ const Dashboard = ({state, notify}) => {
 
       {/* Hero row — Available + Savings + Net Worth */}
       <div className="grid-2 mb-6">
-        <div className="card" style={{background:'#fff',border:'2px solid var(--green)',cursor:'pointer'}}
+        <div className="card" style={{background:'#fff',border:'1px solid var(--green)',cursor:'pointer'}}
           onClick={()=>setShowAccBreakdown(true)}>
           <div className="flex justify-between items-start">
             <div>
@@ -790,7 +790,7 @@ const Dashboard = ({state, notify}) => {
             <div style={{background:'var(--green-light)',borderRadius:10,padding:10}}><Icon name="accounts" size={20} color="var(--green)"/></div>
           </div>
         </div>
-        <div className="card" style={{background:'#fff',border:'2px solid var(--blue)',cursor:'pointer'}}
+        <div className="card" style={{background:'#fff',border:'1px solid var(--blue)',cursor:'pointer'}}
           onClick={()=>setShowSavBreakdown(true)}>
           <div className="flex justify-between items-start">
             <div>
@@ -804,10 +804,10 @@ const Dashboard = ({state, notify}) => {
       </div>
 
       {/* Net Worth banner */}
-      <div className="card mb-6" style={{background:'#fff',border:'2px solid var(--gray-800)'}}>
+      <div className="card mb-6" style={{background:'#fff',border:'1px solid var(--gray-800)'}}>
         <div className="flex justify-between items-center">
           <div>
-            <div className="stat-label" style={{color:'var(--gray-600)'}}>Patrimonio Neto</div>
+            <div className="stat-label" style={{color:'var(--gray-600)'}}>Patrimonio neto</div>
             <div style={{fontSize:28,fontWeight:700,letterSpacing:'-.02em',marginTop:4,color:'var(--gray-800)'}}>{fmt(netWorth)}</div>
           </div>
           <div style={{textAlign:'right',fontSize:13,color:'var(--gray-500)'}}>
@@ -820,9 +820,9 @@ const Dashboard = ({state, notify}) => {
       {/* KPI Row */}
       <div className="grid-4 mb-6">
         {[
-          {label:'Ahorro Mensual',value:monthlySavings,icon:'wallet',color:'icon-purple',sub:`Tasa: ${savingsRate}%`},
-          {label:'Gastos Fijos',value:totalFixed,icon:'budget',color:'icon-amber',sub:totalIncomeDash>0?`${pct(totalFixed,totalIncomeDash)}% de los ingresos`:'Sin ingresos reales'},
-          {label:'Sobrante Mensual',value:remaining,icon:'target',color:remaining>=0?'icon-green':'icon-amber',sub:'Después de gastos y ahorro'},
+          {label:'Ahorro mensual',value:monthlySavings,icon:'wallet',color:'icon-purple',sub:`Tasa: ${savingsRate}%`},
+          {label:'Gastos fijos',value:totalFixed,icon:'budget',color:'icon-amber',sub:totalIncomeDash>0?`${pct(totalFixed,totalIncomeDash)}% de los ingresos`:'Sin ingresos reales.'},
+          {label:'Sobrante mensual',value:remaining,icon:'target',color:remaining>=0?'icon-green':'icon-amber',sub:'Después de gastos y ahorro.'},
         ].map((k,i)=>(
           <div key={i} className="card">
             <div className={`stat-icon ${k.color}`}><Icon name={k.icon} size={17} /></div>
@@ -835,7 +835,7 @@ const Dashboard = ({state, notify}) => {
 
       <div className="card mb-6">
         <div className="section-header">
-          <div><div className="section-title">Distribución de ingresos</div><div className="section-sub">{fmt(totalIncomeDash)} recibidos este mes</div></div>
+          <div><div className="section-title">Distribución de ingresos</div><div className="section-sub">{fmt(totalIncomeDash)} recibidos este mes.</div></div>
         </div>
         {totalIncomeDash===0 && <div className="text-sm text-gray mt-3">Registra un ingreso para ver la distribución del mes.</div>}
         {totalIncomeDash>0 && [
@@ -856,7 +856,7 @@ const Dashboard = ({state, notify}) => {
       <div className="grid-2">
         <div className="card">
           <div className="section-header mb-4">
-            <div><div className="section-title">Seguimiento de Deudas</div></div>
+            <div><div className="section-title">Seguimiento de deudas</div></div>
             <span className="badge badge-red">{fmt(totalDebt)}</span>
           </div>
           {(debts||[]).filter(d=>d.status!=='pagada').slice(0,4).map(d=>{
@@ -873,7 +873,7 @@ const Dashboard = ({state, notify}) => {
               </div>
             );
           })}
-          {!(debts||[]).length && <div style={{textAlign:"center",padding:"20px 0",color:"var(--gray-400)",fontSize:14}}>Sin deudas activas</div>}
+          {!(debts||[]).length && <div style={{textAlign:"center",padding:"20px 0",color:"var(--gray-400)",fontSize:14}}>Sin deudas activas.</div>}
         </div>
         <div className="card">
           <div className="section-title mb-4">Ahorros</div>
@@ -897,7 +897,16 @@ const Dashboard = ({state, notify}) => {
 };
 
 // ── Accounts ──────────────────────────────────────────────────────────────────
-const emptyAccount = () => ({name:'',type:'bank',bank:'',balance:0});
+const FINANCIAL_LOCATION_OPTIONS = Object.freeze([
+  'BancoEstado', 'Banco de Chile', 'Banco Santander', 'BCI', 'Scotiabank', 'Itaú',
+  'Banco Falabella', 'Banco Ripley', 'Banco BICE', 'Banco Security', 'Banco Consorcio',
+  'Banco Internacional', 'Tenpo Bank', 'Tanner Banco Digital', 'Efectivo',
+]);
+const financialLocationFields = (bank) => ({
+  bank: bank || '',
+  bankChoice: !bank ? '' : FINANCIAL_LOCATION_OPTIONS.includes(bank) ? bank : 'Otro',
+});
+const emptyAccount = () => ({name:'',type:'bank',balance:0,...financialLocationFields(null)});
 
 const AccountsPage = ({state, setState, notify, run, app}) => {
   const accounts = (state.accounts || []).filter(account=>account.status==='active');
@@ -911,15 +920,17 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
   const closeModal = () => guardClose(resetModal);
 
   const openNew = () => { const f=emptyAccount(); setForm(f); setInitForm(f); setModal('new'); };
-  const openEdit = (a) => { const f={...a}; setForm(f); setInitForm(f); setModal('edit'); };
+  const openEdit = (a) => { const f={...a,...financialLocationFields(a.bank)}; setForm(f); setInitForm(f); setModal('edit'); };
 
   const save = async () => {
     if(!form.name) { notify('Completa el nombre','warn'); return; }
+    const bank = form.bankChoice==='Otro' ? form.bank.trim() : form.bankChoice||null;
+    if(!bank) { notify('Selecciona un banco, efectivo u otra institución.','warn'); return; }
     if(modal==='new'){
       try {
         const completed=await app.createAccountWithBalance({
           name:form.name.trim(),
-          bank:form.bank.trim(),
+          bank,
           currentBalance:form.balance,
           operationDate:today(),
           reason:'Saldo incorporado al crear la cuenta',
@@ -940,7 +951,7 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
       try {
         const completed=await app.updateAccountWithBalance({
           accountId:form.id,name:form.name.trim(),currentBalance:form.balance,
-          bank:form.bank.trim(),
+          bank,
           operationDate:today(),reason:'Ajuste de saldo al editar la cuenta',
         });
         setState(completed.state);
@@ -1016,15 +1027,28 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
       {modal && (
         <div className="modal-backdrop" onClick={closeModal}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div className="modal-title">{modal==='new'?'Nueva Cuenta':'Editar Cuenta'}</div>
+            <div className="modal-title">{modal==='new'?'Nueva cuenta':'Editar cuenta'}</div>
             <div className="form-group">
               <label className="form-label">Nombre</label>
               <input className="form-input" placeholder="Ej: Cuenta corriente" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} />
             </div>
             <div className="form-group">
-              <label className="form-label">Banco <span className="text-gray">(opcional)</span></label>
-              <input className="form-input" placeholder="Ej: Banco Estado" value={form.bank||''} onChange={e=>setForm(f=>({...f,bank:e.target.value}))} />
+              <label className="form-label">Banco o efectivo</label>
+              <select className="form-input form-select" value={form.bankChoice||''} onChange={e=>setForm(f=>({
+                ...f,
+                bankChoice:e.target.value,
+                bank:e.target.value==='Otro'?'':e.target.value,
+              }))}>
+                <option value="">Selecciona una opción</option>
+                {FINANCIAL_LOCATION_OPTIONS.map(option=><option key={option} value={option}>{option}</option>)}
+                <option value="Otro">Otro</option>
+              </select>
             </div>
+            {form.bankChoice==='Otro'&&<div className="form-group">
+              <label className="form-label">Nombre de la institución</label>
+              <input className="form-input" placeholder="Escribe el banco o institución" value={form.bank||''}
+                onChange={e=>setForm(f=>({...f,bank:e.target.value}))}/>
+            </div>}
             <div className="form-group">
               <label className="form-label">Saldo actual</label>
               <MoneyInput className="form-input" value={form.balance} onChange={balance=>setForm(f=>({...f,balance}))} />
@@ -1042,14 +1066,9 @@ const AccountsPage = ({state, setState, notify, run, app}) => {
 };
 
 // ── Wallets ────────────────────────────────────────────────────────────────────
-const SAVINGS_LOCATION_OPTIONS = Object.freeze([
-  'BancoEstado', 'Banco de Chile', 'Banco Santander', 'BCI', 'Scotiabank', 'Itaú',
-  'Banco Falabella', 'Banco Ripley', 'Banco BICE', 'Banco Security', 'Banco Consorcio',
-  'Banco Internacional', 'Tenpo Bank', 'Tanner Banco Digital', 'Efectivo',
-]);
 const savingsLocationFields = (bank) => ({
   bank: bank || '',
-  bankChoice: !bank ? '' : SAVINGS_LOCATION_OPTIONS.includes(bank) ? bank : 'Otro',
+  bankChoice: !bank ? '' : FINANCIAL_LOCATION_OPTIONS.includes(bank) ? bank : 'Otro',
 });
 
 const Wallets = ({state, setState, notify, run, app}) => {
@@ -1179,7 +1198,7 @@ const Wallets = ({state, setState, notify, run, app}) => {
       {modal && (
         <div className="modal-backdrop" onClick={closeModal}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div className="modal-title">{modal==='new'?'Nuevo Ahorro':'Editar Ahorro'}</div>
+            <div className="modal-title">{modal==='new'?'Nuevo ahorro':'Editar ahorro'}</div>
             {[
               {label:'Nombre',key:'name',type:'text'},
             ].map(f=>(
@@ -1191,13 +1210,13 @@ const Wallets = ({state, setState, notify, run, app}) => {
             ))}
             <div className="form-group">
               <label className="form-label">Banco o efectivo</label>
-              <select className="form-select" value={form.bankChoice||''} onChange={e=>setForm(x=>({
+              <select className="form-input form-select" value={form.bankChoice||''} onChange={e=>setForm(x=>({
                 ...x,
                 bankChoice:e.target.value,
                 bank:e.target.value==='Otro'?'':e.target.value,
               }))}>
                 <option value="">Selecciona una opción</option>
-                {SAVINGS_LOCATION_OPTIONS.map(option=><option key={option} value={option}>{option}</option>)}
+                {FINANCIAL_LOCATION_OPTIONS.map(option=><option key={option} value={option}>{option}</option>)}
                 <option value="Otro">Otro</option>
               </select>
             </div>
@@ -1367,14 +1386,7 @@ const Budget = ({state, setState, notify, run}) => {
       <div className="grid-2 gap-4">
         <div className="card">
           <div className="section-header mb-4">
-            <div className="section-title">Gastos Fijos</div>
-          </div>
-          <div className="form-group">
-            <label className="form-label">Cuenta para pagos</label>
-            <select className="form-input form-select" value={paymentAccountId} onChange={e=>setPaymentAccountId(e.target.value)}>
-              <option value="">Seleccionar…</option>
-              {(state.accounts||[]).filter(a=>a.status==='active').map(a=><option key={a.id} value={a.id}>{a.name} ({fmt(a.balance)})</option>)}
-            </select>
+            <div className="section-title">Gastos fijos</div>
           </div>
           {budget.length===0 && <EmptyState icon="budget" title="Aún no has registrado gastos fijos." description="Agrega tus gastos recurrentes mensuales como arriendo, servicios básicos o suscripciones." />}
           {budget.map(b=>(
@@ -1401,6 +1413,13 @@ const Budget = ({state, setState, notify, run}) => {
             </div>
           ))}
           <div className="divider" />
+          <div className="form-group">
+            <label className="form-label">Cuenta para pagos</label>
+            <select className="form-input form-select" value={paymentAccountId} onChange={e=>setPaymentAccountId(e.target.value)}>
+              <option value="">Seleccionar…</option>
+              {(state.accounts||[]).filter(a=>a.status==='active').map(a=><option key={a.id} value={a.id}>{a.name} ({fmt(a.balance)})</option>)}
+            </select>
+          </div>
           <div className="inline-form">
             <input className="form-input" placeholder="Ej: Arriendo" value={form.name} onChange={e=>setForm(x=>({...x,name:e.target.value}))} />
             <MoneyInput className="form-input inline-money" value={form.amount} onChange={amount=>setForm(x=>({...x,amount}))} />
@@ -1510,7 +1529,7 @@ const IngresosPanel = ({state, setState, notify, run}) => {
       {showForm && (
         <div className="modal-backdrop" onClick={closeForm}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div className="modal-title">{editingId!=null ? 'Editar Ingreso' : 'Registrar Ingreso'}</div>
+            <div className="modal-title">{editingId!=null ? 'Editar ingreso' : 'Registrar ingreso'}</div>
             <div className="form-group">
               <label className="form-label">Fecha</label>
               <input className="form-input" type="date" value={incomeForm.date} onChange={e=>setIncomeForm(f=>({...f,date:e.target.value}))} />
@@ -1521,7 +1540,7 @@ const IngresosPanel = ({state, setState, notify, run}) => {
             </div>
             <div className="form-group">
               <label className="form-label">Monto</label>
-              <MoneyInput className="form-input" value={incomeForm.amount} onChange={amount=>setIncomeForm(f=>({...f,amount}))} autoFocus />
+              <MoneyInput className="form-input" value={incomeForm.amount} onChange={amount=>setIncomeForm(f=>({...f,amount}))} />
             </div>
             <div className="form-group">
               <label className="form-label">Depositar en cuenta *</label>
@@ -1559,9 +1578,8 @@ const IngresosPanel = ({state, setState, notify, run}) => {
           </div>
         </>}
       </div>
-      <div className="grid-3 mb-4">
+      <div className="grid-2 mb-4">
         {[
-          {label:'Sueldo recibido',value:summary.receivedSalaryAmount||0},
           {label:'Otros ingresos',value:summary.additionalIncomeAmount||0},
           {label:'Total ingresos',value:summary.totalIncomeAmount||0},
         ].map(item=><div key={item.label} className="card-sm"><div className="text-sm text-gray">{item.label}</div><div className="font-bold amount-positive">{fmt(item.value)}</div></div>)}
@@ -1732,7 +1750,7 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
       {showForm && (
         <div className="modal-backdrop" onClick={closeForm}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div className="modal-title">{editingId!=null ? 'Editar Gasto Variable' : 'Registrar Gasto Variable'}</div>
+            <div className="modal-title">{editingId!=null ? 'Editar gasto variable' : 'Registrar gasto variable'}</div>
             <div className="form-group">
               <label className="form-label">Fecha</label>
               <input className="form-input" type="date" value={form.date} onChange={e=>setForm(f=>({...f,date:e.target.value}))} />
@@ -1815,7 +1833,7 @@ const ExpenseTracker = ({state, setState, notify, run}) => {
           </div>
         </>
       )}
-      {tab==='monthChart' && <div className="card"><div className="section-title mb-4">Variables por Mes</div><div className="chart-box-lg"><ChartCanvas id="month-chart" config={monthChart} height={280} /></div></div>}
+      {tab==='monthChart' && <div className="card"><div className="section-title mb-4">Variables por mes</div><div className="chart-box-lg"><ChartCanvas id="month-chart" config={monthChart} height={280} /></div></div>}
 
       <div className="card mt-4">
         <div className="section-title mb-4">Categorías</div>
@@ -1975,15 +1993,15 @@ const DebtTracker = ({state, setState, notify, run, app}) => {
       {ConfirmNode}
       {/* KPIs */}
       <div className="grid-3 mb-6">
-        <div className="card"><div className="stat-label">Deuda Total Activa</div><div className="stat-value text-red">{fmt(totalDebt)}</div></div>
-        <div className="card"><div className="stat-label">Pago Mensual Total</div><div className="stat-value text-amber">{fmt(totalMonthly)}</div></div>
-        <div className="card"><div className="stat-label">Meses Estimados</div><div className="stat-value text-blue">{totalMonthly>0?Math.ceil(totalDebt/totalMonthly):'—'}</div></div>
+        <div className="card"><div className="stat-label">Deuda total activa</div><div className="stat-value text-red">{fmt(totalDebt)}</div></div>
+        <div className="card"><div className="stat-label">Pago mensual total</div><div className="stat-value text-amber">{fmt(totalMonthly)}</div></div>
+        <div className="card"><div className="stat-label">Meses estimados</div><div className="stat-value text-blue">{totalMonthly>0?Math.ceil(totalDebt/totalMonthly):'—'}</div></div>
       </div>
 
       {/* Debt list */}
       <div className="card mb-6">
         <div className="section-header mb-4">
-          <div className="section-title">Mis Deudas</div>
+          <div className="section-title">Mis deudas</div>
           <button className="btn btn-primary btn-sm" onClick={openNew}><Icon name="plus" size={13}/> Nueva deuda</button>
         </div>
         {debts.length===0 && <EmptyState icon="debt" title="Aún no has registrado deudas." description="¡Bien hecho! Agrega una deuda si necesitas hacer seguimiento de algún préstamo o crédito." actionLabel="Agregar deuda" onAction={openNew}/>}
@@ -2036,7 +2054,7 @@ const DebtTracker = ({state, setState, notify, run, app}) => {
 
       {/* Projection chart */}
       {chartRows.length>0 && <div className="card">
-        <div className="section-title mb-4">Proyección Total de Deuda</div>
+        <div className="section-title mb-4">Proyección total de deuda</div>
         <div className="chart-box-lg"><ChartCanvas id="debt-chart" config={chartData} height={260} /></div>
       </div>}
 
@@ -2045,7 +2063,7 @@ const DebtTracker = ({state, setState, notify, run, app}) => {
       {modal && (
         <div className="modal-backdrop" onClick={closeModal}>
           <div className="modal" onClick={e=>e.stopPropagation()}>
-            <div className="modal-title">{modal==='new'?'Nueva Deuda':'Editar Deuda'}</div>
+            <div className="modal-title">{modal==='new'?'Nueva deuda':'Editar deuda'}</div>
             {fld('Nombre','name','text')}
             {fld('Monto total','total')}
             {fld('Cuota mensual','monthly')}
@@ -2093,7 +2111,7 @@ const DebtTracker = ({state, setState, notify, run, app}) => {
 // ── Vehicle ───────────────────────────────────────────────────────────────────
 // ── Settings ──────────────────────────────────────────────────────────────────
 
-// ── Historial Mensual ─────────────────────────────────────────────────────────
+// ── Historial mensual ─────────────────────────────────────────────────────────
 const HistorialMensual = ({state,run,notify}) => {
   const history = (state.monthlyHistory || []).slice().reverse(); // newest first
   const [detail, setDetail] = useState(null);
@@ -2227,7 +2245,7 @@ const HistorialMensual = ({state,run,notify}) => {
         {/* Gastos variables detail */}
         {(detail.expenses||[]).filter(e=>e.type==='expense').length > 0 && (
           <div className="card mb-4">
-            <div className="section-title mb-3">Gastos Variables</div>
+            <div className="section-title mb-3">Gastos variables</div>
             <div className="table-wrap table-compact">
               <table><thead><tr><th>Fecha</th><th>Nombre</th><th>Monto</th></tr></thead>
               <tbody>{(detail.expenses||[]).filter(e=>e.type==='expense').map((e,i)=>(
@@ -2239,7 +2257,7 @@ const HistorialMensual = ({state,run,notify}) => {
         {/* Fijos pagados */}
         {(detail.gastosFijosPagados||[]).length > 0 && (
           <div className="card mb-4">
-            <div className="section-title mb-3">Gastos Fijos Pagados</div>
+            <div className="section-title mb-3">Gastos fijos pagados</div>
             <div className="table-wrap table-compact">
               <table><thead><tr><th>Nombre</th><th>Monto</th><th>Fecha</th></tr></thead>
               <tbody>{(detail.gastosFijosPagados||[]).map((g,i)=>(
@@ -2251,7 +2269,7 @@ const HistorialMensual = ({state,run,notify}) => {
         {/* Pagos de deuda */}
         {(detail.pagosDeuda||[]).length > 0 && (
           <div className="card mb-4">
-            <div className="section-title mb-3">Pagos de Deuda</div>
+            <div className="section-title mb-3">Pagos de deuda</div>
             <div className="table-wrap table-compact">
               <table><thead><tr><th>Deuda</th><th>Monto</th><th>Fecha</th></tr></thead>
               <tbody>{(detail.pagosDeuda||[]).map((p,i)=>(
@@ -2263,7 +2281,7 @@ const HistorialMensual = ({state,run,notify}) => {
         {/* Aportes de ahorro */}
         {(detail.aportesAhorro||[]).length > 0 && (
           <div className="card mb-4">
-            <div className="section-title mb-3">Aportes de Ahorro</div>
+            <div className="section-title mb-3">Aportes de ahorro</div>
             <div className="table-wrap table-compact">
               <table><thead><tr><th>Meta</th><th>Monto</th><th>Fecha</th></tr></thead>
               <tbody>{(detail.aportesAhorro||[]).map((a,i)=>(
@@ -2435,7 +2453,7 @@ const Settings = ({state, setState, notify, run, app}) => {
       )}
 
       <div className="card" style={{maxWidth:520}}>
-        <div className="section-title mb-4">Configuración General</div>
+        <div className="section-title mb-4">Configuración general</div>
         {[
           {label:'Sueldo mensual',key:'salary'},
         ].map(f=>(
@@ -2512,7 +2530,7 @@ const translateLegacyIntent = async (app, previous, next) => {
 
   const addedAccount=(next.accounts||[]).find(item=>!(previous.accounts||[]).some(old=>old.id===item.id));
   if(addedAccount){
-    if(addedAccount.balance!==0) throw new Error('La cuenta debe crearse en cero. Incorpora el saldo desde “Editar Cuenta”.');
+    if(addedAccount.balance!==0) throw new Error('La cuenta debe crearse en cero. Incorpora el saldo desde “Editar cuenta”.');
     return app.execute('account.create',{account:{
       id:recordId(),name:addedAccount.name,bank:addedAccount.bank||null,openingBalance:0,currentBalance:0,status:'active',
       revision:1,createdAt:timestamp,updatedAt:timestamp,
@@ -2679,11 +2697,11 @@ const translateLegacyIntent = async (app, previous, next) => {
 //  APP
 // ═══════════════════════════════════════════════════════════════════════════════
 const OTHER_DESTINATIONS = [
-  {id:'budget',label:'Fijos',description:'Gastos recurrentes y pagos del mes',icon:'budget'},
-  {id:'expenses',label:'Variables',description:'Gastos variables y categorías',icon:'expense'},
-  {id:'income',label:'Ingresos',description:'Sueldo recibido e ingresos adicionales',icon:'trending'},
-  {id:'debt',label:'Deudas',description:'Deudas, ajustes y pagos',icon:'debt'},
-  {id:'history',label:'Historial',description:'Operaciones y meses cerrados',icon:'document'},
+  {id:'budget',label:'Fijos',description:'Gastos recurrentes y pagos del mes.',icon:'budget'},
+  {id:'expenses',label:'Variables',description:'Gastos variables y categorías.',icon:'expense'},
+  {id:'income',label:'Ingresos',description:'Sueldo recibido e ingresos adicionales.',icon:'trending'},
+  {id:'debt',label:'Deudas',description:'Deudas, ajustes y pagos.',icon:'debt'},
+  {id:'history',label:'Historial',description:'Operaciones y meses cerrados.',icon:'document'},
 ];
 
 const OtherPage = ({navigate}) => <div className="grid-2">
@@ -2709,16 +2727,16 @@ const PAGES = [
 ];
 
 const PAGE_TITLES = {
-  dashboard:['Dashboard','Resumen financiero del mes'],
-  accounts:['Cuentas','Administra tus cuentas bancarias y efectivo'],
-  wallets:['Ahorros','Administra tus metas de ahorro'],
-  budget:['Gastos Fijos','Gastos recurrentes y fijos'],
-  expenses:['Gastos Variables','Registra y filtra tus gastos variables'],
-  income:['Ingresos','Registra y consulta tus ingresos'],
-  debt:['Deuda','Seguimiento y amortización'],
-  history:['Historial Mensual','Consulta tus meses anteriores'],
-  other:['Otros','Accede a ingresos, gastos, deudas e historial'],
-  settings:['Ajustes','Configura tus datos base'],
+  dashboard:['Dashboard','Resumen financiero del mes.'],
+  accounts:['Cuentas','Administra tus cuentas bancarias y efectivo.'],
+  wallets:['Ahorros','Administra tus metas de ahorro.'],
+  budget:['Gastos fijos','Gastos recurrentes y fijos.'],
+  expenses:['Gastos variables','Registra y filtra tus gastos variables.'],
+  income:['Ingresos','Registra y consulta tus ingresos.'],
+  debt:['Deuda','Seguimiento y amortización.'],
+  history:['Historial mensual','Consulta tus meses anteriores.'],
+  other:['Otros','Accede a ingresos, gastos, deudas e historial.'],
+  settings:['Ajustes','Configura tus datos base.'],
 };
 
 const StartupCard = ({title,children}) => <div style={{minHeight:'100vh',display:'grid',placeItems:'center',background:'var(--gray-50)',padding:20}}>

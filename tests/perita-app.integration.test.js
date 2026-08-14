@@ -1481,19 +1481,38 @@ test('UI integration keeps setup, navigation, icons, hierarchy, and unsaved guar
   assert.match(jsx, /Total fijos del mes/);
   assert.match(jsx, /Los gastos fijos se descuentan del disponible cuando los marcas como pagados\./);
   const dashboardSource = jsx.slice(jsx.indexOf('const Dashboard ='), jsx.indexOf('// ── Accounts'));
+  const accountsSource = jsx.slice(jsx.indexOf('const AccountsPage ='), jsx.indexOf('// ── Wallets'));
+  const walletsSource = jsx.slice(jsx.indexOf('const Wallets ='), jsx.indexOf('// ── Budget'));
   const fixedSource = jsx.slice(jsx.indexOf('const Budget ='), jsx.indexOf('const IngresosPanel ='));
   const incomeSource = jsx.slice(jsx.indexOf('const IngresosPanel ='), jsx.indexOf('const ExpenseTracker ='));
   assert.doesNotMatch(dashboardSource, /settings\.salary/);
+  assert.match(dashboardSource, /border:'1px solid var\(--green\)'/);
+  assert.match(dashboardSource, /border:'1px solid var\(--blue\)'/);
+  assert.match(dashboardSource, /border:'1px solid var\(--gray-800\)'/);
+  assert.doesNotMatch(dashboardSource, /border:'2px solid var\(--(?:green|blue|gray-800)\)'/);
   assert.doesNotMatch(fixedSource, /settings\.salary|Total ahorro|Uso del sueldo/);
+  assert.ok(fixedSource.indexOf('{budget.map') < fixedSource.indexOf('Cuenta para pagos'));
+  assert.ok(fixedSource.indexOf('Cuenta para pagos') < fixedSource.indexOf('placeholder="Ej: Arriendo" value={form.name}'));
   assert.doesNotMatch(incomeSource, /state\.settings\.salary\s*>\s*0\s*&&\s*\(/);
+  assert.match(incomeSource, /<div className="grid-2 mb-4">[\s\S]*Otros ingresos[\s\S]*Total ingresos/);
+  assert.doesNotMatch(incomeSource, /\{label:'Sueldo recibido',value:summary\.receivedSalaryAmount/);
+  assert.doesNotMatch(incomeSource.slice(0, incomeSource.indexOf('<div className="card-sm mb-4"')), /autoFocus/);
   assert.match(jsx, /Sin ahorros registrados\./);
   for (const location of [
     'BancoEstado', 'Banco de Chile', 'Banco Santander', 'BCI', 'Scotiabank', 'Itaú',
     'Banco Falabella', 'Banco Ripley', 'Banco BICE', 'Banco Security', 'Banco Consorcio',
     'Banco Internacional', 'Tenpo Bank', 'Tanner Banco Digital', 'Efectivo',
   ]) assert.match(jsx, new RegExp(location));
+  assert.equal((jsx.match(/const FINANCIAL_LOCATION_OPTIONS/g)||[]).length, 1);
+  assert.match(accountsSource, /if\(!bank\) \{ notify\('Selecciona un banco, efectivo u otra institución\.'/);
+  assert.match(accountsSource, /<select className="form-input form-select" value=\{form\.bankChoice\|\|''\}/);
+  assert.match(walletsSource, /<select className="form-input form-select" value=\{form\.bankChoice\|\|''\}/);
   assert.match(jsx, /form\.bankChoice==='Otro'/);
   assert.match(jsx, /Nombre de la institución/);
+  assert.match(jsx, /Seguimiento de deudas/);
+  assert.match(jsx, /Variables por mes/);
+  assert.match(jsx, /Proyección total de deuda/);
+  assert.doesNotMatch(jsx, /Seguimiento de Deudas|Gastos Fijos|Variables por Mes|Mis Deudas|Proyección Total de Deuda|Gastos Variables|Pagos de Deuda|Configuración General|Historial Mensual/);
   assert.match(jsx, /app\.createAccountWithBalance/);
   assert.match(jsx, /title:'Desactivar cuenta'/);
   assert.match(jsx, /const presentError = \(error\) => PeritaApp\.userErrorMessage\(error\)/);
