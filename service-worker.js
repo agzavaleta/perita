@@ -6,6 +6,7 @@
 // the user and calling skipWaiting() via postMessage — see the message
 // listener at the bottom of this file.
 const CACHE_NAME = 'perita-v111-shell-v1';
+const LEGACY_RECOVERY_CACHE = 'perita-v110-shell-v1';
 
 const APP_SHELL = [
   '/',
@@ -31,6 +32,14 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME)
       .then((cache) => cache.addAll(APP_SHELL))
+      .then(() => caches.keys())
+      .then((keys) => {
+        // One-release bridge: V1.1.0 cannot accept its waiting replacement.
+        // Activate only when that legacy shell is actually controlling storage;
+        // normal V1.1.1+ updates keep waiting for explicit user acceptance.
+        if (keys.includes(LEGACY_RECOVERY_CACHE)) return self.skipWaiting();
+        return undefined;
+      })
   );
 });
 

@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const { readFileSync } = require('node:fs');
+const vm = require('node:vm');
 const { IDBFactory, IDBKeyRange } = require('fake-indexeddb');
 const IndexedDb = require('../perita-indexeddb.js');
 const Runtime = require('../perita-runtime.js');
@@ -1212,6 +1213,37 @@ test('service worker registration bypasses the HTTP cache for update checks', ()
   );
 });
 
+test('service worker bridges only trapped V1.1.0 clients and leaves future updates waiting', async () => {
+  const source = readFileSync(`${__dirname}/../service-worker.js`, 'utf8');
+  async function installWith(cacheKeys) {
+    const listeners = new Map();
+    let skipWaitingCalls = 0;
+    let installPromise;
+    const context = {
+      caches: {
+        open: async () => ({ addAll: async () => undefined }),
+        keys: async () => cacheKeys,
+        delete: async () => true,
+        match: async () => null,
+      },
+      fetch: async () => { throw new Error('not used'); },
+      self: {
+        addEventListener: (type, listener) => listeners.set(type, listener),
+        skipWaiting: async () => { skipWaitingCalls += 1; },
+        clients: { claim: async () => undefined },
+      },
+    };
+    vm.runInNewContext(source, context);
+    listeners.get('install')({ waitUntil: (promise) => { installPromise = promise; } });
+    await installPromise;
+    return skipWaitingCalls;
+  }
+
+  assert.equal(await installWith(['perita-v110-shell-v1']), 1);
+  assert.equal(await installWith(['perita-v111-shell-v1']), 0);
+  assert.doesNotMatch(source, /indexedDB|deleteDatabase/);
+});
+
 test('a failed resume remains retryable and never reuses a closed storage connection', async (t) => {
   const factory = new IDBFactory();
   const baseStorage = IndexedDb.createPeritaIndexedDb({
@@ -1732,7 +1764,7 @@ test('static integration loads V1.1.0 modules in order and caches the complete o
   assert.match(jsx, /history',label:'Historial',icon:'document'/);
   assert.doesNotMatch(jsx, /Presupuesto variable|Ahorro planificado|Guardar planificación/);
   assert.match(worker, /perita-v111-shell-v1/);
-  assert.doesNotMatch(worker, /perita-v110-shell-v1/);
+  assert.match(worker, /LEGACY_RECOVERY_CACHE = 'perita-v110-shell-v1'/);
   assert.match(html, /IndexedDB perita_v110/);
 });
 
