@@ -1665,6 +1665,9 @@ test('UI integration keeps setup, navigation, icons, hierarchy, and unsaved guar
   assert.doesNotMatch(incomeSource, /\{label:'Sueldo recibido',value:summary\.receivedSalaryAmount/);
   assert.doesNotMatch(incomeSource.slice(0, incomeSource.indexOf('<div className="card-sm mb-4"')), /autoFocus/);
   assert.match(jsx, /Sin ahorros registrados\./);
+  assert.match(jsx, /const APP_BUILD = '37eb1a5'/);
+  assert.match(jsx, /<span className="text-gray">Versión<\/span>[\s\S]*v\{APP_VERSION\}/);
+  assert.match(jsx, /<span className="text-gray">Build<\/span>[\s\S]*\{APP_BUILD\}/);
   assert.match(jsx, /page==='dashboard' && updateWaiting && !updateDismissed/);
   assert.match(jsx, /Actualización disponible/);
   assert.match(jsx, /Hay una nueva versión de Perita lista para instalar\. Tus datos no se modificarán\./);

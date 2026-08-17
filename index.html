@@ -475,6 +475,7 @@ const addMonths = (n) => {
   return d.toLocaleDateString('es-CL',{month:'short',year:'numeric'});
 };
 const APP_VERSION = PeritaApp.APP_VERSION;
+const APP_BUILD = '37eb1a5';
 const COLORS = ['#F86C98','#3b82f6','#f59e0b','#8b5cf6','#ef4444','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1'];
 
 
@@ -2501,6 +2502,10 @@ const Settings = ({state, setState, notify, run, app}) => {
         <div className="flex justify-between items-center text-sm">
           <span className="text-gray">Versión</span>
           <span className="font-semibold badge badge-gray">v{APP_VERSION}</span>
+        </div>
+        <div className="flex justify-between items-center text-sm mt-2">
+          <span className="text-gray">Build</span>
+          <span className="font-semibold badge badge-gray">{APP_BUILD}</span>
         </div>
         <div className="flex justify-between items-center text-sm mt-2">
           <span className="text-gray">App</span>
