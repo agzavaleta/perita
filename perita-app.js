@@ -573,7 +573,9 @@
     let active = false;
     let refreshing = false;
     let accepted = false;
-    const hadController = Boolean(serviceWorker.controller);
+    const initialController = serviceWorker.controller;
+    const hadController = Boolean(initialController);
+    let controllerChanged = false;
     let registration = null;
     let boundRegistration = null;
     let latestWaiting = null;
@@ -606,21 +608,40 @@
       boundRegistration = value;
       value.addEventListener('updatefound', handleUpdateFound);
     };
-    const handleControllerChange = () => {
+    const reloadOnce = () => {
       if (!accepted || refreshing || !hadController) return;
       refreshing = true;
       if (typeof reload === 'function') reload();
     };
+    const handleControllerChange = () => {
+      controllerChanged = true;
+      reloadOnce();
+    };
     function accept(worker) {
       if (!active || accepted) return false;
       const target = worker || latestWaiting || (registration && registration.waiting);
-      if (!target || typeof target.postMessage !== 'function') return false;
+      const alreadyActivated = Boolean(
+        (target && target.state === 'activated') ||
+        controllerChanged ||
+        serviceWorker.controller !== initialController
+      );
+      if (!target && !alreadyActivated) return false;
+      accepted = true;
+      if (alreadyActivated) {
+        reloadOnce();
+        return true;
+      }
+      if (typeof target.postMessage !== 'function') {
+        accepted = false;
+        return false;
+      }
       try {
         target.postMessage({ type: 'SKIP_WAITING' });
       } catch (_) {
+        accepted = false;
         return false;
       }
-      accepted = true;
+      if (controllerChanged || serviceWorker.controller !== initialController) reloadOnce();
       return true;
     }
     async function check() {

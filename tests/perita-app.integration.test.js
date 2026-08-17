@@ -1150,8 +1150,6 @@ test('service worker updates remain pending until explicit acceptance and reload
   installing.dispatch('statechange');
   assert.equal(detected.includes(installing), true);
 
-  container.dispatch('controllerchange');
-  assert.equal(reloads, 0);
   assert.equal(updates.accept(waiting), true);
   assert.equal(updates.accept(waiting), false);
   assert.deepEqual(messages, [{ type: 'SKIP_WAITING' }]);
@@ -1174,6 +1172,35 @@ test('service worker updates remain pending until explicit acceptance and reload
   container.dispatch('controllerchange');
   assert.equal(reloads, 1);
   nextSession.stop();
+});
+
+test('service worker acceptance reloads once when controllerchange already happened', async () => {
+  const container = eventTargetHarness();
+  const initialController = { id: 'old-controller' };
+  container.controller = initialController;
+  const registration = eventTargetHarness();
+  const activated = { id: 'activated-worker', state: 'activated' };
+  registration.waiting = null;
+  registration.installing = null;
+  registration.update = async () => undefined;
+  container.getRegistration = async () => registration;
+  container.ready = Promise.resolve(registration);
+  let reloads = 0;
+  const updates = PeritaApp.createServiceWorkerUpdateController({
+    serviceWorker: container,
+    reload: () => { reloads += 1; },
+  });
+
+  await updates.start();
+  container.controller = activated;
+  container.dispatch('controllerchange');
+  container.dispatch('controllerchange');
+  assert.equal(reloads, 0);
+  assert.equal(updates.accept(activated), true);
+  assert.equal(reloads, 1);
+  container.dispatch('controllerchange');
+  assert.equal(reloads, 1);
+  updates.stop();
 });
 
 test('service worker update checks bind an installing worker even when iOS omits updatefound timing', async () => {
