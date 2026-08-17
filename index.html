@@ -1308,19 +1308,25 @@ const Budget = ({state, setState, notify, run}) => {
 
   const gastosFijosPagados = (state.activeMonth||{}).gastosFijosPagados || [];
   const isPaid = (id) => gastosFijosPagados.some(g=>g.budgetId===id);
-  const toggleFijoPagado = (b) => {
-    if(!b.instance) { notify('Esta plantilla comienza a aplicarse en el periodo siguiente','warn'); return; }
+  const toggleFijoPagado = async (b) => {
+    let instance=b.instance;
+    if(!instance) {
+      const ensured=await run('fixed-expense-instance.ensure-active',{templateId:b.id});
+      if(!ensured)return;
+      instance=ensured.state.budget.find(item=>item.id===b.id)?.instance;
+      if(!instance){notify('No pudimos habilitar este gasto fijo en el periodo activo. Intenta nuevamente.','error');return;}
+    }
     if(isPaid(b.id)) {
-      const operation=(state.operations||[]).find(item=>item.id===b.instance.activePaymentOperationId);
+      const operation=(state.operations||[]).find(item=>item.id===instance.activePaymentOperationId);
       run('fixed-expense-payment.void',{
         operationId:operation.id,accountId:operation.details.accountId,
-        fixedExpenseInstanceId:b.instance.id,reason:'Pago marcado como pendiente desde la interfaz',
+        fixedExpenseInstanceId:instance.id,reason:'Pago marcado como pendiente desde la interfaz',
       },'Pago anulado');
     } else {
       if(!paymentAccountId) { notify('Selecciona una cuenta para pagar','warn'); return; }
       run('fixed-expense-payment.create',{
-        accountId:paymentAccountId,fixedExpenseInstanceId:b.instance.id,
-        operationDate:today(),amount:b.instance.plannedAmount,
+        accountId:paymentAccountId,fixedExpenseInstanceId:instance.id,
+        operationDate:today(),amount:instance.plannedAmount,
       },'Pago registrado');
     }
   };

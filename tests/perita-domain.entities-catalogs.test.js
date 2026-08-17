@@ -388,11 +388,10 @@ test('V1.1.0 category catalog commands', async (t) => {
 });
 
 test('V1.1.0 fixed-expense template commands', async (t) => {
-  await t.test('create stores only the active reference and leaves current planning/instances unchanged', async (t2) => {
+  await t.test('create stores the active reference and one pending current-period instance', async (t2) => {
     const f = await fixture(t2);
     await bootstrap(f);
     const beforePeriod = await f.storage.get('periods', id(1));
-    const beforeInstances = await f.storage.getAll('fixedExpenseInstances');
     const newTemplate = template(20);
     const completed = await f.commands.fixedExpenseTemplate.create({
       ...await commonInput(f.storage), template: newTemplate,
@@ -400,12 +399,61 @@ test('V1.1.0 fixed-expense template commands', async (t) => {
 
     assert.deepEqual(await f.storage.get('fixedExpenseTemplates', id(20)), newTemplate);
     assert.deepEqual(await f.storage.get('periods', id(1)), beforePeriod);
-    assert.deepEqual(await f.storage.getAll('fixedExpenseInstances'), beforeInstances);
+    const instances = await f.storage.getAll('fixedExpenseInstances');
+    assert.equal(instances.length, 1);
+    assert.deepEqual(instances[0], completed.result.fixedExpenseInstance);
+    assert.equal(instances[0].periodId, id(1));
+    assert.equal(instances[0].templateId, id(20));
+    assert.equal(instances[0].plannedAmount, newTemplate.referenceAmount);
+    assert.equal(instances[0].status, 'pending');
+    assert.equal(instances[0].activePaymentOperationId, null);
     assertAudit(completed.result.auditEvent, {
       subjectType: 'fixed_expense_template', subjectId: id(20),
       action: 'created', commandType: 'fixed-expense-template.create',
     });
+    assertAudit(completed.result.auditEvents[1], {
+      subjectType: 'fixed_expense_instance', subjectId: instances[0].id,
+      action: 'created', commandType: 'fixed-expense-template.create',
+    });
     assert.deepEqual(completed.commit.affectedStores, DomainCommands.FIXED_TEMPLATE_CREATE_STORES);
+  });
+
+  await t.test('an old active template can idempotently gain only its active-period instance', async (t2) => {
+    const f = await fixture(t2);
+    await bootstrap(f);
+    await f.storage.add('fixedExpenseTemplates', template());
+    await f.storage.add('periods', period({
+      id: id(99), periodKey: '2026-07', status: 'closed',
+      closedAt: START, snapshotId: id(98),
+    }));
+    const closedPeriodBefore = await f.storage.get('periods', id(99));
+
+    const first = await f.commands.fixedExpenseInstance.ensureActive({
+      ...await commonInput(f.storage), templateId: id(20), expectedTemplateRevision: 1,
+    });
+    assert.equal(first.result.created, true);
+    assert.equal(first.result.fixedExpenseInstance.periodId, id(1));
+    assert.equal(first.result.fixedExpenseInstance.status, 'pending');
+    assert.equal(
+      (await f.storage.getAll('fixedExpenseInstances')).filter(item=>item.templateId===id(20)).length,
+      1
+    );
+    assert.equal(
+      (await f.storage.getAll('fixedExpenseInstances')).some(item=>item.periodId===id(99)),
+      false
+    );
+    assert.deepEqual(await f.storage.get('periods', id(99)), closedPeriodBefore);
+
+    const second = await f.commands.fixedExpenseInstance.ensureActive({
+      ...await commonInput(f.storage), templateId: id(20), expectedTemplateRevision: 1,
+    });
+    assert.equal(second.result.created, false);
+    assert.equal(second.result.fixedExpenseInstance.id, first.result.fixedExpenseInstance.id);
+    assert.equal(
+      (await f.storage.getAll('fixedExpenseInstances')).filter(item=>item.templateId===id(20)).length,
+      1
+    );
+    assert.deepEqual(await f.storage.get('periods', id(99)), closedPeriodBefore);
   });
 
   await t.test('create rejects invalid amount and duplicate ID', async (t2) => {
@@ -822,6 +870,11 @@ test('V1.1.0 entity/catalog command rollback', async (t) => {
       name: 'fixed-expense-template.create', store: 'fixedExpenseTemplates', method: 'add', seed: false,
       invoke: (commands, input) => commands.fixedExpenseTemplate.create({ ...input, template: template(22) }),
       read: (storage) => storage.get('fixedExpenseTemplates', id(22)),
+    },
+    {
+      name: 'fixed-expense-template.create instance', store: 'fixedExpenseInstances', method: 'add', seed: false,
+      invoke: (commands, input) => commands.fixedExpenseTemplate.create({ ...input, template: template(23) }),
+      read: (storage) => storage.getAll('fixedExpenseInstances'),
     },
     {
       name: 'fixed-expense-template.update', store: 'fixedExpenseTemplates', method: 'put', seed: true,

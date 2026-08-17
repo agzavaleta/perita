@@ -66,6 +66,7 @@
     'fixed-expense-template.create': ['fixedExpenseTemplate', 'create'],
     'fixed-expense-template.update': ['fixedExpenseTemplate', 'update'],
     'fixed-expense-template.deactivate': ['fixedExpenseTemplate', 'deactivate'],
+    'fixed-expense-instance.ensure-active': ['fixedExpenseInstance', 'ensureActive'],
     'fixed-expense-instance.update-planned-amount': ['fixedExpenseInstance', 'updatePlannedAmount'],
     'savings-goal.create': ['savingsGoal', 'create'],
     'savings-goal.update': ['savingsGoal', 'update'],
@@ -773,6 +774,27 @@
       return report;
     }
 
+    async function ensureActiveFixedExpenseInstances(state) {
+      let currentState = state;
+      if (!currentState.period || currentState.period.status !== 'open') return currentState;
+      const activePeriodId = currentState.period.id;
+      const existingTemplateIds = new Set(
+        currentState._snapshot.fixedExpenseInstances
+          .filter((instance) => instance.periodId === activePeriodId)
+          .map((instance) => instance.templateId)
+      );
+      const missingTemplates = currentState._snapshot.fixedExpenseTemplates.filter(
+        (template) => template.status === 'active' && !existingTemplateIds.has(template.id)
+      );
+      for (const template of missingTemplates) {
+        const completed = await execute('fixed-expense-instance.ensure-active', {
+          templateId: template.id,
+        });
+        currentState = completed.state;
+      }
+      return currentState;
+    }
+
     function startHeartbeat(onLeaseLost) {
       if (
         heartbeatHandle !== null || writerEpoch === null || suspended || closed ||
@@ -857,7 +879,10 @@
           return immutable({ phase: 'ready_read_only', state, error: errorView(error), writer: false });
         }
         const report = await ensureIntegrityAndWriting();
-        const next = await refresh();
+        let next = await refresh();
+        if (report.status !== 'diagnostic_only') {
+          next = await ensureActiveFixedExpenseInstances(next);
+        }
         const phase = report.status === 'diagnostic_only' ? 'diagnostic' : report.status;
         return immutable({ phase, state: next, report, writer: true, writerEpoch });
       } catch (error) {
@@ -1332,8 +1357,12 @@
       if (suspended || closed) throw new Error('Perita debe reanudarse antes de tomar el escritor.');
       const writer = await acquireWriter();
       const report = await ensureIntegrityAndWriting();
+      let state = await refresh();
+      if (report.status !== 'diagnostic_only') {
+        state = await ensureActiveFixedExpenseInstances(state);
+      }
       emit('writer-acquired');
-      return immutable({ writer, report, state: await refresh() });
+      return immutable({ writer, report, state });
     }
 
     function subscribe(listener) {

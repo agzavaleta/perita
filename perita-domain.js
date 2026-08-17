@@ -1007,9 +1007,13 @@
     return Object.freeze({ operation, movement });
   }
 
-  function assertNoCurrentPeriodFixedExpenseInstance(input) {
+  function assertCurrentPeriodFixedExpenseInstance(input) {
     const request = requireRecord(input, 'CurrentPeriodFixedExpenseRule');
-    requireFields(request, ['template', 'activePeriod', 'instances'], 'CurrentPeriodFixedExpenseRule');
+    requireFields(
+      request,
+      ['template', 'activePeriod', 'instance', 'instances'],
+      'CurrentPeriodFixedExpenseRule'
+    );
     const template = validateFixedExpenseTemplate(request.template);
     const period = validatePeriod(request.activePeriod);
     if (period.status !== 'open') {
@@ -1019,6 +1023,7 @@
         { periodId: period.id, status: period.status }
       );
     }
+    const instance = validateFixedExpenseInstance(request.instance);
     if (!Array.isArray(request.instances)) {
       throw domainError(
         ERROR_CODES.INVALID_DOMAIN_FIELD,
@@ -1027,17 +1032,37 @@
       );
     }
     const instances = request.instances.map(validateFixedExpenseInstance);
-    const forbidden = instances.find(
-      (instance) => instance.periodId === period.id && instance.templateId === template.id
-    );
-    if (forbidden) {
+    if (
+      instance.periodId !== period.id ||
+      instance.templateId !== template.id ||
+      instance.nameSnapshot !== template.name ||
+      instance.plannedAmount !== template.referenceAmount ||
+      instance.status !== 'pending' ||
+      instance.activePaymentOperationId !== null ||
+      instance.revision !== 1
+    ) {
       throw domainError(
-        ERROR_CODES.FIXED_INSTANCE_NOT_ALLOWED,
-        'a template created during an open Period cannot create an instance in that Period',
-        { templateId: template.id, periodId: period.id, instanceId: forbidden.id }
+        ERROR_CODES.DOMAIN_RELATION_MISMATCH,
+        'the current FixedExpenseInstance must match its active Period and template',
+        { templateId: template.id, periodId: period.id, instanceId: instance.id }
       );
     }
-    return Object.freeze({ template, activePeriod: period, instances: immutableCopy(instances, 'instances') });
+    const duplicate = instances.find(
+      (stored) => stored.periodId === period.id && stored.templateId === template.id
+    );
+    if (duplicate) {
+      throw domainError(
+        ERROR_CODES.FIXED_INSTANCE_NOT_ALLOWED,
+        'the active Period already has an instance for this FixedExpenseTemplate',
+        { templateId: template.id, periodId: period.id, instanceId: duplicate.id }
+      );
+    }
+    return Object.freeze({
+      template,
+      activePeriod: period,
+      instance,
+      instances: immutableCopy(instances, 'instances'),
+    });
   }
 
   function domainScope(scopeType, subjectId) {
@@ -1098,7 +1123,7 @@
     assertNewDebtOpening,
     assertInitialBalancePolicy,
     assertDebtTotalAdjustment,
-    assertNoCurrentPeriodFixedExpenseInstance,
+    assertCurrentPeriodFixedExpenseInstance,
     domainScope,
   });
 });

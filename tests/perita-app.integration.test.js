@@ -280,6 +280,146 @@ test('zero salary reference keeps real income and fixed-expense availability can
   assert.equal(paid.state.summary.availableAmount, 130000);
 });
 
+test('a fixed expense created in the active period stays pending until paid and recurs next period', async (t) => {
+  const app = application(new IDBFactory(), { prefix: 'f2200000' });
+  t.after(() => app.close());
+  await app.initialize();
+  const setup = setupPayload();
+  setup.financialSettings.salaryReferenceAmount = 0;
+  setup.period.plannedSalaryAmount = 0;
+  await app.completeSetup(setup);
+  const availableBefore = app.state.summary.availableAmount;
+  const accountBefore = app.state.accounts.find((item) => item.id === id(2)).balance;
+  const templateId = id(82);
+
+  const created = await app.execute('fixed-expense-template.create', { template: {
+    id: templateId, name: 'Internet', referenceAmount: 20000, status: 'active',
+    revision: 1, createdAt: NOW, updatedAt: NOW,
+  } });
+  const currentInstances = created.state._snapshot.fixedExpenseInstances.filter(
+    (item) => item.templateId === templateId && item.periodId === created.state.period.id
+  );
+  assert.equal(currentInstances.length, 1);
+  assert.equal(currentInstances[0].status, 'pending');
+  assert.equal(currentInstances[0].activePaymentOperationId, null);
+  assert.equal(created.state.summary.availableAmount, availableBefore);
+  assert.equal(created.state.accounts.find((item) => item.id === id(2)).balance, accountBefore);
+  assert.equal(created.state.operations.length, 0);
+  assert.equal(created.state.movements.length, 0);
+
+  const paid = await app.execute('fixed-expense-payment.create', {
+    accountId: id(2), fixedExpenseInstanceId: currentInstances[0].id,
+    operationDate: DATE, amount: 20000,
+  });
+  assert.equal(paid.state.summary.fixedExpensePaidAmount, 20000);
+  assert.equal(paid.state.summary.availableAmount, availableBefore - 20000);
+  assert.equal(paid.state.accounts.find((item) => item.id === id(2)).balance, accountBefore - 20000);
+  const payment = paid.state.operations.find(
+    (item) => item.type === 'fixed_expense_payment' && item.status === 'posted'
+  );
+
+  const voided = await app.execute('fixed-expense-payment.void', {
+    operationId: payment.id,
+    accountId: id(2),
+    fixedExpenseInstanceId: currentInstances[0].id,
+    reason: 'Volver a pendiente',
+  });
+  assert.equal(voided.state.summary.fixedExpensePaidAmount, 0);
+  assert.equal(voided.state.summary.availableAmount, availableBefore);
+  assert.equal(voided.state.accounts.find((item) => item.id === id(2)).balance, accountBefore);
+  assert.equal(
+    voided.state._snapshot.fixedExpenseInstances.find(item=>item.id===currentInstances[0].id).status,
+    'pending'
+  );
+
+  const next = await app.execute('period.close-and-open-next', {});
+  const allInstances = next.state._snapshot.fixedExpenseInstances.filter(
+    (item) => item.templateId === templateId
+  );
+  assert.equal(allInstances.length, 2);
+  assert.equal(allInstances.filter(item=>item.periodId===created.state.period.id).length, 1);
+  assert.equal(allInstances.filter(item=>item.periodId===next.state.period.id).length, 1);
+  assert.equal(allInstances.find(item=>item.periodId===next.state.period.id).status, 'pending');
+});
+
+test('initialization automatically regularizes legacy active templates without instances', async (t) => {
+  const factory = new IDBFactory();
+  const storage = IndexedDb.createPeritaIndexedDb({
+    indexedDB: factory,
+    IDBKeyRange,
+    crypto: { randomUUID: () => id(903) },
+    now: () => NOW,
+  });
+  const first = application(factory, {
+    prefix: 'f2250000', storage, tabId: 'fixed-legacy-seed',
+  });
+  await first.initialize();
+  await first.completeSetup(setupPayload());
+  const templates = [
+    { id: id(83), name: 'Arriendo', referenceAmount: 500000 },
+    { id: id(84), name: 'Internet', referenceAmount: 30000 },
+    { id: id(85), name: 'Luz', referenceAmount: 40000 },
+  ];
+  for (const template of templates) {
+    await first.execute('fixed-expense-template.create', { template: {
+      ...template, status: 'active', revision: 1, createdAt: NOW, updatedAt: NOW,
+    } });
+  }
+  const activePeriodId = first.state.period.id;
+  const availableBefore = first.state.summary.availableAmount;
+  await storage.runTransaction(
+    ['fixedExpenseInstances', 'auditEvents'],
+    'readwrite',
+    async (transaction) => {
+      const instances = await transaction.getAll('fixedExpenseInstances');
+      const removedIds = new Set(
+        instances
+          .filter((instance) => instance.periodId === activePeriodId)
+          .map((instance) => instance.id)
+      );
+      for (const instanceId of removedIds) {
+        await transaction.remove('fixedExpenseInstances', instanceId);
+      }
+      const auditEvents = await transaction.getAll('auditEvents');
+      for (const event of auditEvents) {
+        if (event.subjectType === 'fixed_expense_instance' && removedIds.has(event.subjectId)) {
+          await transaction.remove('auditEvents', event.id);
+        }
+      }
+    }
+  );
+  await first.close();
+
+  const app = application(factory, {
+    prefix: 'f2260000', storage, tabId: 'fixed-legacy-reopen',
+  });
+  t.after(() => app.close());
+  const initialized = await app.initialize();
+  const activeInstances = initialized.state._snapshot.fixedExpenseInstances.filter(
+    (instance) => instance.periodId === activePeriodId
+  );
+  assert.equal(activeInstances.length, 3);
+  assert.deepEqual(
+    activeInstances.map((instance) => instance.status),
+    ['pending', 'pending', 'pending']
+  );
+  assert.equal(initialized.state.summary.fixedExpensePlannedAmount, 570000);
+  assert.equal(initialized.state.summary.fixedExpensePaidAmount, 0);
+  assert.equal(initialized.state.summary.fixedExpenseUnpaidAmount, 570000);
+  assert.equal(initialized.state.summary.availableAmount, availableBefore);
+
+  const revisionAfterRegularization = initialized.state.runtime.dataRevision;
+  app.suspend();
+  const resumed = await app.resume();
+  assert.equal(
+    resumed.state._snapshot.fixedExpenseInstances.filter(
+      (instance) => instance.periodId === activePeriodId
+    ).length,
+    3
+  );
+  assert.equal(resumed.state.runtime.dataRevision, revisionAfterRegularization);
+});
+
 test('post-setup account creation records the requested real balance as a canonical adjustment', async (t) => {
   const factory = new IDBFactory();
   const app = application(factory, { prefix: 'a1000000' });
@@ -1332,7 +1472,8 @@ test('all approved V1.1.0 UI command paths are exposed by the adapter', () => {
     'balance-adjustment.create', 'salary-receipt.create', 'additional-income.edit',
     'variable-expense.void', 'fixed-expense-payment.create', 'debt-payment.edit',
     'debt-total-adjustment.create', 'savings-deposit.create', 'savings-withdrawal.void',
-    'transfer.edit', 'period.close-and-open-next', 'fixed-expense-instance.update-planned-amount',
+    'transfer.edit', 'period.close-and-open-next', 'fixed-expense-instance.ensure-active',
+    'fixed-expense-instance.update-planned-amount',
   ]) assert.ok(names.includes(required), required);
 });
 
@@ -1454,6 +1595,8 @@ test('static integration loads V1.1.0 modules in order and caches the complete o
   }
   assert.doesNotMatch(jsx, /PeritaCore|localStorage\.(setItem|removeItem)/);
   assert.match(jsx, /fixed-expense-instance\.update-planned-amount/);
+  assert.match(jsx, /fixed-expense-instance\.ensure-active/);
+  assert.doesNotMatch(jsx, /Esta plantilla comienza a aplicarse en el periodo siguiente/);
   assert.match(jsx, /La cuenta debe crearse en cero/);
   assert.match(jsx, /La meta debe crearse en cero/);
   assert.match(jsx, /const MoneyInput/);

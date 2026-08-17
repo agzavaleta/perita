@@ -777,25 +777,30 @@ test('V1.1.0 debt adjustment and fixed-template rules', async (t) => {
     );
   });
 
-  await t.test('a template created in an open period has no current-period instance', () => {
-    assert.doesNotThrow(() => Domain.assertNoCurrentPeriodFixedExpenseInstance({
+  await t.test('a template created in an open period has one matching pending instance', () => {
+    assert.doesNotThrow(() => Domain.assertCurrentPeriodFixedExpenseInstance({
       template: validTemplate(),
       activePeriod: validPeriod(),
+      instance: validInstance(),
       instances: [],
     }));
-    const futureInstance = validInstance({ periodId: id(40) });
-    assert.doesNotThrow(() => Domain.assertNoCurrentPeriodFixedExpenseInstance({
-      template: validTemplate(),
-      activePeriod: validPeriod(),
-      instances: [futureInstance],
-    }));
     assert.equal(
-      captureError(() => Domain.assertNoCurrentPeriodFixedExpenseInstance({
+      captureError(() => Domain.assertCurrentPeriodFixedExpenseInstance({
         template: validTemplate(),
         activePeriod: validPeriod(),
+        instance: validInstance({ id: id(31) }),
         instances: [validInstance()],
       })).code,
       Contracts.ERROR_CODES.FIXED_INSTANCE_NOT_ALLOWED
+    );
+    assert.equal(
+      captureError(() => Domain.assertCurrentPeriodFixedExpenseInstance({
+        template: validTemplate(),
+        activePeriod: validPeriod(),
+        instance: validInstance({ plannedAmount: 1 }),
+        instances: [],
+      })).code,
+      Contracts.ERROR_CODES.DOMAIN_RELATION_MISMATCH
     );
   });
 });

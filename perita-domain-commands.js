@@ -81,6 +81,12 @@
     'periods',
     'auditEvents',
   ]);
+  const FIXED_INSTANCE_ENSURE_STORES = Object.freeze([
+    'fixedExpenseTemplates',
+    'fixedExpenseInstances',
+    'periods',
+    'auditEvents',
+  ]);
   const SAVINGS_GOAL_CREATE_STORES = Object.freeze([
     'savingsGoals',
     'periods',
@@ -2195,8 +2201,21 @@
         );
       }
       const occurredAt = canonicalTimestamp(now);
+      const generatedIds = new Set([template.id]);
+      const fixedExpenseInstance = Domain.validateFixedExpenseInstance({
+        id: createIdentifier(createUuid, 'fixedExpenseInstance.id', generatedIds),
+        periodId: request.periodId,
+        templateId: template.id,
+        nameSnapshot: template.name,
+        plannedAmount: template.referenceAmount,
+        status: 'pending',
+        activePaymentOperationId: null,
+        revision: 1,
+        createdAt: occurredAt,
+        updatedAt: occurredAt,
+      });
       const auditEvent = createdAuditEvent({
-        id: createIdentifier(createUuid, 'auditEvent.id', new Set()),
+        id: createIdentifier(createUuid, 'auditEvent.template.id', generatedIds),
         periodId: request.periodId,
         subjectType: 'fixed_expense_template',
         subjectId: template.id,
@@ -2204,12 +2223,24 @@
         nextValue: template,
         occurredAt,
       });
+      const instanceAuditEvent = createdAuditEvent({
+        id: createIdentifier(createUuid, 'auditEvent.instance.id', generatedIds),
+        periodId: request.periodId,
+        subjectType: 'fixed_expense_instance',
+        subjectId: fixedExpenseInstance.id,
+        commandType: 'fixed-expense-template.create',
+        nextValue: fixedExpenseInstance,
+        occurredAt,
+      });
       return runtime.executeCommand({
         commandType: 'fixed-expense-template.create',
         expectedDataRevision: request.expectedDataRevision,
         expectedWriterEpoch: request.expectedWriterEpoch,
         affectedStores: FIXED_TEMPLATE_CREATE_STORES,
-        affectedScopes: entityScopes(request.periodId, 'fixed_expense_template', template.id),
+        affectedScopes: [
+          ...entityScopes(request.periodId, 'fixed_expense_template', template.id),
+          Domain.domainScope('fixed_expense_instance', fixedExpenseInstance.id),
+        ],
         metadata: { periodId: request.periodId, templateId: template.id },
         execute: async (transaction, context) => {
           const storedPeriod = await transaction.get('periods', request.periodId);
@@ -2224,10 +2255,118 @@
             );
           }
           const instances = await transaction.getAll('fixedExpenseInstances');
-          Domain.assertNoCurrentPeriodFixedExpenseInstance({ template, activePeriod, instances });
+          Domain.assertCurrentPeriodFixedExpenseInstance({
+            template,
+            activePeriod,
+            instance: fixedExpenseInstance,
+            instances,
+          });
           await transaction.add('fixedExpenseTemplates', template);
+          await transaction.add('fixedExpenseInstances', fixedExpenseInstance);
           await transaction.add('auditEvents', auditEvent);
-          return Object.freeze({ template, auditEvent });
+          await transaction.add('auditEvents', instanceAuditEvent);
+          return Object.freeze({
+            template,
+            fixedExpenseInstance,
+            auditEvent,
+            auditEvents: Object.freeze([auditEvent, instanceAuditEvent]),
+          });
+        },
+      });
+    }
+
+    async function ensureActiveFixedExpenseInstance(input) {
+      const request = requireRecord(input, 'fixed-expense-instance.ensure-active');
+      const fields = [
+        'expectedDataRevision', 'expectedWriterEpoch', 'periodId',
+        'templateId', 'expectedTemplateRevision',
+      ];
+      validateCommandHeader(request, 'fixed-expense-instance.ensure-active', fields);
+      assertUuid(request.templateId, { field: 'templateId' });
+      assertRevision(request.expectedTemplateRevision, { field: 'expectedTemplateRevision' });
+      const occurredAt = canonicalTimestamp(now);
+      const generatedIds = new Set([request.templateId]);
+      const candidateInstanceId = createIdentifier(
+        createUuid,
+        'fixedExpenseInstance.id',
+        generatedIds
+      );
+      const auditEventId = createIdentifier(createUuid, 'auditEvent.id', generatedIds);
+      return runtime.executeCommand({
+        commandType: 'fixed-expense-instance.ensure-active',
+        expectedDataRevision: request.expectedDataRevision,
+        expectedWriterEpoch: request.expectedWriterEpoch,
+        affectedStores: FIXED_INSTANCE_ENSURE_STORES,
+        affectedScopes: [
+          ...entityScopes(request.periodId, 'fixed_expense_template', request.templateId),
+          Domain.domainScope('fixed_expense_instance', candidateInstanceId),
+        ],
+        metadata: { periodId: request.periodId, templateId: request.templateId },
+        execute: async (transaction, context) => {
+          const storedPeriod = await transaction.get('periods', request.periodId);
+          const activePeriod = requireActiveOpenPeriod(
+            storedPeriod,
+            context,
+            request.periodId,
+            'fixed-expense-instance.ensure-active'
+          );
+          const storedTemplate = await transaction.get('fixedExpenseTemplates', request.templateId);
+          if (storedTemplate === undefined) {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'the requested FixedExpenseTemplate does not exist',
+              { templateId: request.templateId }
+            );
+          }
+          const template = Domain.validateFixedExpenseTemplate(storedTemplate);
+          assertExpectedRevision(template.revision, request.expectedTemplateRevision, {
+            entityType: 'FixedExpenseTemplate', entityId: template.id,
+          });
+          if (template.status !== 'active') {
+            throw domainError(
+              ERROR_CODES.DOMAIN_STATE_INVALID,
+              'only an active FixedExpenseTemplate can receive an active-period instance',
+              { templateId: template.id, status: template.status }
+            );
+          }
+          const instances = (await transaction.getAll('fixedExpenseInstances'))
+            .map(Domain.validateFixedExpenseInstance);
+          const existing = instances.find(
+            (instance) => instance.periodId === activePeriod.id && instance.templateId === template.id
+          );
+          if (existing) {
+            return Object.freeze({ fixedExpenseInstance: existing, auditEvent: null, created: false });
+          }
+          const fixedExpenseInstance = Domain.validateFixedExpenseInstance({
+            id: candidateInstanceId,
+            periodId: activePeriod.id,
+            templateId: template.id,
+            nameSnapshot: template.name,
+            plannedAmount: template.referenceAmount,
+            status: 'pending',
+            activePaymentOperationId: null,
+            revision: 1,
+            createdAt: occurredAt,
+            updatedAt: occurredAt,
+          });
+          Domain.assertCurrentPeriodFixedExpenseInstance({
+            template,
+            activePeriod,
+            instance: fixedExpenseInstance,
+            instances,
+          });
+          const auditEvent = createdAuditEvent({
+            id: auditEventId,
+            periodId: activePeriod.id,
+            subjectType: 'fixed_expense_instance',
+            subjectId: fixedExpenseInstance.id,
+            commandType: 'fixed-expense-instance.ensure-active',
+            nextValue: fixedExpenseInstance,
+            occurredAt,
+          });
+          await transaction.add('fixedExpenseInstances', fixedExpenseInstance);
+          await transaction.add('auditEvents', auditEvent);
+          return Object.freeze({ fixedExpenseInstance, auditEvent, created: true });
         },
       });
     }
@@ -6087,6 +6226,7 @@
         deactivate: deactivateFixedExpenseTemplate,
       }),
       fixedExpenseInstance: Object.freeze({
+        ensureActive: ensureActiveFixedExpenseInstance,
         updatePlannedAmount: updateFixedExpenseInstancePlannedAmount,
       }),
       savingsGoal: Object.freeze({
@@ -6164,6 +6304,7 @@
     FIXED_TEMPLATE_CREATE_STORES,
     FIXED_TEMPLATE_CHANGE_STORES,
     FIXED_INSTANCE_CHANGE_STORES,
+    FIXED_INSTANCE_ENSURE_STORES,
     SAVINGS_GOAL_CREATE_STORES,
     SAVINGS_GOAL_CHANGE_STORES,
     DEBT_CREATE_STORES,
