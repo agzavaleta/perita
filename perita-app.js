@@ -557,30 +557,57 @@
     }
     let active = false;
     let refreshing = false;
+    let accepted = false;
     const hadController = Boolean(serviceWorker.controller);
     let registration = null;
     let boundRegistration = null;
+    let latestWaiting = null;
+    const installingListeners = new Map();
 
     const detectWaiting = (worker) => {
-      if (active && worker && typeof onWaiting === 'function') onWaiting(worker);
+      if (!active || !worker) return;
+      latestWaiting = worker;
+      if (typeof onWaiting === 'function') onWaiting(worker);
     };
     const bindInstalling = (worker) => {
-      if (!worker || typeof worker.addEventListener !== 'function') return;
-      worker.addEventListener('statechange', () => {
-        if (worker.state === 'installed' && serviceWorker.controller) detectWaiting(worker);
-      });
+      if (
+        !worker || typeof worker.addEventListener !== 'function' ||
+        installingListeners.has(worker)
+      ) return;
+      const handleStateChange = () => {
+        if (worker.state !== 'installed') return;
+        if (serviceWorker.controller) detectWaiting(worker);
+        worker.removeEventListener?.('statechange', handleStateChange);
+        installingListeners.delete(worker);
+      };
+      installingListeners.set(worker, handleStateChange);
+      worker.addEventListener('statechange', handleStateChange);
     };
+    const handleUpdateFound = () => bindInstalling(boundRegistration && boundRegistration.installing);
     const bindRegistration = (value) => {
       registration = value;
       if (boundRegistration === value) return;
+      boundRegistration?.removeEventListener?.('updatefound', handleUpdateFound);
       boundRegistration = value;
-      value.addEventListener('updatefound', () => bindInstalling(value.installing));
+      value.addEventListener('updatefound', handleUpdateFound);
     };
     const handleControllerChange = () => {
-      if (refreshing || !hadController) return;
+      if (!accepted || refreshing || !hadController) return;
       refreshing = true;
       if (typeof reload === 'function') reload();
     };
+    function accept(worker) {
+      if (!active || accepted) return false;
+      const target = worker || latestWaiting || (registration && registration.waiting);
+      if (!target || typeof target.postMessage !== 'function') return false;
+      try {
+        target.postMessage({ type: 'SKIP_WAITING' });
+      } catch (_) {
+        return false;
+      }
+      accepted = true;
+      return true;
+    }
     async function check() {
       if (!active) return null;
       const value = registration || await serviceWorker.ready;
@@ -603,8 +630,13 @@
       if (!active) return;
       active = false;
       serviceWorker.removeEventListener('controllerchange', handleControllerChange);
+      boundRegistration?.removeEventListener?.('updatefound', handleUpdateFound);
+      for (const [worker, listener] of installingListeners) {
+        worker.removeEventListener?.('statechange', listener);
+      }
+      installingListeners.clear();
     }
-    return Object.freeze({ start, stop, check });
+    return Object.freeze({ start, stop, check, accept });
   }
 
   function createPeritaApplication(options) {

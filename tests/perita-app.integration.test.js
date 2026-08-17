@@ -1044,12 +1044,16 @@ test('a residual iOS writer lease is awaited once and then reacquired without du
   assert.equal(intervals.createdCount, 1);
 });
 
-test('service worker waiting and newly installed updates remain detectable without reload loops', async () => {
+test('service worker updates remain pending until explicit acceptance and reload only once', async () => {
   const container = eventTargetHarness();
   container.controller = { id: 'current-controller' };
   const registration = eventTargetHarness();
   let updateCalls = 0;
-  const waiting = { id: 'waiting-worker' };
+  const messages = [];
+  const waiting = {
+    id: 'waiting-worker',
+    postMessage: (message) => messages.push(message),
+  };
   registration.waiting = waiting;
   registration.installing = null;
   registration.update = async () => { updateCalls += 1; };
@@ -1063,8 +1067,11 @@ test('service worker waiting and newly installed updates remain detectable witho
   });
 
   await updates.start();
-  assert.equal(updateCalls, 1);
+  await updates.start();
+  assert.equal(updateCalls, 2);
   assert.equal(detected.includes(waiting), true);
+  assert.equal(container.listenerCount('controllerchange'), 1);
+  assert.equal(registration.listenerCount('updatefound'), 1);
 
   const installing = eventTargetHarness();
   installing.state = 'installing';
@@ -1075,13 +1082,30 @@ test('service worker waiting and newly installed updates remain detectable witho
   installing.dispatch('statechange');
   assert.equal(detected.includes(installing), true);
 
-  await updates.check();
-  assert.equal(updateCalls, 2);
+  container.dispatch('controllerchange');
+  assert.equal(reloads, 0);
+  assert.equal(updates.accept(waiting), true);
+  assert.equal(updates.accept(waiting), false);
+  assert.deepEqual(messages, [{ type: 'SKIP_WAITING' }]);
   container.dispatch('controllerchange');
   container.dispatch('controllerchange');
   assert.equal(reloads, 1);
   updates.stop();
   assert.equal(container.listenerCount('controllerchange'), 0);
+  assert.equal(registration.listenerCount('updatefound'), 0);
+
+  registration.waiting = waiting;
+  const nextSessionDetected = [];
+  const nextSession = PeritaApp.createServiceWorkerUpdateController({
+    serviceWorker: container,
+    onWaiting: (worker) => nextSessionDetected.push(worker),
+    reload: () => { reloads += 1; },
+  });
+  await nextSession.start();
+  assert.equal(nextSessionDetected.includes(waiting), true);
+  container.dispatch('controllerchange');
+  assert.equal(reloads, 1);
+  nextSession.stop();
 });
 
 test('a failed resume remains retryable and never reuses a closed storage connection', async (t) => {
@@ -1641,6 +1665,12 @@ test('UI integration keeps setup, navigation, icons, hierarchy, and unsaved guar
   assert.doesNotMatch(incomeSource, /\{label:'Sueldo recibido',value:summary\.receivedSalaryAmount/);
   assert.doesNotMatch(incomeSource.slice(0, incomeSource.indexOf('<div className="card-sm mb-4"')), /autoFocus/);
   assert.match(jsx, /Sin ahorros registrados\./);
+  assert.match(jsx, /page==='dashboard' && updateWaiting && !updateDismissed/);
+  assert.match(jsx, /Actualización disponible/);
+  assert.match(jsx, /Hay una nueva versión de Perita lista para instalar\. Tus datos no se modificarán\./);
+  assert.match(jsx, /onClick=\{\(\)=>setUpdateDismissed\(true\)\}>Después/);
+  assert.match(jsx, /swUpdatesRef\.current\?\.accept\(updateWaiting\)/);
+  assert.doesNotMatch(jsx, /updateWaiting\.postMessage/);
   for (const location of [
     'BancoEstado', 'Banco de Chile', 'Banco Santander', 'BCI', 'Scotiabank', 'Itaú',
     'Banco Falabella', 'Banco Ripley', 'Banco BICE', 'Banco Security', 'Banco Consorcio',

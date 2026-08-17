@@ -2814,6 +2814,8 @@ const App = () => {
   const [state, setStateRaw] = useState(emptyView);
   const [notifs, setNotifs] = useState([]);
   const [updateWaiting, setUpdateWaiting] = useState(null); // holds waiting SW
+  const [updateDismissed, setUpdateDismissed] = useState(false);
+  const [updateAccepted, setUpdateAccepted] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const lifecycleRef=useRef(null);
   const swUpdatesRef=useRef(null);
@@ -2962,23 +2964,6 @@ const App = () => {
         {['ready_read_only','read_only'].includes(boot.phase)&&<button className="btn btn-ghost btn-sm runtime-banner-action" onClick={async()=>{try{const result=await app.takeOverWriter();setStateRaw(result.state);setBoot({phase:result.report.status==='diagnostic_only'?'diagnostic':result.report.status,state:result.state,report:result.report,writer:true});app.startHeartbeat();notify('Esta pestaña ahora controla la escritura','success');}catch(error){notify(presentError(error),'warn');}}}>Intentar tomar control</button>}
       </div>}
 
-      {/* Update available modal */}
-      {updateWaiting && (
-        <div className="modal-backdrop" style={{zIndex:600}}>
-          <div className="modal" style={{maxWidth:380}} onClick={e=>e.stopPropagation()}>
-            <div style={{fontSize:28,marginBottom:8}}>🐷</div>
-            <div className="modal-title">Actualización disponible</div>
-            <p className="text-sm text-gray mb-6">Hay una nueva versión de Perita lista para instalar. Tus datos no se modificarán.</p>
-            <div className="form-actions">
-              <button className="btn btn-ghost" onClick={()=>setUpdateWaiting(null)}>Después</button>
-              <button className="btn btn-primary" onClick={()=>{
-                updateWaiting.postMessage({type:'SKIP_WAITING'});
-              }}>Actualizar ahora</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Mobile bottom nav — Dashboard · Cuentas · Ahorros · Otros · Ajustes */}
       <nav className="mobile-nav">
         {[
@@ -3050,6 +3035,23 @@ const App = () => {
           </div>
         </div>
         <div className="content">
+          {page==='dashboard' && updateWaiting && !updateDismissed && (
+            <div className="card mb-6" role="status" aria-live="polite">
+              <div className="flex justify-between items-start gap-4">
+                <div>
+                  <div className="card-title">Actualización disponible</div>
+                  <p className="text-sm text-gray">Hay una nueva versión de Perita lista para instalar. Tus datos no se modificarán.</p>
+                </div>
+                <span style={{fontSize:28,lineHeight:1}} aria-hidden="true">🐷</span>
+              </div>
+              <div className="form-actions mt-4">
+                <button className="btn btn-ghost" disabled={updateAccepted} onClick={()=>setUpdateDismissed(true)}>Después</button>
+                <button className="btn btn-primary" disabled={updateAccepted} onClick={()=>{
+                  if(swUpdatesRef.current?.accept(updateWaiting))setUpdateAccepted(true);
+                }}>{updateAccepted?'Actualizando…':'Actualizar ahora'}</button>
+              </div>
+            </div>
+          )}
           {page==='dashboard' && <Dashboard {...pageProps} />}
           {page==='accounts' && <AccountsPage {...pageProps} />}
           {page==='wallets' && <Wallets {...pageProps} />}
