@@ -1118,6 +1118,11 @@ test('service worker updates remain pending until explicit acceptance and reload
   registration.waiting = waiting;
   registration.installing = null;
   registration.update = async () => { updateCalls += 1; };
+  let registrationLookups = 0;
+  container.getRegistration = async () => {
+    registrationLookups += 1;
+    return registration;
+  };
   container.ready = Promise.resolve(registration);
   const detected = [];
   let reloads = 0;
@@ -1130,6 +1135,7 @@ test('service worker updates remain pending until explicit acceptance and reload
   await updates.start();
   await updates.start();
   assert.equal(updateCalls, 2);
+  assert.equal(registrationLookups, 1);
   assert.equal(detected.includes(waiting), true);
   assert.equal(container.listenerCount('controllerchange'), 1);
   assert.equal(registration.listenerCount('updatefound'), 1);
@@ -1167,6 +1173,43 @@ test('service worker updates remain pending until explicit acceptance and reload
   container.dispatch('controllerchange');
   assert.equal(reloads, 1);
   nextSession.stop();
+});
+
+test('service worker update checks bind an installing worker even when iOS omits updatefound timing', async () => {
+  const container = eventTargetHarness();
+  container.controller = { id: 'current-controller' };
+  const registration = eventTargetHarness();
+  const installing = eventTargetHarness();
+  installing.state = 'installing';
+  registration.waiting = null;
+  registration.installing = null;
+  registration.update = async () => { registration.installing = installing; };
+  container.getRegistration = async () => registration;
+  container.ready = new Promise(() => {});
+  const detected = [];
+  let reloads = 0;
+  const updates = PeritaApp.createServiceWorkerUpdateController({
+    serviceWorker: container,
+    onWaiting: (worker) => detected.push(worker),
+    reload: () => { reloads += 1; },
+  });
+
+  await updates.start();
+  assert.equal(installing.listenerCount('statechange'), 1);
+  installing.state = 'installed';
+  installing.dispatch('statechange');
+  assert.deepEqual(detected, [installing]);
+  container.dispatch('controllerchange');
+  assert.equal(reloads, 0);
+  updates.stop();
+});
+
+test('service worker registration bypasses the HTTP cache for update checks', () => {
+  const html = readFileSync(`${__dirname}/../index.html`, 'utf8');
+  assert.match(
+    html,
+    /serviceWorker\.register\('\/service-worker\.js', \{ updateViaCache: 'none' \}\)/
+  );
 });
 
 test('a failed resume remains retryable and never reuses a closed storage connection', async (t) => {

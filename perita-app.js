@@ -563,7 +563,11 @@
     const serviceWorker = settings.serviceWorker;
     const onWaiting = settings.onWaiting;
     const reload = settings.reload;
-    if (!serviceWorker || !serviceWorker.ready || typeof serviceWorker.addEventListener !== 'function') {
+    if (
+      !serviceWorker ||
+      (!serviceWorker.ready && typeof serviceWorker.getRegistration !== 'function') ||
+      typeof serviceWorker.addEventListener !== 'function'
+    ) {
       throw new TypeError('createServiceWorkerUpdateController requires a service worker container');
     }
     let active = false;
@@ -621,13 +625,19 @@
     }
     async function check() {
       if (!active) return null;
-      const value = registration || await serviceWorker.ready;
+      let value = registration;
+      if (!value && typeof serviceWorker.getRegistration === 'function') {
+        try { value = await serviceWorker.getRegistration(); } catch (_) {}
+      }
+      if (!value) value = await serviceWorker.ready;
       if (!active) return null;
       bindRegistration(value);
+      bindInstalling(value.installing);
       detectWaiting(value.waiting);
       if (typeof value.update === 'function') {
         try { await value.update(); } catch (_) {}
       }
+      bindInstalling(value.installing);
       detectWaiting(value.waiting);
       return value;
     }
