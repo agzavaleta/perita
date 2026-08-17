@@ -1,4 +1,4 @@
-/* perita-app.js — browser/application integration for Perita V1.1.0 */
+/* perita-app.js — browser/application integration for Perita V1.1.1 */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
     module.exports = factory(
@@ -37,12 +37,13 @@
 
   const REQUIRED = [Contracts, IndexedDb, Domain, Runtime, Integrity, DomainCommands, Migration, Backup];
   if (REQUIRED.some((dependency) => !dependency)) {
-    throw new Error('Perita V1.1.0 application dependencies are incomplete');
+    throw new Error('Perita V1.1.1 application dependencies are incomplete');
   }
 
-  const APP_VERSION = '1.1.0';
+  const APP_VERSION = '1.1.1';
   const LEGACY_KEY = 'perita_v1';
   const TAB_ID_SESSION_KEY = 'perita_v110_tab_id';
+  const SAVINGS_GOAL_EMOJI_PREFIX = 'savings_goal_emoji:';
   const LEASE_DURATION_MS = 15000;
   const HEARTBEAT_INTERVAL_MS = 5000;
   const READ_STORES = Object.freeze([
@@ -50,7 +51,7 @@
     'savingsGoals', 'debts', 'categories', 'fixedExpenseTemplates',
     'fixedExpenseInstances', 'operations', 'movements', 'operationRevisions',
     'auditEvents', 'periodSnapshots', 'legacyEntries', 'integrityReports',
-    'migrations', 'commits',
+    'migrations', 'commits', 'preferences',
   ]);
 
   const COMMANDS = Object.freeze({
@@ -332,6 +333,14 @@
     };
   }
 
+  function savingsGoalEmoji(value) {
+    return typeof value === 'string' && value.trim() ? value : '💰';
+  }
+
+  function savingsGoalEmojiKey(goalId) {
+    return `${SAVINGS_GOAL_EMOJI_PREFIX}${goalId}`;
+  }
+
   function snapshotToView(snapshot, currentCivilDate) {
     const runtime = snapshot.system.find((record) => record.key === 'runtime');
     const settings = snapshot.financialSettings.find((record) => record.key === 'current') || null;
@@ -358,8 +367,10 @@
       id: account.id, name: account.name, balance: account.currentBalance,
       type: 'bank', bank: account.bank || '', status: account.status, revision: account.revision,
     }));
+    const emojiPreferences = new Map(snapshot.preferences.map((preference) => [preference.key, preference.value]));
     const wallets = snapshot.savingsGoals.map((goal) => ({
-      id: goal.id, emoji: '💰', name: goal.name, bank: goal.bank || '', balance: goal.currentBalance,
+      id: goal.id, emoji: savingsGoalEmoji(emojiPreferences.get(savingsGoalEmojiKey(goal.id))),
+      name: goal.name, bank: goal.bank || '', balance: goal.currentBalance,
       monthly: goal.plannedMonthlyAmount, goal: goal.targetAmount,
       status: goal.lifecycleStatus, progressStatus: goal.progressStatus, revision: goal.revision,
     }));
@@ -1145,6 +1156,7 @@
       const operationDate = request.operationDate || civilDate(new Date(timestamp));
       let created = null;
       let completed = null;
+      let adjustment = null;
       stateDeliveryPauseDepth += 1;
       try {
         created = await execute('savings-goal.create', {
@@ -1172,11 +1184,13 @@
             delta: currentBalance,
             reason: request.reason || 'Saldo preexistente al crear la meta de ahorro',
           });
+          adjustment = completed.result;
         }
+        completed = await updateSavingsGoalEmoji(goalId, request.emoji);
         return immutable({
           goalId,
           created: created.result,
-          adjustment: currentBalance === 0 ? null : completed.result,
+          adjustment,
           state: completed.state,
         });
       } catch (cause) {
@@ -1294,6 +1308,7 @@
       }
       const balanceDelta = currentBalance - goal.currentBalance;
       let completed = null;
+      let adjustment = null;
       stateDeliveryPauseDepth += 1;
       try {
         if (Object.keys(changes).length > 0) {
@@ -1306,17 +1321,46 @@
             delta: balanceDelta,
             reason: request.reason || 'Ajuste de saldo al editar la meta de ahorro',
           });
+          adjustment = completed.result;
+        }
+        if (Object.prototype.hasOwnProperty.call(request, 'emoji')) {
+          completed = await updateSavingsGoalEmoji(goal.id, request.emoji);
         }
         return immutable({
           goalId: goal.id,
           detailsUpdated: Object.keys(changes).length > 0,
-          adjustment: balanceDelta === 0 ? null : completed.result,
+          adjustment,
           state: completed ? completed.state : state,
         });
       } finally {
         stateDeliveryPauseDepth -= 1;
         flushPendingStateDelivery();
       }
+    }
+
+    async function updateSavingsGoalEmoji(goalId, emoji) {
+      const state = lastState || await refresh();
+      if (writerEpoch === null) throw new Error('Esta pestaña está en modo solo lectura.');
+      const value = savingsGoalEmoji(emoji);
+      const key = savingsGoalEmojiKey(goalId);
+      const stored = state._snapshot.preferences.find((preference) => preference.key === key);
+      if (stored && stored.value === value) {
+        return immutable({ result: { key, value, updated: false }, state });
+      }
+      const result = await runtime.executeCommand({
+        commandType: 'preferences.update-savings-goal-emoji',
+        expectedDataRevision: state.runtime.dataRevision,
+        expectedWriterEpoch: writerEpoch,
+        affectedStores: ['preferences'],
+        affectedScopes: [Domain.domainScope('savings_goal', goalId)],
+        metadata: { goalId, preferenceKey: key },
+        execute: async (transaction) => {
+          await transaction.put('preferences', { key, value });
+          return Object.freeze({ key, value, updated: true });
+        },
+      });
+      emit('data-changed');
+      return immutable({ result, state: await refresh() });
     }
 
     async function updateDebtDetailsAndTotal(input) {

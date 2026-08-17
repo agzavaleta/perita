@@ -5,7 +5,7 @@
 // "update available" modal (Perita.jsx / Settings) already handles prompting
 // the user and calling skipWaiting() via postMessage — see the message
 // listener at the bottom of this file.
-const CACHE_NAME = 'perita-v110-shell-v1';
+const CACHE_NAME = 'perita-v111-shell-v1';
 
 const APP_SHELL = [
   '/',

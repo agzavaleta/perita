@@ -27,6 +27,7 @@ function sha256(value) {
 }
 
 test('presentation translates operation types and domain errors without exposing technical names', () => {
+  assert.equal(PeritaApp.APP_VERSION, '1.1.1');
   const expectedLabels = {
     balance_adjustment: 'Ajuste de saldo',
     salary_receipt: 'Sueldo recibido',
@@ -651,6 +652,66 @@ test('savings location supports bank, cash, custom text, and editing without fin
   }
   assert.equal(edited.state.operations.length, operationCount);
   assert.equal(edited.state.movements.length, movementCount);
+});
+
+test('savings emoji is an editable persisted visual preference with a legacy fallback', async (t) => {
+  const factory = new IDBFactory();
+  const app = application(factory, { prefix: 'a1465000' });
+  await app.initialize();
+  await app.completeSetup(setupPayload());
+
+  const defaultGoal = await app.createSavingsGoalWithBalance({
+    name: 'Meta por defecto', targetAmount: 200000, plannedMonthlyAmount: 5000,
+    currentBalance: 0, operationDate: DATE,
+  });
+  assert.equal(defaultGoal.state.wallets.find((item) => item.id === defaultGoal.goalId).emoji, '💰');
+
+  const customGoal = await app.createSavingsGoalWithBalance({
+    name: 'Viaje', emoji: '🏝️', targetAmount: 500000, plannedMonthlyAmount: 20000,
+    currentBalance: 75000, operationDate: DATE,
+  });
+  assert.equal(customGoal.state.wallets.find((item) => item.id === customGoal.goalId).emoji, '🏝️');
+  assert.deepEqual(
+    customGoal.state._snapshot.preferences.find(
+      (item) => item.key === `savings_goal_emoji:${customGoal.goalId}`
+    ),
+    { key: `savings_goal_emoji:${customGoal.goalId}`, value: '🏝️' }
+  );
+
+  const beforeGoal = customGoal.state._snapshot.savingsGoals.find((item) => item.id === customGoal.goalId);
+  const operationCount = customGoal.state.operations.length;
+  const movementCount = customGoal.state.movements.length;
+  const auditCount = customGoal.state._snapshot.auditEvents.length;
+  const edited = await app.updateSavingsGoalWithBalance({
+    goalId: customGoal.goalId, name: beforeGoal.name, emoji: '🚀', bank: beforeGoal.bank,
+    targetAmount: beforeGoal.targetAmount, plannedMonthlyAmount: beforeGoal.plannedMonthlyAmount,
+    currentBalance: beforeGoal.currentBalance, operationDate: DATE,
+  });
+  assert.equal(edited.state.wallets.find((item) => item.id === customGoal.goalId).emoji, '🚀');
+  assert.deepEqual(
+    edited.state._snapshot.savingsGoals.find((item) => item.id === customGoal.goalId),
+    beforeGoal
+  );
+  assert.equal(edited.state.operations.length, operationCount);
+  assert.equal(edited.state.movements.length, movementCount);
+  assert.equal(edited.state._snapshot.auditEvents.length, auditCount);
+
+  const legacyGoalId = id(86);
+  const timestamp = NOW;
+  const legacy = await app.execute('savings-goal.create', { goal: {
+    id: legacyGoalId, name: 'Meta antigua', bank: null, targetAmount: 100000,
+    openingBalance: 0, currentBalance: 0, plannedMonthlyAmount: 0,
+    lifecycleStatus: 'active', progressStatus: 'in_progress', closedAt: null,
+    revision: 1, createdAt: timestamp, updatedAt: timestamp,
+  } });
+  assert.equal(legacy.state.wallets.find((item) => item.id === legacyGoalId).emoji, '💰');
+
+  await app.close();
+  const reloaded = application(factory, { prefix: 'a1466000', tabId: 'emoji-reload' });
+  t.after(() => reloaded.close());
+  const initialized = await reloaded.initialize();
+  assert.equal(initialized.state.wallets.find((item) => item.id === customGoal.goalId).emoji, '🚀');
+  assert.equal(initialized.state.wallets.find((item) => item.id === legacyGoalId).emoji, '💰');
 });
 
 test('debt edit processes descriptive data, total, or both from one integration action', async (t) => {
@@ -1627,7 +1688,8 @@ test('static integration loads V1.1.0 modules in order and caches the complete o
   assert.match(jsx, /const OtherPage/);
   assert.match(jsx, /history',label:'Historial',icon:'document'/);
   assert.doesNotMatch(jsx, /Presupuesto variable|Ahorro planificado|Guardar planificación/);
-  assert.match(worker, /perita-v110-shell-v1/);
+  assert.match(worker, /perita-v111-shell-v1/);
+  assert.doesNotMatch(worker, /perita-v110-shell-v1/);
   assert.match(html, /IndexedDB perita_v110/);
 });
 
@@ -1682,6 +1744,10 @@ test('UI integration keeps setup, navigation, icons, hierarchy, and unsaved guar
   assert.equal((jsx.match(/const FINANCIAL_LOCATION_OPTIONS/g)||[]).length, 1);
   assert.match(accountsSource, /if\(!bank\) \{ notify\('Selecciona un banco, efectivo u otra institución\.'/);
   assert.match(accountsSource, /<select className="form-input form-select" value=\{form\.bankChoice\|\|''\}/);
+  assert.match(walletsSource, /<label className="form-label">Emoji<\/label>/);
+  assert.match(walletsSource, /placeholder="💰" value=\{form\.emoji\|\|''\}/);
+  assert.match(walletsSource, /createSavingsGoalWithBalance\(\{[\s\S]*emoji:form\.emoji/);
+  assert.match(walletsSource, /updateSavingsGoalWithBalance\(\{[\s\S]*emoji:form\.emoji/);
   assert.match(walletsSource, /<select className="form-input form-select" value=\{form\.bankChoice\|\|''\}/);
   assert.match(jsx, /form\.bankChoice==='Otro'/);
   assert.match(jsx, /Nombre de la institución/);

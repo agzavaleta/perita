@@ -1,7 +1,7 @@
 {
   "name": "perita",
-  "version": "1.1.0",
-  "description": "Perita V1.1.0 — finanzas personales con IndexedDB y operaciones canónicas",
+  "version": "1.1.1",
+  "description": "Perita V1.1.1 — finanzas personales con IndexedDB y operaciones canónicas",
   "private": true,
   "main": "perita-app.js",
   "scripts": {

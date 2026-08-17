@@ -1096,6 +1096,7 @@ const Wallets = ({state, setState, notify, run, app}) => {
       try {
         const completed=await app.createSavingsGoalWithBalance({
           name:form.name.trim(),
+          emoji:form.emoji,
           bank,
           targetAmount:form.goal,
           plannedMonthlyAmount:form.monthly,
@@ -1118,7 +1119,7 @@ const Wallets = ({state, setState, notify, run, app}) => {
     } else {
       try {
         const completed=await app.updateSavingsGoalWithBalance({
-          goalId:form.id,name:form.name.trim(),targetAmount:form.goal,
+          goalId:form.id,name:form.name.trim(),emoji:form.emoji,targetAmount:form.goal,
           bank,plannedMonthlyAmount:form.monthly,currentBalance:form.balance,
           operationDate:today(),reason:'Ajuste de saldo al editar la meta de ahorro',
         });
@@ -1209,6 +1210,12 @@ const Wallets = ({state, setState, notify, run, app}) => {
                   onChange={e=>setForm(x=>({...x,[f.key]:e.target.value}))} />
               </div>
             ))}
+            <div className="form-group">
+              <label className="form-label">Emoji</label>
+              <input className="form-input" type="text" inputMode="text" autoComplete="off"
+                style={{maxWidth:96}} placeholder="💰" value={form.emoji||''}
+                onChange={e=>setForm(x=>({...x,emoji:e.target.value}))}/>
+            </div>
             <div className="form-group">
               <label className="form-label">Banco o efectivo</label>
               <select className="form-input form-select" value={form.bankChoice||''} onChange={e=>setForm(x=>({
@@ -2781,7 +2788,7 @@ const SetupScreen = ({app,onComplete,notify}) => {
     }catch(error){notify(presentError(error),'error');}
     finally{setBusy(false);}
   };
-  return <StartupCard title="Configurar Perita V1.1.0">
+  return <StartupCard title="Configurar Perita V1.1.1">
     <p className="text-sm text-gray mb-4">Crea el periodo inicial y una cuenta. Esta confirmación es atómica.</p>
     <div className="form-group"><label className="form-label">Periodo inicial</label><input className="form-input" type="month" value={form.periodKey} onChange={event=>setForm(current=>({...current,periodKey:event.target.value}))}/></div>
     <div className="form-group"><label className="form-label">Sueldo de referencia</label><MoneyInput className="form-input" value={form.salary} onChange={salary=>setForm(current=>({...current,salary}))}/></div>
