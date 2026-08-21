@@ -1,0 +1,137 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+:root {
+  --background: oklch(0.985 0.012 25);
+  --foreground: oklch(0.24 0.025 20);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.24 0.025 20);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.24 0.025 20);
+  --primary: oklch(0.27 0.025 20);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.95 0.025 20);
+  --secondary-foreground: oklch(0.3 0.03 20);
+  --muted: oklch(0.96 0.012 20);
+  --muted-foreground: oklch(0.52 0.025 20);
+  --accent: oklch(0.94 0.035 20);
+  --accent-foreground: oklch(0.3 0.03 20);
+  --destructive: oklch(0.58 0.22 27);
+  --border: oklch(0.9 0.02 20);
+  --input: oklch(0.9 0.02 20);
+  --ring: oklch(0.67 0.18 15);
+  --brand: oklch(0.67 0.18 15);
+  --brand-foreground: oklch(0.99 0 0);
+  --brand-soft: oklch(0.95 0.04 15);
+  --surface-raised: oklch(1 0 0);
+  --surface-subtle: oklch(0.97 0.01 25);
+  --border-strong: oklch(0.78 0.025 20);
+  --space-page: 1rem;
+  --space-section: 1.5rem;
+  --space-card: 1rem;
+  --money-primary-size: 2rem;
+  --money-secondary-size: 1rem;
+  --money-label-size: 0.75rem;
+  --radius: 0.75rem;
+  color-scheme: light;
+}
+
+@theme inline {
+  --font-sans: "Geist Variable", sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-border-strong: var(--border-strong);
+  --spacing-page: var(--space-page);
+  --spacing-section: var(--space-section);
+  --spacing-card: var(--space-card);
+  --text-money-primary: var(--money-primary-size);
+  --text-money-secondary: var(--money-secondary-size);
+  --text-money-label: var(--money-label-size);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-surface: calc(var(--radius) * 1.2);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply min-w-80 bg-muted text-foreground antialiased;
+    margin: 0;
+    min-height: 100vh;
+    min-height: 100svh;
+    min-height: 100dvh;
+    padding-right: env(safe-area-inset-right);
+    padding-left: env(safe-area-inset-left);
+  }
+
+  #root {
+    min-height: 100svh;
+    min-height: 100dvh;
+  }
+}
+
+@media (display-mode: standalone) {
+  html,
+  body {
+    overscroll-behavior: none;
+  }
+}
+
+@layer components {
+  .type-page-title {
+    @apply text-2xl font-semibold tracking-tight;
+  }
+
+  .type-section-title {
+    @apply text-base font-semibold tracking-tight;
+  }
+
+  .surface-raised {
+    @apply rounded-surface border bg-surface-raised;
+  }
+
+  .money-figure {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.035em;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+}
+
+@supports selector(:has(*)) {
+  .app-shell:has(input:focus, textarea:focus, [role="combobox"]:focus) .bottom-navigation {
+    display: none;
+  }
+
+  .app-shell:has(input:focus, textarea:focus, [role="combobox"]:focus) #main-content {
+    padding-bottom: calc(1rem + env(safe-area-inset-bottom));
+  }
+}

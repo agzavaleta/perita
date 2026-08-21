@@ -1,0 +1,402 @@
+import { useEffect, useState, type FormEvent } from "react"
+import {
+  CalendarDays,
+  ChevronRight,
+  CircleOff,
+  HandCoins,
+  History,
+  Pencil,
+  Plus,
+  ReceiptText,
+} from "lucide-react"
+
+import { EmptyState } from "@/components/states/EmptyState"
+import { ErrorMessage } from "@/components/states/ErrorMessage"
+import { LoadingState } from "@/components/states/LoadingState"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogMedia,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Separator } from "@/components/ui/separator"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet"
+import { Textarea } from "@/components/ui/textarea"
+import type { Debt } from "@/domain/entities"
+import type { CivilDate, EntityId } from "@/domain/primitives"
+import type {
+  DebtDetail,
+  DebtFormOptions,
+  DebtListItem,
+  DebtPaymentItem,
+  DebtUseCasesPort,
+} from "@/features/planning/application/debt-use-cases"
+
+function formatClp(value: number) {
+  return new Intl.NumberFormat("es-CL", {
+    style: "currency",
+    currency: "CLP",
+    maximumFractionDigits: 0,
+  }).format(value)
+}
+
+function formatDate(value: string | null) {
+  if (!value) return "—"
+  const [year, month, day] = value.split("-")
+  return `${day}-${month}-${year}`
+}
+
+function message(error: unknown) {
+  return error instanceof Error ? error.message : "No fue posible completar la acción."
+}
+
+function statusLabel(debt: Debt) {
+  if (debt.paymentStatus === "paid") return "Pagada"
+  if (debt.paymentStatus === "overdue") return "Atrasada"
+  return "Activa"
+}
+
+function DebtEditor({
+  debt,
+  useCases,
+  onSaved,
+  onClose,
+}: {
+  readonly debt?: Debt
+  readonly useCases: DebtUseCasesPort
+  readonly onSaved: () => void
+  readonly onClose: () => void
+}) {
+  const [name, setName] = useState(debt?.name ?? "")
+  const [total, setTotal] = useState(debt ? String(debt.totalAmount) : "")
+  const [monthly, setMonthly] = useState(
+    debt?.monthlyPaymentAmount ? String(debt.monthlyPaymentAmount) : "",
+  )
+  const [day, setDay] = useState(debt?.paymentDay ? String(debt.paymentDay) : "")
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSaving(true)
+    setError(null)
+    try {
+      if (debt) {
+        await useCases.editDebt({
+          debtId: debt.id,
+          expectedRevision: debt.revision,
+          name,
+          monthlyPaymentAmount: Number(monthly),
+          paymentDay: Number(day),
+        })
+      } else {
+        await useCases.createDebt({
+          name,
+          totalAmount: Number(total),
+          monthlyPaymentAmount: Number(monthly),
+          paymentDay: Number(day),
+        })
+      }
+      onSaved()
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Sheet open onOpenChange={(open) => !open && onClose()}>
+      <SheetContent side="bottom" className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]">
+        <SheetHeader>
+          <SheetTitle>{debt ? "Editar deuda" : "Nueva deuda"}</SheetTitle>
+          <SheetDescription>
+            {debt
+              ? "Nombre, cuota y día son datos de planificación."
+              : "La deuda comienza activa y con el total completamente pendiente."}
+          </SheetDescription>
+        </SheetHeader>
+        <form className="space-y-4 px-4" onSubmit={submit}>
+          <div className="space-y-2">
+            <Label htmlFor="debt-name">Nombre</Label>
+            <Input id="debt-name" value={name} onChange={(event) => setName(event.target.value)} disabled={saving} />
+          </div>
+          {!debt ? (
+            <div className="space-y-2">
+              <Label htmlFor="debt-total">Total CLP</Label>
+              <Input id="debt-total" type="number" inputMode="numeric" min="1" step="1" value={total} onChange={(event) => setTotal(event.target.value)} disabled={saving} />
+            </div>
+          ) : null}
+          <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="debt-monthly">Cuota mensual</Label>
+              <Input id="debt-monthly" type="number" inputMode="numeric" min="1" step="1" value={monthly} onChange={(event) => setMonthly(event.target.value)} disabled={saving} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="debt-day">Día de pago</Label>
+              <Input id="debt-day" type="number" inputMode="numeric" min="1" max="31" step="1" value={day} onChange={(event) => setDay(event.target.value)} disabled={saving} />
+            </div>
+          </div>
+          {error ? <ErrorMessage title="No se pudo guardar" description={error} /> : null}
+          <SheetFooter className="px-0">
+            <Button type="submit" size="lg" className="h-11" disabled={saving}>
+              <ReceiptText aria-hidden="true" /> {saving ? "Guardando…" : "Guardar"}
+            </Button>
+            <Button type="button" variant="outline" size="lg" className="h-11" onClick={onClose} disabled={saving}>Cancelar</Button>
+          </SheetFooter>
+        </form>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+function PaymentEditor({
+  debt,
+  payment,
+  options,
+  useCases,
+  onSaved,
+  onClose,
+}: {
+  readonly debt: Debt
+  readonly payment?: DebtPaymentItem
+  readonly options: DebtFormOptions
+  readonly useCases: DebtUseCasesPort
+  readonly onSaved: () => void
+  readonly onClose: () => void
+}) {
+  const operation = payment?.operation
+  const [accountId, setAccountId] = useState<string>(operation?.details.accountId ?? options.accounts[0]?.id ?? "")
+  const [date, setDate] = useState<string>(operation?.operationDate ?? options.currentDate)
+  const [amount, setAmount] = useState(operation ? String(operation.amount) : "")
+  const [concept, setConcept] = useState(operation?.details.concept ?? "")
+  const [observation, setObservation] = useState(operation?.details.observation ?? "")
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSaving(true)
+    setError(null)
+    try {
+      const draft = {
+        debtId: debt.id,
+        accountId: accountId as EntityId,
+        operationDate: date as CivilDate,
+        amount: Number(amount),
+        concept,
+        observation,
+      }
+      if (operation) {
+        await useCases.editPayment({
+          ...draft,
+          operationId: operation.id,
+          expectedRevision: operation.revision,
+        })
+      } else {
+        await useCases.registerPayment(draft)
+      }
+      onSaved()
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Sheet open onOpenChange={(open) => !open && onClose()}>
+      <SheetContent side="bottom" className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]">
+        <SheetHeader>
+          <SheetTitle>{operation ? "Editar pago" : "Registrar pago"}</SheetTitle>
+          <SheetDescription>El pago reduce la cuenta y el saldo pendiente en una sola transacción.</SheetDescription>
+        </SheetHeader>
+        <form className="space-y-4 px-4" onSubmit={submit}>
+          <div className="space-y-2">
+            <Label>Cuenta</Label>
+            <Select value={accountId} onValueChange={setAccountId} disabled={saving || options.accounts.length === 0}>
+              <SelectTrigger className="w-full" aria-label="Cuenta para el pago"><SelectValue placeholder="Selecciona una cuenta" /></SelectTrigger>
+              <SelectContent>{options.accounts.map((account) => <SelectItem key={account.id} value={account.id}>{account.name}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
+            <div className="space-y-2">
+              <Label htmlFor="debt-payment-date">Fecha</Label>
+              <Input id="debt-payment-date" type="date" max={options.currentDate} value={date} onChange={(event) => setDate(event.target.value)} disabled={saving} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="debt-payment-amount">Monto CLP</Label>
+              <Input id="debt-payment-amount" type="number" inputMode="numeric" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} disabled={saving} />
+            </div>
+          </div>
+          <div className="space-y-2"><Label htmlFor="debt-payment-concept">Concepto</Label><Input id="debt-payment-concept" value={concept} onChange={(event) => setConcept(event.target.value)} disabled={saving} /></div>
+          <div className="space-y-2"><Label htmlFor="debt-payment-observation">Observación</Label><Textarea id="debt-payment-observation" value={observation} onChange={(event) => setObservation(event.target.value)} disabled={saving} /></div>
+          {error ? <ErrorMessage title="No se pudo guardar el pago" description={error} /> : null}
+          <SheetFooter className="px-0">
+            <Button type="submit" size="lg" className="h-11" disabled={saving || !accountId}><HandCoins aria-hidden="true" /> {saving ? "Guardando…" : "Guardar pago"}</Button>
+            <Button type="button" variant="outline" size="lg" className="h-11" onClick={onClose} disabled={saving}>Cancelar</Button>
+          </SheetFooter>
+        </form>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+function TotalEditor({ debt, currentDate, useCases, onSaved, onClose }: {
+  readonly debt: Debt
+  readonly currentDate: CivilDate
+  readonly useCases: DebtUseCasesPort
+  readonly onSaved: () => void
+  readonly onClose: () => void
+}) {
+  const [total, setTotal] = useState(String(debt.totalAmount))
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setSaving(true)
+    setError(null)
+    try {
+      await useCases.adjustDebtTotal(debt.id, debt.revision, currentDate, Number(total))
+      onSaved()
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <Sheet open onOpenChange={(open) => !open && onClose()}>
+      <SheetContent side="bottom" className="mx-auto w-full max-w-[430px] rounded-t-xl pb-[env(safe-area-inset-bottom)]">
+        <SheetHeader><SheetTitle>Ajustar total</SheetTitle><SheetDescription>Se conservarán los pagos vigentes y el saldo pendiente se recalculará.</SheetDescription></SheetHeader>
+        <form className="space-y-4 px-4" onSubmit={submit}>
+          <div className="space-y-2"><Label htmlFor="debt-new-total">Nuevo total CLP</Label><Input id="debt-new-total" type="number" min="1" step="1" value={total} onChange={(event) => setTotal(event.target.value)} disabled={saving} /></div>
+          {error ? <ErrorMessage title="No se pudo ajustar" description={error} /> : null}
+          <SheetFooter className="px-0"><Button type="submit" size="lg" disabled={saving}>{saving ? "Guardando…" : "Ajustar total"}</Button><Button type="button" variant="outline" size="lg" onClick={onClose}>Cancelar</Button></SheetFooter>
+        </form>
+      </SheetContent>
+    </Sheet>
+  )
+}
+
+export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort | null }) {
+  const [items, setItems] = useState<DebtListItem[]>([])
+  const [detail, setDetail] = useState<DebtDetail | null>(null)
+  const [options, setOptions] = useState<DebtFormOptions | null>(null)
+  const [editor, setEditor] = useState<Debt | "new" | null>(null)
+  const [paymentEditor, setPaymentEditor] = useState<DebtPaymentItem | "new" | null>(null)
+  const [totalEditor, setTotalEditor] = useState(false)
+  const [voidTarget, setVoidTarget] = useState<DebtPaymentItem | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  useEffect(() => {
+    if (!useCases) return
+    let active = true
+    void Promise.all([useCases.listDebts(), useCases.getPaymentFormOptions()])
+      .then(([nextItems, nextOptions]) => {
+        if (active) {
+          setItems(nextItems)
+          setOptions(nextOptions)
+          setLoading(false)
+        }
+      })
+      .catch((cause) => {
+        if (active) {
+          setError(message(cause))
+          setLoading(false)
+        }
+      })
+    return () => { active = false }
+  }, [refreshKey, useCases])
+
+  async function open(item: DebtListItem) {
+    if (!useCases) return
+    setError(null)
+    try { setDetail(await useCases.getDebtDetail(item.debt.id)) } catch (cause) { setError(message(cause)) }
+  }
+
+  function saved() {
+    setEditor(null)
+    setPaymentEditor(null)
+    setTotalEditor(false)
+    setDetail(null)
+    setError(null)
+    setRefreshKey((value) => value + 1)
+  }
+
+  async function confirmVoid() {
+    if (!useCases || !voidTarget) return
+    try {
+      await useCases.voidPayment(voidTarget.operation.id, voidTarget.operation.revision)
+      saved()
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setVoidTarget(null)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <div><h2 className="text-lg font-semibold">Deudas</h2><p className="text-sm text-muted-foreground">Saldo y pagos bajo control.</p></div>
+        <Button type="button" size="lg" onClick={() => setEditor("new")} disabled={!useCases}><Plus aria-hidden="true" /> Nueva</Button>
+      </div>
+      {error ? <ErrorMessage title="No se pudo completar la acción" description={error} /> : null}
+      {loading && useCases ? <LoadingState label="Cargando deudas" /> : items.length === 0 ? <EmptyState title="Aún no tienes deudas" description="Registra una deuda para planificar y controlar sus pagos." /> : (
+        <div className="space-y-3">
+          {items.map(({ debt, schedule }) => (
+            <Card key={debt.id} className={debt.paymentStatus === "paid" ? "opacity-65" : undefined}>
+              <CardHeader className="flex-row items-center justify-between"><div><CardTitle>{debt.name}</CardTitle><p className="mt-1 text-xs text-muted-foreground">{schedule.remainingInstallments ?? 0} cuota(s) estimada(s)</p></div><Badge variant={debt.paymentStatus === "overdue" ? "destructive" : "secondary"}>{statusLabel(debt)}</Badge></CardHeader>
+              <CardContent className="flex items-end justify-between gap-3"><div><p className="text-xs text-muted-foreground">Saldo pendiente</p><p className="money-figure text-xl font-semibold">{formatClp(debt.outstandingAmount)}</p></div><Button type="button" variant="ghost" size="icon-lg" aria-label={`Ver detalle de ${debt.name}`} onClick={() => void open({ debt, schedule })}><ChevronRight aria-hidden="true" /></Button></CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {editor && useCases ? <DebtEditor key={editor === "new" ? "new" : editor.id} debt={editor === "new" ? undefined : editor} useCases={useCases} onSaved={saved} onClose={() => setEditor(null)} /> : null}
+      {detail && !editor && !paymentEditor && !totalEditor ? (
+        <Sheet open onOpenChange={(openState) => !openState && setDetail(null)}>
+          <SheetContent side="bottom" className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]">
+            <SheetHeader><SheetTitle>{detail.debt.name}</SheetTitle><SheetDescription>{statusLabel(detail.debt)} · total {formatClp(detail.debt.totalAmount)}</SheetDescription></SheetHeader>
+            <div className="space-y-4 px-4">
+              <Card><CardContent className="space-y-3 pt-1"><div><p className="text-xs text-muted-foreground">Saldo pendiente</p><p className="money-figure text-3xl font-semibold">{formatClp(detail.debt.outstandingAmount)}</p></div><Separator /><div className="grid grid-cols-2 gap-3 text-sm"><div><p className="text-xs text-muted-foreground">Próximo pago</p><p className="font-medium">{formatDate(detail.schedule.nextPaymentDate)}</p></div><div><p className="text-xs text-muted-foreground">Término estimado</p><p className="font-medium">{formatDate(detail.schedule.estimatedEndDate)}</p></div></div></CardContent></Card>
+              {detail.debt.paymentStatus !== "paid" ? <div className="grid grid-cols-2 gap-2"><Button type="button" onClick={() => setPaymentEditor("new")}><HandCoins aria-hidden="true" /> Registrar pago</Button><Button type="button" variant="outline" onClick={() => setEditor(detail.debt)}><Pencil aria-hidden="true" /> Editar</Button><Button type="button" variant="outline" className="col-span-2" onClick={() => setTotalEditor(true)}><ReceiptText aria-hidden="true" /> Ajustar total</Button></div> : null}
+              <div className="space-y-2"><div className="flex items-center gap-2"><History aria-hidden="true" className="size-4" /><h3 className="font-semibold">Pagos e historial</h3></div>{detail.payments.length === 0 ? <EmptyState title="Sin pagos registrados" description="Los pagos aparecerán aquí con sus revisiones." /> : detail.payments.map((item) => <Card key={item.operation.id} className={item.operation.status === "voided" ? "opacity-60" : undefined}><CardContent className="space-y-2 pt-1"><div className="flex items-start justify-between gap-3"><div><p className="font-medium">{item.operation.details.concept ?? "Pago de deuda"}</p><p className="text-xs text-muted-foreground">{formatDate(item.operation.operationDate)} · {item.accountName}</p></div><p className="money-figure font-semibold">{formatClp(item.operation.amount)}</p></div><div className="flex items-center justify-between"><Badge variant="outline">{item.operation.status === "posted" ? "Vigente" : "Anulado"}</Badge><span className="text-xs text-muted-foreground">Rev. {item.operation.revision} · {item.revisions.length} cambio(s)</span></div>{item.operation.status === "posted" ? <div className="flex gap-2"><Button type="button" size="sm" variant="outline" onClick={() => setPaymentEditor(item)}><Pencil aria-hidden="true" /> Editar</Button><Button type="button" size="sm" variant="destructive" onClick={() => setVoidTarget(item)}><CircleOff aria-hidden="true" /> Anular</Button></div> : null}</CardContent></Card>)}</div>
+              {detail.adjustments.length > 0 || detail.auditEvents.length > 0 ? <p className="flex items-center gap-2 text-xs text-muted-foreground"><CalendarDays aria-hidden="true" className="size-4" /> {detail.adjustments.length} ajuste(s) de total · {detail.auditEvents.length} revisión(es) de ficha</p> : null}
+            </div>
+          </SheetContent>
+        </Sheet>
+      ) : null}
+      {detail && paymentEditor && options && useCases ? <PaymentEditor key={paymentEditor === "new" ? "new" : paymentEditor.operation.id} debt={detail.debt} payment={paymentEditor === "new" ? undefined : paymentEditor} options={options} useCases={useCases} onSaved={saved} onClose={() => setPaymentEditor(null)} /> : null}
+      {detail && totalEditor && options && useCases ? <TotalEditor debt={detail.debt} currentDate={options.currentDate} useCases={useCases} onSaved={saved} onClose={() => setTotalEditor(false)} /> : null}
+      <AlertDialog open={voidTarget !== null} onOpenChange={(openState) => !openState && setVoidTarget(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogMedia><CircleOff /></AlertDialogMedia><AlertDialogTitle>Anular pago</AlertDialogTitle><AlertDialogDescription>Se restaurarán atómicamente el saldo de la cuenta y el saldo pendiente de la deuda.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void confirmVoid()}>Anular pago</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    </div>
+  )
+}

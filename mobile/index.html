@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="description" content="Perita, finanzas personales en tu teléfono." />
+    <meta name="theme-color" content="#e85f87" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Perita" />
+    <link rel="icon" href="/icons/perita.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/icons/apple-touch-icon-180.png" />
+    <style>
+      html, body, #root { min-height: 100%; margin: 0; background: #fff7f9; }
+      .app-splash { min-height: 100svh; display: grid; place-content: center; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); font: 600 1rem system-ui, sans-serif; color: #62253c; }
+      .app-splash img { width: 80px; height: 80px; margin: 0 auto 12px; border-radius: 20px; }
+    </style>
+    <title>Perita Mobile</title>
+  </head>
+  <body>
+    <div id="root">
+      <div class="app-splash" role="status" aria-label="Cargando Perita">
+        <img src="/icons/perita-192.png" alt="" />
+        <span>Abriendo Perita…</span>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Perita">
+  <rect width="512" height="512" rx="112" fill="#e85f87"/>
+  <circle cx="256" cy="256" r="148" fill="#fff7f9"/>
+  <path d="M202 352V160h70c49 0 82 27 82 72 0 48-35 76-88 76h-18v44h-46Zm46-88h18c25 0 41-11 41-31 0-19-14-29-39-29h-20v60Z" fill="#c83f6d"/>
+</svg>
