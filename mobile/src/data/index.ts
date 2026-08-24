@@ -11,6 +11,7 @@ export {
 export {
   createRepositories,
   type AccountRepository,
+  type CategoryRepository,
   type ExpectedRecordState,
   type FinancialOperationMutation,
   type InternalTransferMutation,

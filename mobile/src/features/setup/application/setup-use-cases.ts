@@ -20,20 +20,40 @@ import {
   type UtcTimestamp,
 } from "@/domain/primitives"
 import type { PeritaRepositories } from "@/data/repositories"
+import type {
+  SetupDraft,
+  SetupDraftAccount,
+  SetupDraftStore,
+} from "@/features/setup/data/setup-draft-store"
 
-export type SetupStatus = "not_started" | "incomplete" | "completed"
+export type SetupStatus = "not_started" | "resumable" | "incomplete" | "completed"
 
 export interface SetupAccountDraft {
+  readonly id?: string
   readonly name: string
   readonly bank?: string | null
   readonly openingBalance: number
+  readonly emoji?: string
 }
 
 export interface CompleteSetupInput {
   readonly periodKey: string
   readonly salaryReferenceAmount: number
-  readonly plannedSalaryAmount: number
+  readonly variableExpenseBudgetAmount: number
   readonly accounts: readonly SetupAccountDraft[]
+}
+
+export interface SaveSetupDraftInput {
+  readonly periodKey: string
+  readonly salaryReferenceAmount: number
+  readonly variableExpenseBudgetAmount: number
+  readonly accounts: readonly {
+    readonly id: string
+    readonly name: string
+    readonly bank?: string | null
+    readonly openingBalance: number
+    readonly emoji?: string
+  }[]
 }
 
 export interface SetupWarning {
@@ -44,7 +64,8 @@ export interface SetupWarning {
 
 export interface SetupState {
   readonly status: SetupStatus
-  readonly allowedPeriodKeys: readonly [PeriodKey, PeriodKey]
+  readonly allowedPeriodKeys: readonly PeriodKey[]
+  readonly draft: SetupDraft | null
 }
 
 export interface SetupResult {
@@ -57,6 +78,8 @@ export interface SetupResult {
 
 export interface SetupUseCasesPort {
   getState(): Promise<SetupState>
+  saveDraft(draft: SaveSetupDraftInput): Promise<SetupDraft>
+  deleteDraft(): Promise<void>
   completeSetup(input: CompleteSetupInput): Promise<SetupResult>
 }
 
@@ -80,6 +103,21 @@ interface Options {
   readonly now?: () => UtcTimestamp
   readonly today?: () => CivilDate
   readonly createId?: () => EntityId
+  readonly draftStore?: SetupDraftStore
+}
+
+function transientDraftStore(): SetupDraftStore {
+  let draft: SetupDraft | null = null
+  return {
+    read: async () => draft,
+    save: async (next) => {
+      draft = next
+    },
+    clear: async () => {
+      draft = null
+    },
+    close() {},
+  }
 }
 
 function defaultNow() {
@@ -131,19 +169,31 @@ export class SetupUseCases implements SetupUseCasesPort {
   private readonly now: () => UtcTimestamp
   private readonly today: () => CivilDate
   private readonly createId: () => EntityId
+  private readonly draftStore: SetupDraftStore
 
   constructor(repositories: PeritaRepositories, options: Options = {}) {
     this.repositories = repositories
     this.now = options.now ?? defaultNow
     this.today = options.today ?? defaultToday
     this.createId = options.createId ?? (() => asEntityId(globalThis.crypto.randomUUID()))
+    this.draftStore = options.draftStore ?? transientDraftStore()
   }
 
   async getState(): Promise<SetupState> {
     const data = await this.repositories.administration.readSnapshot()
-    const allowedPeriodKeys = this.allowedPeriodKeys()
+    const suggestedPeriodKeys = this.suggestedPeriodKeys()
     const empty = Object.values(data).every((records) => records.length === 0)
-    if (empty) return { status: "not_started", allowedPeriodKeys }
+    if (empty) {
+      const draft = await this.draftStore.read()
+      const allowedPeriodKeys = draft && !suggestedPeriodKeys.includes(asPeriodKey(draft.periodKey))
+        ? [...suggestedPeriodKeys, asPeriodKey(draft.periodKey)]
+        : suggestedPeriodKeys
+      return {
+        status: draft ? "resumable" : "not_started",
+        allowedPeriodKeys,
+        draft,
+      }
+    }
 
     const openPeriods = data.periods.filter(({ status }) => status === "open")
     const period = openPeriods[0]
@@ -171,8 +221,63 @@ export class SetupUseCases implements SetupUseCasesPort {
       })
     return {
       status: coherent ? "completed" : "incomplete",
-      allowedPeriodKeys,
+      allowedPeriodKeys: suggestedPeriodKeys,
+      draft: null,
     }
+  }
+
+  async saveDraft(input: SaveSetupDraftInput): Promise<SetupDraft> {
+    const state = await this.getState()
+    if (state.status === "completed") {
+      throw new SetupUseCaseError("already_completed", "La configuración inicial ya fue completada.")
+    }
+    if (state.status === "incomplete") {
+      throw new SetupUseCaseError(
+        "incomplete_installation",
+        "La instalación contiene una configuración parcial y no puede operar.",
+      )
+    }
+    const draft: SetupDraft = {
+      periodKey: this.validateInitialPeriod(input.periodKey),
+      salaryReferenceAmount: nonnegativeAmount(
+        input.salaryReferenceAmount,
+        "El sueldo de referencia",
+      ),
+      variableExpenseBudgetAmount: nonnegativeAmount(
+        input.variableExpenseBudgetAmount,
+        "El presupuesto variable del período",
+      ),
+      accounts: input.accounts.map((account): SetupDraftAccount => {
+        const draftId = account.id
+        let openingBalance
+        try {
+          openingBalance = asClpAmount(account.openingBalance, {
+            allowNegative: true,
+          })
+        } catch {
+          throw new SetupUseCaseError(
+            "invalid_amount",
+            "El saldo inicial debe ser un entero CLP.",
+          )
+        }
+        if (!draftId.trim()) {
+          throw new SetupUseCaseError("invalid_account", "La cuenta del borrador requiere un identificador.")
+        }
+        return {
+          id: draftId,
+          name: account.name,
+          bank: account.bank ?? null,
+          openingBalance,
+          emoji: account.emoji?.trim() || "💳",
+        }
+      }),
+    }
+    await this.draftStore.save(draft)
+    return draft
+  }
+
+  deleteDraft() {
+    return this.draftStore.clear()
   }
 
   async completeSetup(input: CompleteSetupInput): Promise<SetupResult> {
@@ -186,13 +291,7 @@ export class SetupUseCases implements SetupUseCasesPort {
         "La instalación contiene una configuración parcial y no puede operar.",
       )
     }
-    const periodKey = asPeriodKey(input.periodKey)
-    if (!state.allowedPeriodKeys.includes(periodKey)) {
-      throw new SetupUseCaseError(
-        "invalid_period",
-        "El período inicial debe ser el mes actual o el anterior.",
-      )
-    }
+    const periodKey = this.validateInitialPeriod(input.periodKey)
     if (input.accounts.length === 0) {
       throw new SetupUseCaseError("invalid_account", "Debes crear al menos una cuenta.")
     }
@@ -214,9 +313,10 @@ export class SetupUseCases implements SetupUseCasesPort {
     const period: Period = {
       id: periodId,
       periodKey,
-      plannedSalaryAmount: nonnegativeAmount(
-        input.plannedSalaryAmount,
-        "El presupuesto del período",
+      plannedSalaryAmount: financialSettings.salaryReferenceAmount,
+      variableExpenseBudgetAmount: nonnegativeAmount(
+        input.variableExpenseBudgetAmount,
+        "El presupuesto variable del período",
       ),
       openedAt: occurredAt,
       status: "open",
@@ -236,6 +336,7 @@ export class SetupUseCases implements SetupUseCasesPort {
       }
       const account = assertAccountInvariant({
         id: this.createId(),
+        emoji: draft.emoji?.trim() || "💳",
         name: requiredName(draft.name),
         bank: draft.bank?.trim() || null,
         openingBalance,
@@ -291,12 +392,30 @@ export class SetupUseCases implements SetupUseCasesPort {
         "No fue posible completar la configuración de forma atómica.",
       )
     }
+    await this.draftStore.clear()
     return { financialSettings, period, accounts, periodOpenings, warnings }
   }
 
-  private allowedPeriodKeys(): readonly [PeriodKey, PeriodKey] {
+  private suggestedPeriodKeys(): readonly [PeriodKey, PeriodKey] {
     const current = asPeriodKey(this.today().slice(0, 7))
     return [current, previousPeriodKey(current)]
+  }
+
+  private validateInitialPeriod(value: string) {
+    let periodKey: PeriodKey
+    try {
+      periodKey = asPeriodKey(value)
+    } catch {
+      throw new SetupUseCaseError("invalid_period", "El período inicial no es válido.")
+    }
+    const currentPeriodKey = asPeriodKey(this.today().slice(0, 7))
+    if (periodKey > currentPeriodKey) {
+      throw new SetupUseCaseError(
+        "invalid_period",
+        "El período inicial no puede estar en el futuro.",
+      )
+    }
+    return periodKey
   }
 
   private createdAudit(

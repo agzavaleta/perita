@@ -79,6 +79,7 @@ interface MovementsPageProps {
   readonly useCases?: MovementUseCasesPort
   readonly initialComposer?: MovementKind | null
   readonly onInitialComposerClose?: () => void
+  readonly onManageCategories?: () => void
 }
 
 function formatClp(value: number, signed = true) {
@@ -272,6 +273,7 @@ export function MovementsPage({
   useCases: injectedUseCases,
   initialComposer = null,
   onInitialComposerClose,
+  onManageCategories,
 }: MovementsPageProps) {
   const [module, setModule] = useState<MovementModule | null>(null)
   const useCases = injectedUseCases ?? module?.useCases ?? null
@@ -534,6 +536,7 @@ export function MovementsPage({
           useCases={useCases}
           onSaved={saved}
           onClose={closeEditor}
+          onManageCategories={onManageCategories}
         />
       )}
       {activeTransferEditor && transferOptions && useCases && (

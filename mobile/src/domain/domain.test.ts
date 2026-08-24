@@ -9,6 +9,7 @@ import {
   asRevision,
   asUtcTimestamp,
   assertAccountInvariant,
+  assertDebtInvariant,
   assertInitialBalancePolicy,
   assertOperationMovementInvariant,
   assertSavingsGoalInvariant,
@@ -17,6 +18,7 @@ import {
   nextPeriod,
   periodFromCivilDate,
   type Account,
+  type Debt,
   type Movement,
   type SavingsGoal,
   type TransferOperation,
@@ -52,6 +54,7 @@ describe("entity lifecycle invariants", () => {
   it("requires inactive accounts to have zero balance", () => {
     const account: Account = {
       id: id(1),
+      emoji: "💳",
       name: "Cuenta principal",
       bank: null,
       openingBalance: asClpAmount(0, { allowNegative: true }),
@@ -63,6 +66,9 @@ describe("entity lifecycle invariants", () => {
     }
 
     expect(() => assertAccountInvariant(account)).toThrow(/zero current balance/)
+    expect(() =>
+      assertAccountInvariant({ ...account, emoji: "", currentBalance: asClpAmount(0) }),
+    ).toThrow(/Account\.emoji/)
   })
 
   it("allows existing account balances only during initial setup", () => {
@@ -85,9 +91,42 @@ describe("entity lifecycle invariants", () => {
     ).toBe(-10_000)
   })
 
+  it("requires a positive debt installment while allowing optional dates", () => {
+    const debt: Debt = {
+      id: id(20),
+      name: "Crédito",
+      totalAmount: asPositiveClpAmount(100_000),
+      openingOutstanding: asClpAmount(100_000),
+      outstandingAmount: asClpAmount(100_000),
+      dueDate: null,
+      monthlyPaymentAmount: asPositiveClpAmount(25_000),
+      paymentDay: null,
+      lifecycleStatus: "active",
+      paymentStatus: "active",
+      revision: asRevision(1),
+      createdAt: NOW,
+      updatedAt: NOW,
+    }
+
+    expect(assertDebtInvariant(debt)).toBe(debt)
+    expect(assertDebtInvariant({ ...debt, paymentDay: 31 })).toMatchObject({
+      paymentDay: 31,
+    })
+    expect(() =>
+      assertDebtInvariant({
+        ...debt,
+        monthlyPaymentAmount: asClpAmount(0) as Debt["monthlyPaymentAmount"],
+      }),
+    ).toThrow(/must not be zero/)
+    expect(() => assertDebtInvariant({ ...debt, paymentDay: 32 })).toThrow(
+      /from 1 to 31/,
+    )
+  })
+
   it("derives savings progress from balance and target", () => {
     const goal: SavingsGoal = {
       id: id(2),
+      emoji: "💰",
       name: "Emergencias",
       bank: "Banco de ejemplo",
       targetAmount: asPositiveClpAmount(500_000),
@@ -103,6 +142,9 @@ describe("entity lifecycle invariants", () => {
     }
 
     expect(assertSavingsGoalInvariant(goal)).toBe(goal)
+    expect(() => assertSavingsGoalInvariant({ ...goal, emoji: " " })).toThrow(
+      /SavingsGoal\.emoji/,
+    )
     expect(() =>
       assertSavingsGoalInvariant({ ...goal, progressStatus: "in_progress" }),
     ).toThrow(/progress/)
@@ -183,6 +225,23 @@ describe("operation and movement relations", () => {
 })
 
 describe("derived debt schedule", () => {
+  it("calculates installments without inventing dates when payment day is absent", () => {
+    expect(
+      deriveDebtSchedule(
+        {
+          outstandingAmount: asClpAmount(250_000),
+          monthlyPaymentAmount: asPositiveClpAmount(100_000),
+          paymentDay: null,
+        },
+        asCivilDate("2026-02-15"),
+      ),
+    ).toEqual({
+      remainingInstallments: 3,
+      nextPaymentDate: null,
+      estimatedEndDate: null,
+    })
+  })
+
   it("clamps payment day to the month and preserves a partial final installment", () => {
     expect(
       deriveDebtSchedule(
@@ -197,6 +256,23 @@ describe("derived debt schedule", () => {
       remainingInstallments: 3,
       nextPaymentDate: "2026-02-28",
       estimatedEndDate: "2026-04-30",
+    })
+  })
+
+  it("returns a completed schedule for a paid debt", () => {
+    expect(
+      deriveDebtSchedule(
+        {
+          outstandingAmount: asClpAmount(0),
+          monthlyPaymentAmount: asPositiveClpAmount(100_000),
+          paymentDay: null,
+        },
+        asCivilDate("2026-02-15"),
+      ),
+    ).toEqual({
+      remainingInstallments: 0,
+      nextPaymentDate: null,
+      estimatedEndDate: null,
     })
   })
 })

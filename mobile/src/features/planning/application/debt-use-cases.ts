@@ -38,16 +38,18 @@ import type { DebtOperationMutation, PeritaRepositories } from "@/data/repositor
 export interface DebtDraft {
   readonly name: string
   readonly totalAmount: number
+  readonly dueDate?: CivilDate | null
   readonly monthlyPaymentAmount: number
-  readonly paymentDay: number
+  readonly paymentDay?: number | null
 }
 
 export interface EditDebtInput {
   readonly debtId: EntityId
   readonly expectedRevision: Revision
   readonly name: string
+  readonly dueDate?: CivilDate | null
   readonly monthlyPaymentAmount: number
-  readonly paymentDay: number
+  readonly paymentDay?: number | null
 }
 
 export interface DebtPaymentDraft {
@@ -179,11 +181,21 @@ function positiveAmount(value: number) {
   }
 }
 
-function paymentDay(value: number) {
+function optionalPaymentDay(value: number | null | undefined) {
+  if (value === null || value === undefined) return null
   if (!Number.isSafeInteger(value) || value < 1 || value > 31) {
     throw new DebtUseCaseError("invalid_day", "El día de pago debe estar entre 1 y 31.")
   }
   return value
+}
+
+function optionalDueDate(value: CivilDate | null | undefined) {
+  if (value === null || value === undefined) return null
+  try {
+    return asCivilDate(value)
+  } catch {
+    throw new DebtUseCaseError("invalid_date", "La fecha de vencimiento no es válida.")
+  }
 }
 
 export class DebtUseCases implements DebtUseCasesPort {
@@ -269,17 +281,18 @@ export class DebtUseCases implements DebtUseCasesPort {
     const period = await this.requireOpenPeriod()
     const occurredAt = this.now()
     const totalAmount = positiveAmount(input.totalAmount)
+    const dueDate = optionalDueDate(input.dueDate)
     const debt = assertDebtInvariant({
       id: this.createId(),
       name: requiredName(input.name),
       totalAmount,
       openingOutstanding: asClpAmount(totalAmount),
       outstandingAmount: asClpAmount(totalAmount),
-      dueDate: null,
+      dueDate,
       monthlyPaymentAmount: positiveAmount(input.monthlyPaymentAmount),
-      paymentDay: paymentDay(input.paymentDay),
+      paymentDay: optionalPaymentDay(input.paymentDay),
       lifecycleStatus: "active",
-      paymentStatus: "active",
+      paymentStatus: this.status(totalAmount, dueDate),
       revision: asRevision(1),
       createdAt: occurredAt,
       updatedAt: occurredAt,
@@ -314,17 +327,25 @@ export class DebtUseCases implements DebtUseCasesPort {
       throw new DebtUseCaseError("invalid_state", "Solo se puede editar una deuda activa pendiente.")
     }
     const occurredAt = this.now()
+    const dueDate = input.dueDate === undefined
+      ? previous.dueDate
+      : optionalDueDate(input.dueDate)
+    const nextPaymentDay = input.paymentDay === undefined
+      ? previous.paymentDay
+      : optionalPaymentDay(input.paymentDay)
     const debt = assertDebtInvariant({
       ...previous,
       name: requiredName(input.name),
+      dueDate,
       monthlyPaymentAmount: positiveAmount(input.monthlyPaymentAmount),
-      paymentDay: paymentDay(input.paymentDay),
-      paymentStatus: this.status(previous.outstandingAmount, previous.dueDate),
+      paymentDay: nextPaymentDay,
+      paymentStatus: this.status(previous.outstandingAmount, dueDate),
       revision: asRevision(Number(previous.revision) + 1),
       updatedAt: occurredAt,
     })
     if (
       debt.name === previous.name &&
+      debt.dueDate === previous.dueDate &&
       debt.monthlyPaymentAmount === previous.monthlyPaymentAmount &&
       debt.paymentDay === previous.paymentDay
     ) {

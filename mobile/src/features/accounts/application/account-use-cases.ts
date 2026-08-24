@@ -20,6 +20,7 @@ import type { PeritaRepositories } from "@/data/repositories"
 
 export type AccountUseCaseErrorCode =
   | "account_not_found"
+  | "invalid_account_emoji"
   | "invalid_account_name"
   | "no_open_period"
   | "no_changes"
@@ -40,6 +41,7 @@ export class AccountUseCaseError extends Error {
 export interface AccountDraft {
   readonly name: string
   readonly bank: string | null
+  readonly emoji?: string
 }
 
 export interface EditAccountInput extends AccountDraft {
@@ -74,7 +76,7 @@ function defaultCreateId() {
   return asEntityId(globalThis.crypto.randomUUID())
 }
 
-function normalizeDraft(input: AccountDraft): AccountDraft {
+function normalizeDraft(input: AccountDraft, fallbackEmoji: string): Required<AccountDraft> {
   const name = input.name.trim()
   if (!name) {
     throw new AccountUseCaseError(
@@ -83,7 +85,14 @@ function normalizeDraft(input: AccountDraft): AccountDraft {
     )
   }
   const bank = input.bank?.trim() || null
-  return { name, bank }
+  const emoji = input.emoji === undefined ? fallbackEmoji : input.emoji.trim()
+  if (!emoji) {
+    throw new AccountUseCaseError(
+      "invalid_account_emoji",
+      "El emoji de la cuenta es obligatorio.",
+    )
+  }
+  return { name, bank, emoji }
 }
 
 export class AccountUseCases implements AccountUseCasesPort {
@@ -124,11 +133,12 @@ export class AccountUseCases implements AccountUseCasesPort {
   }
 
   async createAccount(input: AccountDraft) {
-    const draft = normalizeDraft(input)
+    const draft = normalizeDraft(input, "💳")
     const period = await this.requireOpenPeriod()
     const occurredAt = this.now()
     const account = assertAccountInvariant({
       id: this.createId(),
+      emoji: draft.emoji,
       name: draft.name,
       bank: draft.bank,
       openingBalance: asClpAmount(0),
@@ -163,11 +173,15 @@ export class AccountUseCases implements AccountUseCasesPort {
   }
 
   async editAccount(input: EditAccountInput) {
-    const draft = normalizeDraft(input)
     const period = await this.requireOpenPeriod()
     const previous = await this.requireAccount(input.accountId)
+    const draft = normalizeDraft(input, previous.emoji)
     this.assertRevision(previous, input.expectedRevision)
-    if (previous.name === draft.name && previous.bank === draft.bank) {
+    if (
+      previous.name === draft.name &&
+      previous.bank === draft.bank &&
+      previous.emoji === draft.emoji
+    ) {
       throw new AccountUseCaseError(
         "no_changes",
         "No hay cambios para guardar.",
@@ -177,6 +191,7 @@ export class AccountUseCases implements AccountUseCasesPort {
     const occurredAt = this.now()
     const account = assertAccountInvariant({
       ...previous,
+      emoji: draft.emoji,
       name: draft.name,
       bank: draft.bank,
       revision: this.nextRevision(previous.revision),

@@ -68,6 +68,7 @@ function AppContent({
       <MovementsPage
         initialComposer={quickAction}
         onInitialComposerClose={onQuickActionClose}
+        onManageCategories={() => onNavigate("settings")}
       />
     )
   } else if (section === "planning") {

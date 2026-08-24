@@ -14,7 +14,10 @@ import {
 } from "@/domain/primitives"
 import { openPeritaDatabase, type PeritaDatabase } from "@/data/database"
 import { createRepositories, type PeritaRepositories } from "@/data/repositories"
-import { HomeUseCases } from "@/features/home/application/home-use-cases"
+import {
+  deriveDebtProgressPercent,
+  HomeUseCases,
+} from "@/features/home/application/home-use-cases"
 import { MovementUseCases } from "@/features/movements/application/movement-use-cases"
 import { DebtUseCases } from "@/features/planning/application/debt-use-cases"
 
@@ -31,6 +34,7 @@ function period(): Period {
     id: PERIOD_ID,
     periodKey: asPeriodKey("2026-08"),
     plannedSalaryAmount: asClpAmount(0),
+    variableExpenseBudgetAmount: asClpAmount(0),
     openedAt: NOW,
     status: "open",
     closedAt: null,
@@ -42,6 +46,7 @@ function period(): Period {
 function account(): Account {
   return {
     id: ACCOUNT_ID,
+    emoji: "💳",
     name: "Principal",
     bank: "Banco",
     openingBalance: asClpAmount(100_000),
@@ -56,6 +61,7 @@ function account(): Account {
 function goal(): SavingsGoal {
   return {
     id: GOAL_ID,
+    emoji: "💰",
     name: "Viaje",
     bank: null,
     targetAmount: asPositiveClpAmount(100_000),
@@ -212,6 +218,20 @@ describe("HomeUseCases", () => {
     expect(dashboard.relevantDebts[0]).toMatchObject({
       debt: { name: "Crédito", outstandingAmount: 70_000 },
       schedule: { remainingInstallments: 3 },
+      progressPercent: 30,
     })
+  })
+})
+
+describe("deriveDebtProgressPercent", () => {
+  it("derives empty, partial and paid debt progress", () => {
+    expect(deriveDebtProgressPercent(100_000, 100_000)).toBe(0)
+    expect(deriveDebtProgressPercent(100_000, 70_000)).toBe(30)
+    expect(deriveDebtProgressPercent(100_000, 0)).toBe(100)
+  })
+
+  it("clamps inconsistent amounts to the visual range", () => {
+    expect(deriveDebtProgressPercent(100_000, 120_000)).toBe(0)
+    expect(deriveDebtProgressPercent(100_000, -20_000)).toBe(100)
   })
 })

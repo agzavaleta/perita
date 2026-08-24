@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from "react"
 import { Scale } from "lucide-react"
 
+import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
+import { FormSheetContent } from "@/components/forms/FormSheetContent"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -8,7 +10,6 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   Sheet,
-  SheetContent,
   SheetDescription,
   SheetFooter,
   SheetHeader,
@@ -37,7 +38,9 @@ export function BalanceAdjustmentForm({
   readonly onClose: () => void
 }) {
   const currentDate = useCases.getCurrentDate()
-  const [targetBalance, setTargetBalance] = useState(String(account.currentBalance))
+  const [targetBalance, setTargetBalance] = useState<number | null>(
+    account.currentBalance,
+  )
   const [operationDate, setOperationDate] = useState<string>(currentDate)
   const [reason, setReason] = useState("")
   const [saving, setSaving] = useState(false)
@@ -52,7 +55,7 @@ export function BalanceAdjustmentForm({
         accountId: account.id,
         expectedAccountRevision: account.revision,
         operationDate: operationDate as CivilDate,
-        targetBalance: Number(targetBalance),
+        targetBalance: targetBalance ?? 0,
         reason,
       }))
     } catch (cause) {
@@ -64,10 +67,7 @@ export function BalanceAdjustmentForm({
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent
-        side="bottom"
-        className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
-      >
+      <FormSheetContent>
         <SheetHeader>
           <SheetTitle>Ajustar saldo</SheetTitle>
           <SheetDescription>
@@ -83,15 +83,11 @@ export function BalanceAdjustmentForm({
             </AlertDescription>
           </Alert>
           <div className="space-y-2">
-            <Label htmlFor="adjustment-balance">Saldo real CLP</Label>
-            <Input
+            <Label htmlFor="adjustment-balance">Saldo real</Label>
+            <ClpAmountInput
               id="adjustment-balance"
-              type="number"
-              inputMode="numeric"
-              min="0"
-              step="1"
               value={targetBalance}
-              onChange={(event) => setTargetBalance(event.target.value)}
+              onValueChange={setTargetBalance}
               disabled={saving}
             />
           </div>
@@ -110,6 +106,7 @@ export function BalanceAdjustmentForm({
             <Label htmlFor="adjustment-reason">Motivo</Label>
             <Input
               id="adjustment-reason"
+              required
               value={reason}
               onChange={(event) => setReason(event.target.value)}
               placeholder="Ej. Conciliar con saldo bancario"
@@ -126,7 +123,8 @@ export function BalanceAdjustmentForm({
                 saving ||
                 !reason.trim() ||
                 !operationDate ||
-                Number(targetBalance) === account.currentBalance
+                targetBalance === null ||
+                targetBalance === account.currentBalance
               }
             >
               <Scale aria-hidden="true" />
@@ -144,7 +142,7 @@ export function BalanceAdjustmentForm({
             </Button>
           </SheetFooter>
         </form>
-      </SheetContent>
+      </FormSheetContent>
     </Sheet>
   )
 }

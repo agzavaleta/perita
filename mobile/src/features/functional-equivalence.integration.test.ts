@@ -34,6 +34,7 @@ function initialPeriod(): Period {
     id: PERIOD_ID,
     periodKey: asPeriodKey("2026-08"),
     plannedSalaryAmount: asClpAmount(500_000),
+    variableExpenseBudgetAmount: asClpAmount(0),
     openedAt: NOW,
     status: "open",
     closedAt: null,
@@ -45,6 +46,7 @@ function initialPeriod(): Period {
 function initialAccount(): Account {
   return {
     id: ACCOUNT_ID,
+    emoji: "💳",
     name: "Principal",
     bank: "Banco",
     openingBalance: asClpAmount(0),

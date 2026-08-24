@@ -25,6 +25,7 @@ function openPeriod(): Period {
     id: PERIOD_ID,
     periodKey: asPeriodKey("2026-08"),
     plannedSalaryAmount: asClpAmount(0),
+    variableExpenseBudgetAmount: asClpAmount(0),
     openedAt: NOW,
     status: "open",
     closedAt: null,
@@ -63,11 +64,13 @@ describe("AccountUseCases", () => {
 
   it("creates an active zero-balance account with opening and audit atomically", async () => {
     const account = await useCases.createAccount({
+      emoji: "🏦",
       name: "  Cuenta principal  ",
       bank: "  Banco Estado  ",
     })
 
     expect(account).toMatchObject({
+      emoji: "🏦",
       name: "Cuenta principal",
       bank: "Banco Estado",
       openingBalance: 0,
@@ -99,11 +102,13 @@ describe("AccountUseCases", () => {
     const edited = await useCases.editAccount({
       accountId: created.id,
       expectedRevision: created.revision,
+      emoji: "💵",
       name: "Cuenta diaria",
       bank: "Banco Uno",
     })
 
     expect(edited).toMatchObject({
+      emoji: "💵",
       name: "Cuenta diaria",
       bank: "Banco Uno",
       openingBalance: 0,

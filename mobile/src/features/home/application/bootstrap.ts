@@ -4,6 +4,7 @@ import {
   HomeUseCases,
   type HomeUseCasesPort,
 } from "@/features/home/application/home-use-cases"
+import { CategoryUseCases } from "@/features/settings/application/category-use-cases"
 
 export interface HomeModule {
   readonly useCases: HomeUseCasesPort
@@ -12,8 +13,10 @@ export interface HomeModule {
 
 export async function createHomeModule(): Promise<HomeModule> {
   const database = await openPeritaDatabase()
+  const repositories = createRepositories(database)
+  await new CategoryUseCases(repositories).ensureDefaultCategories()
   return {
-    useCases: new HomeUseCases(createRepositories(database)),
+    useCases: new HomeUseCases(repositories),
     dispose: () => database.close(),
   }
 }

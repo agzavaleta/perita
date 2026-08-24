@@ -21,7 +21,7 @@ import type {
 import type { EntityId } from "@/domain/primitives"
 
 export const DATABASE_NAME = "perita_mobile" as const
-export const DATABASE_VERSION = 1 as const
+export const DATABASE_VERSION = 2 as const
 
 export const STORE_NAMES = {
   financialSettings: "financialSettings",

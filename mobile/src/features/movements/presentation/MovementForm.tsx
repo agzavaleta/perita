@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from "react"
 
+import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
+import { FormSheetContent } from "@/components/forms/FormSheetContent"
 import type { EntityId } from "@/domain/primitives"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { Button } from "@/components/ui/button"
@@ -14,7 +16,6 @@ import {
 } from "@/components/ui/select"
 import {
   Sheet,
-  SheetContent,
   SheetDescription,
   SheetFooter,
   SheetHeader,
@@ -27,6 +28,7 @@ import type {
   MovementListItem,
   MovementUseCasesPort,
 } from "@/features/movements/application/movement-use-cases"
+import { CategoryBadge } from "@/features/movements/presentation/CategoryBadge"
 
 export interface MovementEditor {
   readonly kind: Exclude<MovementKind, "transfer">
@@ -45,12 +47,14 @@ export function MovementForm({
   useCases,
   onSaved,
   onClose,
+  onManageCategories,
 }: {
   readonly editor: MovementEditor
   readonly options: MovementFormOptions
   readonly useCases: MovementUseCasesPort
   readonly onSaved: (item: MovementListItem) => void
   readonly onClose: () => void
+  readonly onManageCategories?: () => void
 }) {
   const candidate = editor.item?.operation
   const operation = candidate?.type === "transfer" ? undefined : candidate
@@ -68,10 +72,11 @@ export function MovementForm({
       options.categories.find(({ status }) => status === "active")?.id ??
       "",
   )
+  const [categoryChanged, setCategoryChanged] = useState(false)
   const [operationDate, setOperationDate] = useState(
     operation?.operationDate ?? options.currentDate,
   )
-  const [amount, setAmount] = useState(operation ? String(operation.amount) : "")
+  const [amount, setAmount] = useState<number | null>(operation?.amount ?? null)
   const [concept, setConcept] = useState(
     variableDetails?.concept ?? incomeDetails?.concept ?? "",
   )
@@ -82,13 +87,34 @@ export function MovementForm({
   const [error, setError] = useState<string | null>(null)
   const editing = operation !== undefined
   const salary = editor.kind === "income" && incomeType === "salary"
+  const activeCategories = options.categories.filter(
+    ({ status }) => status === "active",
+  )
+  const historicalCategory = variableDetails
+    ? options.categories.find(({ id }) => id === variableDetails.categoryId)
+    : undefined
+  const historicalInactiveCategory =
+    historicalCategory?.status === "inactive" ? historicalCategory : undefined
+  const selectableCategories =
+    historicalInactiveCategory && !categoryChanged
+      ? [historicalInactiveCategory, ...activeCategories]
+      : activeCategories
+  const requiresCategory = editor.kind === "expense" && !fixedDetails
+  const categorySelectionAllowed = !requiresCategory || activeCategories.some(
+    ({ id }) => id === categoryId,
+  ) || (
+    Boolean(variableDetails) &&
+    !categoryChanged &&
+    historicalInactiveCategory?.id === categoryId
+  )
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (!categorySelectionAllowed) return
     setSaving(true)
     setError(null)
     try {
-      const numericAmount = Number(amount)
+      const numericAmount = amount ?? 0
       let item: MovementListItem
       if (editing) {
         item = await useCases.editMovement({
@@ -133,10 +159,7 @@ export function MovementForm({
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent
-        side="bottom"
-        className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
-      >
+      <FormSheetContent>
         <SheetHeader>
           <SheetTitle>
             {editing
@@ -192,60 +215,59 @@ export function MovementForm({
               <Label>Categoría</Label>
               <Select
                 value={categoryId}
-                onValueChange={setCategoryId}
-                disabled={saving || options.categories.length === 0}
+                onValueChange={(value) => {
+                  setCategoryId(value)
+                  if (value !== variableDetails?.categoryId) {
+                    setCategoryChanged(true)
+                  }
+                }}
+                disabled={saving || selectableCategories.length === 0}
               >
                 <SelectTrigger className="w-full" aria-label="Categoría">
                   <SelectValue placeholder="Selecciona una categoría" />
                 </SelectTrigger>
                 <SelectContent>
-                  {options.categories.map((category) => (
+                  {selectableCategories.map((category) => (
                     <SelectItem
                       key={category.id}
                       value={category.id}
-                      disabled={
-                        category.status === "inactive" &&
-                        category.id !== variableDetails?.categoryId
-                      }
+                      textValue={category.name}
                     >
-                      {category.name}
+                      <CategoryBadge category={category} />
+                      {category.status === "inactive" ? (
+                        <span className="text-xs text-muted-foreground">Histórica</span>
+                      ) : null}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
           ) : null}
-          <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="movement-date">Fecha</Label>
-              <Input
-                id="movement-date"
-                type="date"
-                value={operationDate}
-                max={options.currentDate}
-                onChange={(event) => setOperationDate(event.target.value as typeof operationDate)}
-                disabled={saving}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="movement-amount">Monto CLP</Label>
-              <Input
-                id="movement-amount"
-                type="number"
-                inputMode="numeric"
-                min="1"
-                step="1"
-                value={amount}
-                onChange={(event) => setAmount(event.target.value)}
-                placeholder="0"
-                disabled={saving}
-              />
-            </div>
+          <div className="space-y-2">
+            <Label htmlFor="movement-date">Fecha</Label>
+            <Input
+              id="movement-date"
+              type="date"
+              value={operationDate}
+              max={options.currentDate}
+              onChange={(event) => setOperationDate(event.target.value as typeof operationDate)}
+              disabled={saving}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="movement-amount">Monto</Label>
+            <ClpAmountInput
+              id="movement-amount"
+              value={amount}
+              onValueChange={setAmount}
+              placeholder="0"
+              disabled={saving}
+            />
           </div>
           {!salary && !fixedDetails ? (
             <div className="space-y-2">
               <Label htmlFor="movement-concept">
-                {editor.kind === "expense" ? "Concepto" : "Descripción"}
+                {editor.kind === "expense" ? "Concepto" : "Descripción (opcional)"}
               </Label>
               <Input
                 id="movement-concept"
@@ -258,7 +280,7 @@ export function MovementForm({
           ) : null}
           {!salary && !fixedDetails ? (
             <div className="space-y-2">
-              <Label htmlFor="movement-observation">Observación</Label>
+              <Label htmlFor="movement-observation">Observación (opcional)</Label>
               <Textarea
                 id="movement-observation"
                 value={observation}
@@ -275,13 +297,26 @@ export function MovementForm({
             />
           )}
           {editor.kind === "expense" &&
-            !options.categories.some(({ status }) => status === "active") &&
+            activeCategories.length === 0 &&
             !variableDetails &&
             !fixedDetails ? (
-            <ErrorMessage
-              title="No hay categorías"
-              description="Se necesita una categoría activa para registrar un gasto."
-            />
+            <div className="space-y-3 rounded-surface border border-dashed p-3">
+              <div>
+                <p className="font-medium">No hay categorías activas</p>
+                <p className="text-sm text-muted-foreground">
+                  Crea o administra una categoría antes de registrar un gasto.
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={onManageCategories}
+                disabled={!onManageCategories}
+              >
+                Administrar categorías
+              </Button>
+            </div>
           ) : null}
           {error && <ErrorMessage title="No se pudo guardar" description={error} />}
           <SheetFooter className="px-0">
@@ -292,7 +327,7 @@ export function MovementForm({
               disabled={
                 saving ||
                 !accountId ||
-                (editor.kind === "expense" && !fixedDetails && !categoryId)
+                !categorySelectionAllowed
               }
             >
               {saving ? "Guardando…" : editing ? "Guardar cambios" : "Registrar"}
@@ -309,7 +344,7 @@ export function MovementForm({
             </Button>
           </SheetFooter>
         </form>
-      </SheetContent>
+      </FormSheetContent>
     </Sheet>
   )
 }

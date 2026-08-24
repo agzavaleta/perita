@@ -20,6 +20,7 @@ interface PeriodBase {
   readonly id: EntityId
   readonly periodKey: PeriodKey
   readonly plannedSalaryAmount: ClpAmount
+  readonly variableExpenseBudgetAmount: ClpAmount
   readonly openedAt: UtcTimestamp
   readonly revision: Revision
 }
@@ -69,6 +70,7 @@ export type FinancialBalanceMap = Readonly<Record<string, ClpAmount>>
 export interface PeriodSnapshotData {
   readonly periodPlan: {
     readonly plannedSalaryAmount: ClpAmount
+    readonly variableExpenseBudgetAmount: ClpAmount
   }
   readonly operations: readonly Operation[]
   readonly movements: readonly Movement[]

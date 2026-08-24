@@ -10,6 +10,8 @@ import {
   ReceiptText,
 } from "lucide-react"
 
+import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
+import { FormSheetContent } from "@/components/forms/FormSheetContent"
 import { EmptyState } from "@/components/states/EmptyState"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { LoadingState } from "@/components/states/LoadingState"
@@ -92,11 +94,16 @@ function DebtEditor({
   readonly onClose: () => void
 }) {
   const [name, setName] = useState(debt?.name ?? "")
-  const [total, setTotal] = useState(debt ? String(debt.totalAmount) : "")
-  const [monthly, setMonthly] = useState(
-    debt?.monthlyPaymentAmount ? String(debt.monthlyPaymentAmount) : "",
+  const [total, setTotal] = useState<number | null>(debt?.totalAmount ?? null)
+  const [monthly, setMonthly] = useState<number | null>(
+    debt?.monthlyPaymentAmount ?? null,
   )
-  const [day, setDay] = useState(debt?.paymentDay ? String(debt.paymentDay) : "")
+  const [dueDate, setDueDate] = useState(debt?.dueDate ?? "")
+  const [day, setDay] = useState(
+    debt?.paymentDay !== null && debt?.paymentDay !== undefined
+      ? String(debt.paymentDay)
+      : "",
+  )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -110,15 +117,17 @@ function DebtEditor({
           debtId: debt.id,
           expectedRevision: debt.revision,
           name,
-          monthlyPaymentAmount: Number(monthly),
-          paymentDay: Number(day),
+          dueDate: dueDate ? dueDate as CivilDate : null,
+          monthlyPaymentAmount: monthly ?? 0,
+          paymentDay: day === "" ? null : Number(day),
         })
       } else {
         await useCases.createDebt({
           name,
-          totalAmount: Number(total),
-          monthlyPaymentAmount: Number(monthly),
-          paymentDay: Number(day),
+          totalAmount: total ?? 0,
+          dueDate: dueDate ? dueDate as CivilDate : null,
+          monthlyPaymentAmount: monthly ?? 0,
+          paymentDay: day === "" ? null : Number(day),
         })
       }
       onSaved()
@@ -131,12 +140,12 @@ function DebtEditor({
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent side="bottom" className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]">
+      <FormSheetContent>
         <SheetHeader>
           <SheetTitle>{debt ? "Editar deuda" : "Nueva deuda"}</SheetTitle>
           <SheetDescription>
             {debt
-              ? "Nombre, cuota y día son datos de planificación."
+              ? "Actualiza los datos de planificación de la deuda."
               : "La deuda comienza activa y con el total completamente pendiente."}
           </SheetDescription>
         </SheetHeader>
@@ -147,19 +156,27 @@ function DebtEditor({
           </div>
           {!debt ? (
             <div className="space-y-2">
-              <Label htmlFor="debt-total">Total CLP</Label>
-              <Input id="debt-total" type="number" inputMode="numeric" min="1" step="1" value={total} onChange={(event) => setTotal(event.target.value)} disabled={saving} />
+              <Label htmlFor="debt-total">Total</Label>
+              <ClpAmountInput id="debt-total" value={total} onValueChange={setTotal} disabled={saving} />
             </div>
           ) : null}
-          <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="debt-monthly">Cuota mensual</Label>
-              <Input id="debt-monthly" type="number" inputMode="numeric" min="1" step="1" value={monthly} onChange={(event) => setMonthly(event.target.value)} disabled={saving} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="debt-day">Día de pago</Label>
-              <Input id="debt-day" type="number" inputMode="numeric" min="1" max="31" step="1" value={day} onChange={(event) => setDay(event.target.value)} disabled={saving} />
-            </div>
+          <div className="space-y-2">
+            <Label htmlFor="debt-due-date">Fecha de vencimiento (opcional)</Label>
+            <Input
+              id="debt-due-date"
+              type="date"
+              value={dueDate}
+              onChange={(event) => setDueDate(event.target.value)}
+              disabled={saving}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="debt-monthly">Cuota mensual</Label>
+            <ClpAmountInput id="debt-monthly" required value={monthly} onValueChange={setMonthly} disabled={saving} />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="debt-day">Día de pago (opcional)</Label>
+            <Input id="debt-day" type="number" inputMode="numeric" min="1" max="31" step="1" value={day} onChange={(event) => setDay(event.target.value)} disabled={saving} />
           </div>
           {error ? <ErrorMessage title="No se pudo guardar" description={error} /> : null}
           <SheetFooter className="px-0">
@@ -169,7 +186,7 @@ function DebtEditor({
             <Button type="button" variant="outline" size="lg" className="h-11" onClick={onClose} disabled={saving}>Cancelar</Button>
           </SheetFooter>
         </form>
-      </SheetContent>
+      </FormSheetContent>
     </Sheet>
   )
 }
@@ -192,7 +209,7 @@ function PaymentEditor({
   const operation = payment?.operation
   const [accountId, setAccountId] = useState<string>(operation?.details.accountId ?? options.accounts[0]?.id ?? "")
   const [date, setDate] = useState<string>(operation?.operationDate ?? options.currentDate)
-  const [amount, setAmount] = useState(operation ? String(operation.amount) : "")
+  const [amount, setAmount] = useState<number | null>(operation?.amount ?? null)
   const [concept, setConcept] = useState(operation?.details.concept ?? "")
   const [observation, setObservation] = useState(operation?.details.observation ?? "")
   const [saving, setSaving] = useState(false)
@@ -207,7 +224,7 @@ function PaymentEditor({
         debtId: debt.id,
         accountId: accountId as EntityId,
         operationDate: date as CivilDate,
-        amount: Number(amount),
+        amount: amount ?? 0,
         concept,
         observation,
       }
@@ -230,7 +247,7 @@ function PaymentEditor({
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent side="bottom" className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]">
+      <FormSheetContent>
         <SheetHeader>
           <SheetTitle>{operation ? "Editar pago" : "Registrar pago"}</SheetTitle>
           <SheetDescription>El pago reduce la cuenta y el saldo pendiente en una sola transacción.</SheetDescription>
@@ -243,25 +260,23 @@ function PaymentEditor({
               <SelectContent>{options.accounts.map((account) => <SelectItem key={account.id} value={account.id}>{account.name}</SelectItem>)}</SelectContent>
             </Select>
           </div>
-          <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
-            <div className="space-y-2">
-              <Label htmlFor="debt-payment-date">Fecha</Label>
-              <Input id="debt-payment-date" type="date" max={options.currentDate} value={date} onChange={(event) => setDate(event.target.value)} disabled={saving} />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="debt-payment-amount">Monto CLP</Label>
-              <Input id="debt-payment-amount" type="number" inputMode="numeric" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} disabled={saving} />
-            </div>
+          <div className="space-y-2">
+            <Label htmlFor="debt-payment-date">Fecha</Label>
+            <Input id="debt-payment-date" type="date" max={options.currentDate} value={date} onChange={(event) => setDate(event.target.value)} disabled={saving} />
           </div>
-          <div className="space-y-2"><Label htmlFor="debt-payment-concept">Concepto</Label><Input id="debt-payment-concept" value={concept} onChange={(event) => setConcept(event.target.value)} disabled={saving} /></div>
-          <div className="space-y-2"><Label htmlFor="debt-payment-observation">Observación</Label><Textarea id="debt-payment-observation" value={observation} onChange={(event) => setObservation(event.target.value)} disabled={saving} /></div>
+          <div className="space-y-2">
+            <Label htmlFor="debt-payment-amount">Monto</Label>
+            <ClpAmountInput id="debt-payment-amount" value={amount} onValueChange={setAmount} disabled={saving} />
+          </div>
+          <div className="space-y-2"><Label htmlFor="debt-payment-concept">Concepto (opcional)</Label><Input id="debt-payment-concept" value={concept} onChange={(event) => setConcept(event.target.value)} disabled={saving} /></div>
+          <div className="space-y-2"><Label htmlFor="debt-payment-observation">Observación (opcional)</Label><Textarea id="debt-payment-observation" value={observation} onChange={(event) => setObservation(event.target.value)} disabled={saving} /></div>
           {error ? <ErrorMessage title="No se pudo guardar el pago" description={error} /> : null}
           <SheetFooter className="px-0">
             <Button type="submit" size="lg" className="h-11" disabled={saving || !accountId}><HandCoins aria-hidden="true" /> {saving ? "Guardando…" : "Guardar pago"}</Button>
             <Button type="button" variant="outline" size="lg" className="h-11" onClick={onClose} disabled={saving}>Cancelar</Button>
           </SheetFooter>
         </form>
-      </SheetContent>
+      </FormSheetContent>
     </Sheet>
   )
 }
@@ -273,7 +288,7 @@ function TotalEditor({ debt, currentDate, useCases, onSaved, onClose }: {
   readonly onSaved: () => void
   readonly onClose: () => void
 }) {
-  const [total, setTotal] = useState(String(debt.totalAmount))
+  const [total, setTotal] = useState<number | null>(debt.totalAmount)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -281,7 +296,7 @@ function TotalEditor({ debt, currentDate, useCases, onSaved, onClose }: {
     setSaving(true)
     setError(null)
     try {
-      await useCases.adjustDebtTotal(debt.id, debt.revision, currentDate, Number(total))
+      await useCases.adjustDebtTotal(debt.id, debt.revision, currentDate, total ?? 0)
       onSaved()
     } catch (cause) {
       setError(message(cause))
@@ -291,14 +306,14 @@ function TotalEditor({ debt, currentDate, useCases, onSaved, onClose }: {
   }
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent side="bottom" className="mx-auto w-full max-w-[430px] rounded-t-xl pb-[env(safe-area-inset-bottom)]">
+      <FormSheetContent>
         <SheetHeader><SheetTitle>Ajustar total</SheetTitle><SheetDescription>Se conservarán los pagos vigentes y el saldo pendiente se recalculará.</SheetDescription></SheetHeader>
         <form className="space-y-4 px-4" onSubmit={submit}>
-          <div className="space-y-2"><Label htmlFor="debt-new-total">Nuevo total CLP</Label><Input id="debt-new-total" type="number" min="1" step="1" value={total} onChange={(event) => setTotal(event.target.value)} disabled={saving} /></div>
+          <div className="space-y-2"><Label htmlFor="debt-new-total">Nuevo total</Label><ClpAmountInput id="debt-new-total" value={total} onValueChange={setTotal} disabled={saving} /></div>
           {error ? <ErrorMessage title="No se pudo ajustar" description={error} /> : null}
           <SheetFooter className="px-0"><Button type="submit" size="lg" disabled={saving}>{saving ? "Guardando…" : "Ajustar total"}</Button><Button type="button" variant="outline" size="lg" onClick={onClose}>Cancelar</Button></SheetFooter>
         </form>
-      </SheetContent>
+      </FormSheetContent>
     </Sheet>
   )
 }
@@ -386,7 +401,49 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
           <SheetContent side="bottom" className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]">
             <SheetHeader><SheetTitle>{detail.debt.name}</SheetTitle><SheetDescription>{statusLabel(detail.debt)} · total {formatClp(detail.debt.totalAmount)}</SheetDescription></SheetHeader>
             <div className="space-y-4 px-4">
-              <Card><CardContent className="space-y-3 pt-1"><div><p className="text-xs text-muted-foreground">Saldo pendiente</p><p className="money-figure text-3xl font-semibold">{formatClp(detail.debt.outstandingAmount)}</p></div><Separator /><div className="grid grid-cols-2 gap-3 text-sm"><div><p className="text-xs text-muted-foreground">Próximo pago</p><p className="font-medium">{formatDate(detail.schedule.nextPaymentDate)}</p></div><div><p className="text-xs text-muted-foreground">Término estimado</p><p className="font-medium">{formatDate(detail.schedule.estimatedEndDate)}</p></div></div></CardContent></Card>
+              <Card>
+                <CardContent className="space-y-3 pt-1">
+                  <div>
+                    <p className="text-xs text-muted-foreground">Saldo pendiente</p>
+                    <p className="money-figure text-3xl font-semibold">{formatClp(detail.debt.outstandingAmount)}</p>
+                  </div>
+                  <Separator />
+                  <dl className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Cuota mensual</dt>
+                      <dd className="font-medium">{formatClp(detail.debt.monthlyPaymentAmount)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Cuotas restantes</dt>
+                      <dd className="font-medium">{detail.schedule.remainingInstallments}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Fecha de vencimiento</dt>
+                      <dd className="font-medium">
+                        {detail.debt.dueDate
+                          ? formatDate(detail.debt.dueDate)
+                          : "Sin vencimiento"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Día de pago</dt>
+                      <dd className="font-medium">
+                        {detail.debt.paymentDay !== null
+                          ? `Día ${detail.debt.paymentDay}`
+                          : "Sin día definido"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Próximo pago</dt>
+                      <dd className="font-medium">{formatDate(detail.schedule.nextPaymentDate)}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Término estimado</dt>
+                      <dd className="font-medium">{formatDate(detail.schedule.estimatedEndDate)}</dd>
+                    </div>
+                  </dl>
+                </CardContent>
+              </Card>
               {detail.debt.paymentStatus !== "paid" ? <div className="grid grid-cols-2 gap-2"><Button type="button" onClick={() => setPaymentEditor("new")}><HandCoins aria-hidden="true" /> Registrar pago</Button><Button type="button" variant="outline" onClick={() => setEditor(detail.debt)}><Pencil aria-hidden="true" /> Editar</Button><Button type="button" variant="outline" className="col-span-2" onClick={() => setTotalEditor(true)}><ReceiptText aria-hidden="true" /> Ajustar total</Button></div> : null}
               <div className="space-y-2"><div className="flex items-center gap-2"><History aria-hidden="true" className="size-4" /><h3 className="font-semibold">Pagos e historial</h3></div>{detail.payments.length === 0 ? <EmptyState title="Sin pagos registrados" description="Los pagos aparecerán aquí con sus revisiones." /> : detail.payments.map((item) => <Card key={item.operation.id} className={item.operation.status === "voided" ? "opacity-60" : undefined}><CardContent className="space-y-2 pt-1"><div className="flex items-start justify-between gap-3"><div><p className="font-medium">{item.operation.details.concept ?? "Pago de deuda"}</p><p className="text-xs text-muted-foreground">{formatDate(item.operation.operationDate)} · {item.accountName}</p></div><p className="money-figure font-semibold">{formatClp(item.operation.amount)}</p></div><div className="flex items-center justify-between"><Badge variant="outline">{item.operation.status === "posted" ? "Vigente" : "Anulado"}</Badge><span className="text-xs text-muted-foreground">Rev. {item.operation.revision} · {item.revisions.length} cambio(s)</span></div>{item.operation.status === "posted" ? <div className="flex gap-2"><Button type="button" size="sm" variant="outline" onClick={() => setPaymentEditor(item)}><Pencil aria-hidden="true" /> Editar</Button><Button type="button" size="sm" variant="destructive" onClick={() => setVoidTarget(item)}><CircleOff aria-hidden="true" /> Anular</Button></div> : null}</CardContent></Card>)}</div>
               {detail.adjustments.length > 0 || detail.auditEvents.length > 0 ? <p className="flex items-center gap-2 text-xs text-muted-foreground"><CalendarDays aria-hidden="true" className="size-4" /> {detail.adjustments.length} ajuste(s) de total · {detail.auditEvents.length} revisión(es) de ficha</p> : null}

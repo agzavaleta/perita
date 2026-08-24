@@ -41,6 +41,7 @@ export function deriveSavingsGoalProgress(
 }
 
 export function assertAccountInvariant(account: Account): Account {
+  assertNonEmpty(account.emoji, "Account.emoji")
   assertNonEmpty(account.name, "Account.name")
   asClpAmount(account.openingBalance, { allowNegative: true })
   asClpAmount(account.currentBalance, { allowNegative: true })
@@ -51,6 +52,7 @@ export function assertAccountInvariant(account: Account): Account {
 }
 
 export function assertSavingsGoalInvariant(goal: SavingsGoal): SavingsGoal {
+  assertNonEmpty(goal.emoji, "SavingsGoal.emoji")
   assertNonEmpty(goal.name, "SavingsGoal.name")
   asPositiveClpAmount(goal.targetAmount)
   asClpAmount(goal.openingBalance)
@@ -103,15 +105,9 @@ export function assertDebtInvariant(debt: Debt): Debt {
   asPositiveClpAmount(debt.totalAmount)
   asClpAmount(debt.openingOutstanding)
   asClpAmount(debt.outstandingAmount)
+  if (debt.dueDate !== null) asCivilDate(debt.dueDate)
 
-  const hasAmount = debt.monthlyPaymentAmount !== null
-  const hasDay = debt.paymentDay !== null
-  if (hasAmount !== hasDay) {
-    fail("Debt monthly payment amount and payment day must be defined together")
-  }
-  if (debt.monthlyPaymentAmount !== null) {
-    asPositiveClpAmount(debt.monthlyPaymentAmount)
-  }
+  asPositiveClpAmount(debt.monthlyPaymentAmount)
   if (
     debt.paymentDay !== null &&
     (!Number.isSafeInteger(debt.paymentDay) ||
@@ -436,12 +432,12 @@ export function assertOperationMovementInvariant(
 
 export interface DebtScheduleInput {
   readonly outstandingAmount: ClpAmount
-  readonly monthlyPaymentAmount: PositiveClpAmount | null
+  readonly monthlyPaymentAmount: PositiveClpAmount
   readonly paymentDay: number | null
 }
 
 export interface DebtSchedule {
-  readonly remainingInstallments: number | null
+  readonly remainingInstallments: number
   readonly nextPaymentDate: CivilDate | null
   readonly estimatedEndDate: CivilDate | null
 }
@@ -466,27 +462,28 @@ export function deriveDebtSchedule(
   currentCivilDate: CivilDate,
 ): DebtSchedule {
   asClpAmount(input.outstandingAmount)
-  if (input.monthlyPaymentAmount === null && input.paymentDay === null) {
-    return {
-      remainingInstallments: null,
-      nextPaymentDate: null,
-      estimatedEndDate: null,
-    }
-  }
-  if (input.monthlyPaymentAmount === null || input.paymentDay === null) {
-    fail("Debt schedule amount and day must be defined together")
-  }
   const monthlyPaymentAmount = asPositiveClpAmount(input.monthlyPaymentAmount)
   if (
-    !Number.isSafeInteger(input.paymentDay) ||
-    input.paymentDay < 1 ||
-    input.paymentDay > 31
+    input.paymentDay !== null &&
+    (!Number.isSafeInteger(input.paymentDay) ||
+      input.paymentDay < 1 ||
+      input.paymentDay > 31)
   ) {
     fail("Debt schedule payment day must be from 1 to 31")
   }
   if (input.outstandingAmount === 0) {
     return {
       remainingInstallments: 0,
+      nextPaymentDate: null,
+      estimatedEndDate: null,
+    }
+  }
+  const remainingInstallments = Math.ceil(
+    input.outstandingAmount / monthlyPaymentAmount,
+  )
+  if (input.paymentDay === null) {
+    return {
+      remainingInstallments,
       nextPaymentDate: null,
       estimatedEndDate: null,
     }
@@ -507,9 +504,6 @@ export function deriveDebtSchedule(
       input.paymentDay,
     )
   }
-  const remainingInstallments = Math.ceil(
-    input.outstandingAmount / monthlyPaymentAmount,
-  )
   const finalMonth = advanceMonth(
     scheduled.year,
     scheduled.month,

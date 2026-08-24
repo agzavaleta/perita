@@ -45,11 +45,15 @@ function settings(): FinancialSettings {
   }
 }
 
-function period(plannedSalaryAmount = 0): Period {
+function period(
+  plannedSalaryAmount = 0,
+  variableExpenseBudgetAmount = 0,
+): Period {
   return {
     id: PERIOD_ID,
     periodKey: asPeriodKey("2026-08"),
     plannedSalaryAmount: asClpAmount(plannedSalaryAmount),
+    variableExpenseBudgetAmount: asClpAmount(variableExpenseBudgetAmount),
     openedAt: NOW,
     status: "open",
     closedAt: null,
@@ -61,6 +65,7 @@ function period(plannedSalaryAmount = 0): Period {
 function account(): Account {
   return {
     id: ACCOUNT_ID,
+    emoji: "💳",
     name: "Principal",
     bank: null,
     openingBalance: asClpAmount(100_000),
@@ -145,6 +150,7 @@ describe("MonthlyCloseUseCases", () => {
   }
 
   it("closes atomically, snapshots the month and opens the exact continuation", async () => {
+    await repositories.periods.put(period(0, 250_000))
     const result = await useCases().closeCurrentPeriod()
     expect(result.closedPeriod).toMatchObject({
       periodKey: "2026-08",
@@ -154,8 +160,13 @@ describe("MonthlyCloseUseCases", () => {
     expect(result.nextPeriod).toMatchObject({
       periodKey: "2026-09",
       plannedSalaryAmount: 900_000,
+      variableExpenseBudgetAmount: 0,
       status: "open",
       revision: 1,
+    })
+    expect(result.snapshot.data.periodPlan).toEqual({
+      plannedSalaryAmount: 0,
+      variableExpenseBudgetAmount: 250_000,
     })
     expect(result.snapshot.integrity.payloadHash).toMatch(/^[0-9a-f]{64}$/)
     expect(result.snapshot.data.fixedExpenses[0]).toMatchObject({
@@ -200,6 +211,7 @@ describe("MonthlyCloseUseCases", () => {
       id: asEntityId("80000000-0000-4000-8000-000000000099"),
       periodKey: asPeriodKey("2026-09"),
       plannedSalaryAmount: asClpAmount(0),
+      variableExpenseBudgetAmount: asClpAmount(0),
       openedAt: NOW,
       status: "closed",
       closedAt: NOW,

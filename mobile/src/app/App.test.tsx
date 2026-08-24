@@ -9,7 +9,10 @@ function setupService(status: "not_started" | "incomplete" | "completed"): Setup
     getState: vi.fn().mockResolvedValue({
       status,
       allowedPeriodKeys: ["2026-08", "2026-07"],
+      draft: null,
     }),
+    saveDraft: vi.fn(),
+    deleteDraft: vi.fn(),
     completeSetup: vi.fn(),
   }
 }

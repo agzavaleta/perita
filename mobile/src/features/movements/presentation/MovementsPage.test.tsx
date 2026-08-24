@@ -31,6 +31,7 @@ const GOAL_ID = asEntityId("40000000-0000-4000-8000-000000000006")
 
 const account: Account = {
   id: ACCOUNT_ID,
+  emoji: "💳",
   name: "Cuenta principal",
   bank: null,
   openingBalance: asClpAmount(0),
@@ -52,6 +53,7 @@ const category: Category = {
 
 const goal: SavingsGoal = {
   id: GOAL_ID,
+  emoji: "💰",
   name: "Viaje",
   bank: null,
   targetAmount: asPositiveClpAmount(100_000),
@@ -139,6 +141,31 @@ function service(overrides: Partial<MovementUseCasesPort> = {}): MovementUseCase
 }
 
 describe("MovementsPage", () => {
+  it("propagates category administration from a new expense without active categories", async () => {
+    const onManageCategories = vi.fn()
+    const inactiveCategory: Category = { ...category, status: "inactive" }
+    const useCases = service({
+      getFormOptions: vi.fn().mockResolvedValue({
+        ...options,
+        categories: [inactiveCategory],
+      }),
+    })
+    render(
+      <MovementsPage
+        useCases={useCases}
+        onManageCategories={onManageCategories}
+      />,
+    )
+
+    await screen.findByText("Venta")
+    fireEvent.click(screen.getByRole("button", { name: "Gasto" }))
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Administrar categorías" }),
+    )
+
+    expect(onManageCategories).toHaveBeenCalledOnce()
+  })
+
   it("opens Mover dinero from the quick action and delegates the internal move", async () => {
     const registerTransfer = vi.fn().mockResolvedValue(item)
     const onClose = vi.fn()
@@ -153,10 +180,10 @@ describe("MovementsPage", () => {
     expect(
       await screen.findByRole("heading", { name: "Mover dinero" }),
     ).toBeInTheDocument()
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Monto CLP" }), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Monto" }), {
       target: { value: "15000" },
     })
-    fireEvent.change(screen.getByRole("textbox", { name: "Concepto" }), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Concepto (opcional)" }), {
       target: { value: "Aporte viaje" },
     })
     fireEvent.click(screen.getByRole("button", { name: "Mover dinero" }))
@@ -189,10 +216,10 @@ describe("MovementsPage", () => {
     )
 
     const dialog = await screen.findByRole("dialog")
-    fireEvent.change(within(dialog).getByLabelText("Monto CLP"), {
+    fireEvent.change(within(dialog).getByLabelText("Monto"), {
       target: { value: "25000" },
     })
-    fireEvent.change(within(dialog).getByLabelText("Descripción"), {
+    fireEvent.change(within(dialog).getByLabelText("Descripción (opcional)"), {
       target: { value: "Venta" },
     })
     fireEvent.click(within(dialog).getByRole("button", { name: "Registrar" }))

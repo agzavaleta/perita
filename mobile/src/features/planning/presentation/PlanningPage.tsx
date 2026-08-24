@@ -10,7 +10,6 @@ import {
   PiggyBank,
   Plus,
   ReceiptText,
-  Target,
 } from "lucide-react"
 
 import { EmptyState } from "@/components/states/EmptyState"
@@ -147,8 +146,12 @@ function GoalCard({
     <Card className={goal.lifecycleStatus === "closed" ? "opacity-65" : undefined}>
       <CardHeader>
         <div className="flex min-w-0 items-center gap-3">
-          <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-muted text-brand">
-            <Target aria-hidden="true" className="size-5" />
+          <div
+            className="grid size-10 shrink-0 place-items-center rounded-lg bg-muted text-2xl"
+            role="img"
+            aria-label={`Emoji de ${goal.name}`}
+          >
+            {goal.emoji}
           </div>
           <div className="min-w-0">
             <CardTitle className="truncate">{goal.name}</CardTitle>
@@ -251,7 +254,12 @@ function GoalDetailSheet({
         className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
       >
         <SheetHeader>
-          <SheetTitle>{goal.name}</SheetTitle>
+          <SheetTitle className="flex items-center gap-2">
+            <span role="img" aria-label={`Emoji de ${goal.name}`}>
+              {goal.emoji}
+            </span>
+            <span>{goal.name}</span>
+          </SheetTitle>
           <SheetDescription>
             {goal.lifecycleStatus === "active" ? "Meta activa" : "Meta cerrada"}
           </SheetDescription>

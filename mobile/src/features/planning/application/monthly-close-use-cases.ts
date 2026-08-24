@@ -17,6 +17,7 @@ import type {
   PeriodSnapshot,
 } from "@/domain/periods"
 import {
+  asClpAmount,
   asEntityId,
   asRevision,
   asUtcTimestamp,
@@ -214,6 +215,7 @@ export class MonthlyCloseUseCases implements MonthlyCloseUseCasesPort {
       id: nextPeriodId,
       periodKey: nextPeriodKey,
       plannedSalaryAmount: source.financialSettings.salaryReferenceAmount,
+      variableExpenseBudgetAmount: asClpAmount(0),
       openedAt: occurredAt,
       status: "open",
       closedAt: null,
@@ -317,7 +319,10 @@ export class MonthlyCloseUseCases implements MonthlyCloseUseCasesPort {
       snapshotKind: "canonical",
       closedAt: occurredAt,
       data: {
-        periodPlan: { plannedSalaryAmount: period.plannedSalaryAmount },
+        periodPlan: {
+          plannedSalaryAmount: period.plannedSalaryAmount,
+          variableExpenseBudgetAmount: period.variableExpenseBudgetAmount,
+        },
         operations: source.operations.filter(({ periodId }) => periodId === period.id),
         movements: source.movements.filter(({ periodId }) => periodId === period.id),
         fixedExpenses: snapshotInstances,

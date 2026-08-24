@@ -31,6 +31,7 @@ import type { PeritaRepositories } from "@/data/repositories"
 export interface SavingsGoalDraft {
   readonly name: string
   readonly bank?: string | null
+  readonly emoji?: string
   readonly targetAmount: number
   readonly plannedMonthlyAmount: number
 }
@@ -92,6 +93,7 @@ export type PlanningErrorCode =
   | "fixed_expense_not_found"
   | "fixed_expense_instance_not_found"
   | "invalid_name"
+  | "invalid_emoji"
   | "invalid_amount"
   | "invalid_state"
   | "nonzero_balance"
@@ -130,6 +132,17 @@ function requiredName(value: string) {
     throw new PlanningUseCaseError("invalid_name", "El nombre es obligatorio.")
   }
   return name
+}
+
+function requiredEmoji(value: string | undefined, fallback: string) {
+  const emoji = value === undefined ? fallback : value.trim()
+  if (!emoji) {
+    throw new PlanningUseCaseError(
+      "invalid_emoji",
+      "El emoji de la meta es obligatorio.",
+    )
+  }
+  return emoji
 }
 
 function positiveAmount(value: number) {
@@ -219,6 +232,7 @@ export class PlanningUseCases implements PlanningUseCasesPort {
     const occurredAt = this.now()
     const goal = assertSavingsGoalInvariant({
       id: this.createId(),
+      emoji: requiredEmoji(input.emoji, "💰"),
       name: requiredName(input.name),
       bank: input.bank?.trim() || null,
       targetAmount: positiveAmount(input.targetAmount),
@@ -274,11 +288,13 @@ export class PlanningUseCases implements PlanningUseCasesPort {
       )
     }
     const name = requiredName(input.name)
+    const emoji = requiredEmoji(input.emoji, previous.emoji)
     const bank = input.bank?.trim() || null
     const targetAmount = positiveAmount(input.targetAmount)
     const plannedMonthlyAmount = nonnegativeAmount(input.plannedMonthlyAmount)
     if (
       previous.name === name &&
+      previous.emoji === emoji &&
       previous.bank === bank &&
       previous.targetAmount === targetAmount &&
       previous.plannedMonthlyAmount === plannedMonthlyAmount
@@ -288,6 +304,7 @@ export class PlanningUseCases implements PlanningUseCasesPort {
     const occurredAt = this.now()
     const goal = assertSavingsGoalInvariant({
       ...previous,
+      emoji,
       name,
       bank,
       targetAmount,

@@ -127,6 +127,23 @@ export interface AccountRepository extends Repository<Account, EntityId> {
   putWithAudit(account: Account, auditEvent: AuditEvent): Promise<void>
 }
 
+export interface CategoryRepository extends Repository<Category, EntityId> {
+  ensureDefaults(
+    categories: readonly Category[],
+    auditEvents: readonly AuditEvent[],
+  ): Promise<boolean>
+  addWithAudit(
+    expectedCategories: readonly Category[],
+    category: Category,
+    auditEvent: AuditEvent,
+  ): Promise<void>
+  putWithAudit(
+    expectedCategories: readonly Category[],
+    category: Category,
+    auditEvent: AuditEvent,
+  ): Promise<void>
+}
+
 export interface SetupRepository {
   complete(input: {
     readonly financialSettings: FinancialSettings
@@ -163,6 +180,70 @@ class IndexedDbAccountRepository
       "readwrite",
       async ({ store }) => {
         await store(STORE_NAMES.accounts).put(account)
+        await store(STORE_NAMES.auditEvents).add(auditEvent)
+      },
+    )
+  }
+}
+
+class IndexedDbCategoryRepository
+  extends IndexedDbRepository<"categories">
+  implements CategoryRepository
+{
+  ensureDefaults(
+    categories: readonly Category[],
+    auditEvents: readonly AuditEvent[],
+  ) {
+    return this.database.transaction(
+      [STORE_NAMES.categories, STORE_NAMES.auditEvents],
+      "readwrite",
+      async ({ store }) => {
+        if ((await store(STORE_NAMES.categories).count()) !== 0) return false
+        for (const category of categories) {
+          await store(STORE_NAMES.categories).add(category)
+        }
+        for (const auditEvent of auditEvents) {
+          await store(STORE_NAMES.auditEvents).add(auditEvent)
+        }
+        return true
+      },
+    )
+  }
+
+  addWithAudit(
+    expectedCategories: readonly Category[],
+    category: Category,
+    auditEvent: AuditEvent,
+  ) {
+    return this.saveWithAudit(expectedCategories, category, auditEvent, "add")
+  }
+
+  putWithAudit(
+    expectedCategories: readonly Category[],
+    category: Category,
+    auditEvent: AuditEvent,
+  ) {
+    return this.saveWithAudit(expectedCategories, category, auditEvent, "put")
+  }
+
+  private saveWithAudit(
+    expectedCategories: readonly Category[],
+    category: Category,
+    auditEvent: AuditEvent,
+    operation: "add" | "put",
+  ) {
+    return this.database.transaction(
+      [STORE_NAMES.categories, STORE_NAMES.auditEvents],
+      "readwrite",
+      async ({ store }) => {
+        const stored = await store(STORE_NAMES.categories).getAll()
+        if (canonicalJson(stored) !== canonicalJson(expectedCategories)) {
+          throw new PersistenceError(
+            "conflict",
+            "Categories changed before saving",
+          )
+        }
+        await store(STORE_NAMES.categories)[operation](category)
         await store(STORE_NAMES.auditEvents).add(auditEvent)
       },
     )
@@ -868,7 +949,7 @@ export interface PeritaRepositories {
   readonly accounts: AccountRepository
   readonly savingsGoals: Repository<SavingsGoal, EntityId>
   readonly debts: Repository<Debt, EntityId>
-  readonly categories: Repository<Category, EntityId>
+  readonly categories: CategoryRepository
   readonly fixedExpenseTemplates: Repository<FixedExpenseTemplate, EntityId>
   readonly fixedExpenseInstances: Repository<FixedExpenseInstance, EntityId> & {
     listByPeriod(periodId: EntityId): Promise<FixedExpenseInstance[]>
@@ -1043,7 +1124,7 @@ export function createRepositories(database: PeritaDatabase): PeritaRepositories
     accounts: new IndexedDbAccountRepository(database, STORE_NAMES.accounts),
     savingsGoals: new IndexedDbRepository(database, STORE_NAMES.savingsGoals),
     debts: new IndexedDbRepository(database, STORE_NAMES.debts),
-    categories: new IndexedDbRepository(database, STORE_NAMES.categories),
+    categories: new IndexedDbCategoryRepository(database, STORE_NAMES.categories),
     fixedExpenseTemplates: new IndexedDbRepository(
       database,
       STORE_NAMES.fixedExpenseTemplates,

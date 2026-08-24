@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react"
 import { CircleDollarSign } from "lucide-react"
 
+import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
+import { FormSheetContent } from "@/components/forms/FormSheetContent"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { LoadingState } from "@/components/states/LoadingState"
 import { Button } from "@/components/ui/button"
@@ -15,7 +17,6 @@ import {
 } from "@/components/ui/select"
 import {
   Sheet,
-  SheetContent,
   SheetDescription,
   SheetFooter,
   SheetHeader,
@@ -49,8 +50,8 @@ export function FixedExpensePaymentForm({
   const [currentDate, setCurrentDate] = useState<string>("")
   const [accountId, setAccountId] = useState<string>("")
   const [operationDate, setOperationDate] = useState<string>("")
-  const [amount, setAmount] = useState(
-    instance ? String(instance.plannedAmount) : "",
+  const [amount, setAmount] = useState<number | null>(
+    instance?.plannedAmount ?? null,
   )
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -88,7 +89,7 @@ export function FixedExpensePaymentForm({
         accountId: accountId as EntityId,
         fixedExpenseInstanceId: instance.id,
         operationDate: operationDate as CivilDate,
-        amount: Number(amount),
+        amount: amount ?? 0,
       })
       onSaved()
     } catch (cause) {
@@ -100,10 +101,7 @@ export function FixedExpensePaymentForm({
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent
-        side="bottom"
-        className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
-      >
+      <FormSheetContent>
         <SheetHeader>
           <SheetTitle>Registrar pago</SheetTitle>
           <SheetDescription>
@@ -136,31 +134,25 @@ export function FixedExpensePaymentForm({
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="fixed-payment-date">Fecha</Label>
-                <Input
-                  id="fixed-payment-date"
-                  type="date"
-                  value={operationDate}
-                  max={currentDate}
-                  onChange={(event) => setOperationDate(event.target.value)}
-                  disabled={saving}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="fixed-payment-amount">Monto CLP</Label>
-                <Input
-                  id="fixed-payment-amount"
-                  type="number"
-                  inputMode="numeric"
-                  min="1"
-                  step="1"
-                  value={amount}
-                  onChange={(event) => setAmount(event.target.value)}
-                  disabled={saving}
-                />
-              </div>
+            <div className="space-y-2">
+              <Label htmlFor="fixed-payment-date">Fecha</Label>
+              <Input
+                id="fixed-payment-date"
+                type="date"
+                value={operationDate}
+                max={currentDate}
+                onChange={(event) => setOperationDate(event.target.value)}
+                disabled={saving}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="fixed-payment-amount">Monto</Label>
+              <ClpAmountInput
+                id="fixed-payment-amount"
+                value={amount}
+                onValueChange={setAmount}
+                disabled={saving}
+              />
             </div>
             {accounts.length === 0 ? (
               <ErrorMessage
@@ -176,7 +168,7 @@ export function FixedExpensePaymentForm({
                 type="submit"
                 size="lg"
                 className="h-11"
-                disabled={saving || !accountId || !operationDate || !amount}
+                disabled={saving || !accountId || !operationDate || amount === null}
               >
                 <CircleDollarSign aria-hidden="true" />
                 {saving ? "Registrando…" : "Registrar pago"}
@@ -194,7 +186,7 @@ export function FixedExpensePaymentForm({
             </SheetFooter>
           </form>
         )}
-      </SheetContent>
+      </FormSheetContent>
     </Sheet>
   )
 }

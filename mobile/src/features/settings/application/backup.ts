@@ -91,6 +91,31 @@ function payloadWithoutIntegrity(backup: PeritaBackup) {
   return payload
 }
 
+function withMissingDefault<T extends object, K extends string, V>(
+  record: T,
+  field: K,
+  value: V,
+): T & Record<K, V> {
+  return Object.hasOwn(record, field)
+    ? record as T & Record<K, V>
+    : { ...record, [field]: value } as T & Record<K, V>
+}
+
+function normalizeLegacyData(data: PeritaDataSnapshot): PeritaDataSnapshot {
+  return {
+    ...data,
+    periods: data.periods.map((period) =>
+      withMissingDefault(period, "variableExpenseBudgetAmount", asClpAmount(0)),
+    ),
+    accounts: data.accounts.map((account) =>
+      withMissingDefault(account, "emoji", "💳"),
+    ),
+    savingsGoals: data.savingsGoals.map((goal) =>
+      withMissingDefault(goal, "emoji", "💰"),
+    ),
+  }
+}
+
 function keyFor(store: keyof PeritaDataSnapshot, record: unknown) {
   if (!isRecord(record)) return undefined
   return store === "financialSettings" ? record.key : record.id
@@ -136,6 +161,7 @@ function validateRecords(data: PeritaDataSnapshot) {
   for (const period of data.periods) {
     asPeriodKey(period.periodKey)
     asClpAmount(period.plannedSalaryAmount)
+    asClpAmount(period.variableExpenseBudgetAmount)
     asRevision(period.revision)
     asUtcTimestamp(period.openedAt)
     if (period.status === "closed") asUtcTimestamp(period.closedAt)
@@ -245,6 +271,15 @@ async function validateDerivedIntegrity(data: PeritaDataSnapshot) {
     if (actualHash !== integrity.payloadHash.toLowerCase()) {
       throw new Error("La integridad de un mes histórico no coincide.")
     }
+    if (!isRecord(snapshot.data.periodPlan)) {
+      throw new Error("El plan de un mes histórico es inválido.")
+    }
+    asClpAmount(snapshot.data.periodPlan.plannedSalaryAmount)
+    asClpAmount(
+      Object.hasOwn(snapshot.data.periodPlan, "variableExpenseBudgetAmount")
+        ? snapshot.data.periodPlan.variableExpenseBudgetAmount
+        : 0,
+    )
     if (
       snapshot.data.operations.some(({ periodId }) => periodId !== period.id) ||
       snapshot.data.movements.some(({ periodId }) => periodId !== period.id) ||
@@ -336,12 +371,16 @@ export class BackupService {
       const backup = parsed as unknown as PeritaBackup
       const actualHash = await sha256(canonicalJson(payloadWithoutIntegrity(backup)))
       if (actualHash !== backup.integrity.payloadHash.toLowerCase()) throw new Error("La firma de integridad no coincide.")
-      validateRecords(backup.data)
-      if (backup.dataRevision !== dataRevision(backup.data)) {
+      const normalizedBackup: PeritaBackup = {
+        ...backup,
+        data: normalizeLegacyData(clone(backup.data)),
+      }
+      validateRecords(normalizedBackup.data)
+      if (normalizedBackup.dataRevision !== dataRevision(normalizedBackup.data)) {
         throw new Error("La revisión declarada no coincide con los datos del respaldo.")
       }
-      await validateDerivedIntegrity(backup.data)
-      return { status: "valid", backup: clone(backup), errors: [] }
+      await validateDerivedIntegrity(normalizedBackup.data)
+      return { status: "valid", backup: clone(normalizedBackup), errors: [] }
     } catch (error) {
       return { status: "invalid", backup: null, errors: [error instanceof Error && error.message ? error.message : "El respaldo no es válido."] }
     }

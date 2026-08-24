@@ -43,6 +43,7 @@ function period(): Period {
     id: PERIOD_ID,
     periodKey: asPeriodKey("2026-08"),
     plannedSalaryAmount: asClpAmount(900_000),
+    variableExpenseBudgetAmount: asClpAmount(0),
     openedAt: NOW,
     status: "open",
     closedAt: null,
@@ -54,6 +55,7 @@ function period(): Period {
 function account(id: typeof ACCOUNT_A, name: string, balance: number): Account {
   return {
     id,
+    emoji: "💳",
     name,
     bank: null,
     openingBalance: asClpAmount(balance),
@@ -79,6 +81,7 @@ function category(id: typeof CATEGORY_A, name: string): Category {
 function goal(id: typeof GOAL_A, name: string, balance = 50_000): SavingsGoal {
   return {
     id,
+    emoji: "💰",
     name,
     bank: null,
     targetAmount: asPositiveClpAmount(100_000),

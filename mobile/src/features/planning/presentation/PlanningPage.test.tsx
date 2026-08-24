@@ -37,6 +37,7 @@ const ACCOUNT_ID = asEntityId("60000000-0000-4000-8000-000000000006")
 
 const goal: SavingsGoal = {
   id: GOAL_ID,
+  emoji: "💰",
   name: "Viaje",
   bank: null,
   targetAmount: asPositiveClpAmount(100_000),
@@ -196,10 +197,17 @@ describe("PlanningPage", () => {
     render(<PlanningPage useCases={service()} onMoveMoney={onMoveMoney} />)
 
     expect(await screen.findByText("Viaje")).toBeInTheDocument()
+    expect(screen.getByRole("img", { name: "Emoji de Viaje" })).toHaveTextContent(
+      "💰",
+    )
+    expect(document.querySelector(".lucide-target")).toBeNull()
     expect(
       screen.getByRole("progressbar", { name: "Progreso de Viaje" }),
     ).toHaveAttribute("aria-valuenow", "50")
     fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Viaje" }))
+    expect(
+      await screen.findAllByRole("img", { name: "Emoji de Viaje" }),
+    ).toHaveLength(1)
     fireEvent.click(await screen.findByRole("button", { name: "Aportar" }))
     expect(onMoveMoney).toHaveBeenCalledOnce()
   })
@@ -213,11 +221,11 @@ describe("PlanningPage", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Nombre" }), {
       target: { value: "Casa" },
     })
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Objetivo CLP" }), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Objetivo" }), {
       target: { value: "500000" },
     })
     fireEvent.change(
-      screen.getByRole("spinbutton", { name: "Aporte mensual planificado" }),
+      screen.getByRole("textbox", { name: "Aporte mensual planificado" }),
       { target: { value: "50000" } },
     )
     fireEvent.click(screen.getByRole("button", { name: "Crear meta" }))
@@ -246,7 +254,7 @@ describe("PlanningPage", () => {
       target: { value: "Arriendo" },
     })
     fireEvent.change(
-      screen.getByRole("spinbutton", { name: "Monto de referencia CLP" }),
+      screen.getByRole("textbox", { name: "Monto de referencia" }),
       { target: { value: "450000" } },
     )
     fireEvent.click(screen.getByRole("button", { name: "Guardar" }))
@@ -277,7 +285,7 @@ describe("PlanningPage", () => {
       await screen.findByRole("button", { name: "Ver detalle de Internet" }),
     )
     fireEvent.click(screen.getByRole("button", { name: "Registrar pago" }))
-    expect(await screen.findByRole("spinbutton", { name: "Monto CLP" })).toHaveValue(28_000)
+    expect(await screen.findByRole("textbox", { name: "Monto" })).toHaveValue("28.000")
     fireEvent.click(screen.getByRole("button", { name: "Registrar pago" }))
 
     await waitFor(() =>
@@ -307,7 +315,7 @@ describe("PlanningPage", () => {
     expect(await screen.findByText("Crédito")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Crédito" }))
     fireEvent.click(await screen.findByRole("button", { name: "Registrar pago" }))
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Monto CLP" }), {
+    fireEvent.change(screen.getByRole("textbox", { name: "Monto" }), {
       target: { value: "25000" },
     })
     fireEvent.click(screen.getByRole("button", { name: "Guardar pago" }))

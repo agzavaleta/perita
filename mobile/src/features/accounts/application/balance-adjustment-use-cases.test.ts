@@ -24,6 +24,7 @@ const period: Period = {
   id: PERIOD_ID,
   periodKey: asPeriodKey("2026-08"),
   plannedSalaryAmount: asClpAmount(0),
+  variableExpenseBudgetAmount: asClpAmount(0),
   openedAt: NOW,
   status: "open",
   closedAt: null,
@@ -32,6 +33,7 @@ const period: Period = {
 }
 const account: Account = {
   id: ACCOUNT_ID,
+  emoji: "💳",
   name: "Principal",
   bank: null,
   openingBalance: asClpAmount(100_000),

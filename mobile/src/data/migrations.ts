@@ -97,12 +97,50 @@ function createInitialSchema(database: IDBDatabase) {
   snapshots.createIndex(INDEX_NAMES.byPeriodKey, "periodKey", { unique: true })
 }
 
+function backfillMissingField(
+  transaction: IDBTransaction,
+  storeName: typeof STORE_NAMES.periods | typeof STORE_NAMES.accounts | typeof STORE_NAMES.savingsGoals,
+  field: string,
+  defaultValue: unknown,
+) {
+  const request = transaction.objectStore(storeName).openCursor()
+  request.onsuccess = () => {
+    const cursor = request.result
+    if (!cursor) return
+
+    const record = cursor.value as Record<string, unknown>
+    if (!Object.hasOwn(record, field)) {
+      cursor.update({ ...record, [field]: defaultValue })
+    }
+    cursor.continue()
+  }
+}
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
     description: "Create the isolated mobile domain schema",
     upgrade(database) {
       createInitialSchema(database)
+    },
+  },
+  {
+    version: 2,
+    description: "Backfill planning budget and financial target emojis",
+    upgrade(_database, transaction) {
+      backfillMissingField(
+        transaction,
+        STORE_NAMES.periods,
+        "variableExpenseBudgetAmount",
+        0,
+      )
+      backfillMissingField(transaction, STORE_NAMES.accounts, "emoji", "💳")
+      backfillMissingField(
+        transaction,
+        STORE_NAMES.savingsGoals,
+        "emoji",
+        "💰",
+      )
     },
   },
 ]

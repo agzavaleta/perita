@@ -24,6 +24,7 @@ const dashboard: HomeDashboard = {
     id: PERIOD_ID,
     periodKey: asPeriodKey("2026-08"),
     plannedSalaryAmount: asClpAmount(0),
+    variableExpenseBudgetAmount: asClpAmount(0),
     openedAt: NOW,
     status: "open",
     closedAt: null,
@@ -51,6 +52,7 @@ const dashboard: HomeDashboard = {
   periodExpenseAmount: asClpAmount(50_000),
   accounts: [{
     id: ACCOUNT_ID,
+    emoji: "💳",
     name: "Principal",
     bank: "Banco",
     openingBalance: asClpAmount(100_000),
@@ -63,6 +65,7 @@ const dashboard: HomeDashboard = {
   relevantGoals: [{
     goal: {
       id: GOAL_ID,
+      emoji: "💰",
       name: "Viaje",
       bank: null,
       targetAmount: asPositiveClpAmount(100_000),
@@ -99,6 +102,7 @@ const dashboard: HomeDashboard = {
       nextPaymentDate: asCivilDate("2026-08-31"),
       estimatedEndDate: asCivilDate("2026-10-31"),
     },
+    progressPercent: 30,
   }],
   isEmpty: false,
 }
@@ -120,6 +124,9 @@ describe("HomePage", () => {
     expect(screen.getByText("Viaje")).toBeInTheDocument()
     expect(screen.getByRole("progressbar", { name: "Progreso de Viaje" })).toHaveAttribute("aria-valuenow", "10")
     expect(screen.getByText("Crédito")).toBeInTheDocument()
+    expect(
+      screen.getByRole("progressbar", { name: "Progreso de deuda Crédito" }),
+    ).toHaveAttribute("aria-valuenow", "30")
     expect(screen.getByText("Agosto de 2026")).toBeInTheDocument()
   })
 
@@ -135,6 +142,28 @@ describe("HomePage", () => {
 
     expect(await screen.findByText("Sueldo pendiente de recepción")).toBeInTheDocument()
     expect(screen.getByText(/todavía no existe un sueldo recibido vigente/i)).toBeInTheDocument()
+  })
+
+  it("keeps debt status and outstanding amount alongside derived progress", async () => {
+    const debtItem = dashboard.relevantDebts[0]
+    if (!debtItem) throw new Error("Missing debt fixture")
+    render(<HomePage useCases={service({
+      ...dashboard,
+      relevantDebts: [{
+        ...debtItem,
+        debt: {
+          ...debtItem.debt,
+          dueDate: asCivilDate("2026-08-01"),
+          paymentStatus: "overdue",
+        },
+      }],
+    })} />)
+
+    expect(await screen.findByText("$70.000")).toBeInTheDocument()
+    expect(screen.getByText("Atrasada")).toBeInTheDocument()
+    expect(
+      screen.getByRole("progressbar", { name: "Progreso de deuda Crédito" }),
+    ).toHaveAttribute("aria-valuenow", "30")
   })
 
   it("shows an actionable empty state", async () => {

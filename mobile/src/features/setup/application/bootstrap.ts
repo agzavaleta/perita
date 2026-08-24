@@ -4,6 +4,7 @@ import {
   SetupUseCases,
   type SetupUseCasesPort,
 } from "@/features/setup/application/setup-use-cases"
+import { openSetupDraftStore } from "@/features/setup/data/setup-draft-store"
 
 export interface SetupModule {
   readonly useCases: SetupUseCasesPort
@@ -11,9 +12,15 @@ export interface SetupModule {
 }
 
 export async function createSetupModule(): Promise<SetupModule> {
-  const database = await openPeritaDatabase()
+  const [database, draftStore] = await Promise.all([
+    openPeritaDatabase(),
+    openSetupDraftStore(),
+  ])
   return {
-    useCases: new SetupUseCases(createRepositories(database)),
-    dispose: () => database.close(),
+    useCases: new SetupUseCases(createRepositories(database), { draftStore }),
+    dispose: () => {
+      database.close()
+      draftStore.close()
+    },
   }
 }

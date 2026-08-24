@@ -53,6 +53,7 @@ function account(): Account {
   const timestamp = asUtcTimestamp("2026-08-21T12:00:00.000Z")
   return {
     id: asEntityId("00000000-0000-4000-8000-000000000001"),
+    emoji: "💳",
     name: "Cuenta persistente",
     bank: null,
     openingBalance: asClpAmount(25_000),

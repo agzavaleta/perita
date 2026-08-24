@@ -1,13 +1,15 @@
 import { useState, type FormEvent } from "react"
 import { PiggyBank } from "lucide-react"
 
+import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
+import { FinancialInstitutionField } from "@/components/finance/FinancialInstitutionField"
+import { FormSheetContent } from "@/components/forms/FormSheetContent"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   Sheet,
-  SheetContent,
   SheetDescription,
   SheetFooter,
   SheetHeader,
@@ -31,13 +33,14 @@ export function SavingsGoalForm({
   readonly onSaved: (goal: SavingsGoal) => void
   readonly onClose: () => void
 }) {
+  const [emoji, setEmoji] = useState(goal?.emoji ?? "💰")
   const [name, setName] = useState(goal?.name ?? "")
-  const [bank, setBank] = useState(goal?.bank ?? "")
-  const [targetAmount, setTargetAmount] = useState(
-    goal ? String(goal.targetAmount) : "",
+  const [bank, setBank] = useState<string | null>(goal?.bank ?? null)
+  const [targetAmount, setTargetAmount] = useState<number | null>(
+    goal?.targetAmount ?? null,
   )
-  const [plannedMonthlyAmount, setPlannedMonthlyAmount] = useState(
-    goal ? String(goal.plannedMonthlyAmount) : "0",
+  const [plannedMonthlyAmount, setPlannedMonthlyAmount] = useState<number | null>(
+    goal?.plannedMonthlyAmount ?? 0,
   )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -48,10 +51,11 @@ export function SavingsGoalForm({
     setError(null)
     try {
       const draft = {
+        emoji,
         name,
         bank,
-        targetAmount: Number(targetAmount),
-        plannedMonthlyAmount: Number(plannedMonthlyAmount),
+        targetAmount: targetAmount ?? 0,
+        plannedMonthlyAmount: plannedMonthlyAmount ?? 0,
       }
       const saved = goal
         ? await useCases.editSavingsGoal({
@@ -70,10 +74,7 @@ export function SavingsGoalForm({
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent
-        side="bottom"
-        className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
-      >
+      <FormSheetContent>
         <SheetHeader>
           <SheetTitle>{goal ? "Editar meta" : "Nueva meta"}</SheetTitle>
           <SheetDescription>
@@ -82,6 +83,17 @@ export function SavingsGoalForm({
           </SheetDescription>
         </SheetHeader>
         <form className="space-y-4 px-4" onSubmit={submit}>
+          <div className="space-y-2">
+            <Label htmlFor="goal-emoji">Emoji</Label>
+            <Input
+              id="goal-emoji"
+              required
+              autoComplete="off"
+              value={emoji}
+              onChange={(event) => setEmoji(event.target.value)}
+              disabled={saving}
+            />
+          </div>
           <div className="space-y-2">
             <Label htmlFor="goal-name">Nombre</Label>
             <Input
@@ -93,39 +105,31 @@ export function SavingsGoalForm({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="goal-bank">Banco o institución</Label>
-            <Input
+            <Label htmlFor="goal-bank">Banco o institución (opcional)</Label>
+            <FinancialInstitutionField
               id="goal-bank"
               value={bank}
-              onChange={(event) => setBank(event.target.value)}
-              placeholder="Opcional"
+              onValueChange={setBank}
               disabled={saving}
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="goal-target">Objetivo CLP</Label>
-            <Input
+            <Label htmlFor="goal-target">Objetivo</Label>
+            <ClpAmountInput
               id="goal-target"
-              type="number"
-              inputMode="numeric"
-              min="1"
-              step="1"
+              required
               value={targetAmount}
-              onChange={(event) => setTargetAmount(event.target.value)}
+              onValueChange={setTargetAmount}
               placeholder="0"
               disabled={saving}
             />
           </div>
           <div className="space-y-2">
             <Label htmlFor="goal-monthly">Aporte mensual planificado</Label>
-            <Input
+            <ClpAmountInput
               id="goal-monthly"
-              type="number"
-              inputMode="numeric"
-              min="0"
-              step="1"
               value={plannedMonthlyAmount}
-              onChange={(event) => setPlannedMonthlyAmount(event.target.value)}
+              onValueChange={setPlannedMonthlyAmount}
               disabled={saving}
             />
           </div>
@@ -149,7 +153,7 @@ export function SavingsGoalForm({
             </Button>
           </SheetFooter>
         </form>
-      </SheetContent>
+      </FormSheetContent>
     </Sheet>
   )
 }

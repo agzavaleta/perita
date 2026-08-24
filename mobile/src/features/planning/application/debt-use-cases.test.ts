@@ -13,7 +13,10 @@ import {
 } from "@/domain/primitives"
 import { openPeritaDatabase, type PeritaDatabase } from "@/data/database"
 import { createRepositories, type PeritaRepositories } from "@/data/repositories"
-import { DebtUseCases } from "@/features/planning/application/debt-use-cases"
+import {
+  DebtUseCases,
+  type DebtDraft,
+} from "@/features/planning/application/debt-use-cases"
 
 const NOW = asUtcTimestamp("2026-08-21T12:00:00.000Z")
 const LATER = asUtcTimestamp("2026-08-21T13:00:00.000Z")
@@ -28,6 +31,7 @@ function period(): Period {
     id: PERIOD_ID,
     periodKey: asPeriodKey("2026-08"),
     plannedSalaryAmount: asClpAmount(0),
+    variableExpenseBudgetAmount: asClpAmount(0),
     openedAt: NOW,
     status: "open",
     closedAt: null,
@@ -39,6 +43,7 @@ function period(): Period {
 function account(id: typeof ACCOUNT_A, name: string, balance: number): Account {
   return {
     id,
+    emoji: "💳",
     name,
     bank: null,
     openingBalance: asClpAmount(balance),
@@ -112,6 +117,117 @@ describe("DebtUseCases", () => {
       remainingInstallments: 4,
       nextPaymentDate: "2026-08-31",
       estimatedEndDate: "2026-11-30",
+    })
+  })
+
+  it("creates a debt with optional due date and payment day", async () => {
+    const debt = await debts.createDebt({
+      name: "Sin calendario",
+      totalAmount: 90_000,
+      dueDate: null,
+      monthlyPaymentAmount: 20_000,
+      paymentDay: null,
+    })
+
+    expect(debt).toMatchObject({
+      dueDate: null,
+      monthlyPaymentAmount: 20_000,
+      paymentDay: null,
+      paymentStatus: "active",
+    })
+    expect((await debts.getDebtDetail(debt.id)).schedule).toEqual({
+      remainingInstallments: 5,
+      nextPaymentDate: null,
+      estimatedEndDate: null,
+    })
+  })
+
+  it("rejects missing or zero installment and invalid payment days", async () => {
+    const base = {
+      name: "Inválida",
+      totalAmount: 100_000,
+      monthlyPaymentAmount: 10_000,
+    }
+    await expect(
+      debts.createDebt({ ...base, monthlyPaymentAmount: 0 }),
+    ).rejects.toMatchObject({ code: "invalid_amount" })
+    await expect(
+      debts.createDebt({
+        ...base,
+        monthlyPaymentAmount: undefined,
+      } as unknown as DebtDraft),
+    ).rejects.toMatchObject({ code: "invalid_amount" })
+    await expect(
+      debts.createDebt({ ...base, paymentDay: 0 }),
+    ).rejects.toMatchObject({ code: "invalid_day" })
+    await expect(
+      debts.createDebt({ ...base, paymentDay: 32 }),
+    ).rejects.toMatchObject({ code: "invalid_day" })
+    await expect(
+      debts.createDebt({
+        ...base,
+        dueDate: "2026-02-30" as ReturnType<typeof asCivilDate>,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_date" })
+  })
+
+  it("derives overdue exclusively from a past due date", async () => {
+    const overdue = await debts.createDebt({
+      name: "Vencida",
+      totalAmount: 100_000,
+      dueDate: asCivilDate("2026-08-20"),
+      monthlyPaymentAmount: 25_000,
+      paymentDay: null,
+    })
+    const scheduled = await debts.createDebt({
+      name: "Con día futuro",
+      totalAmount: 100_000,
+      dueDate: asCivilDate("2026-08-22"),
+      monthlyPaymentAmount: 25_000,
+      paymentDay: 1,
+    })
+
+    expect(overdue.paymentStatus).toBe("overdue")
+    expect(scheduled.paymentStatus).toBe("active")
+  })
+
+  it("edits due date and payment day independently and permits removing both", async () => {
+    const debt = await debts.createDebt({
+      name: "Editable",
+      totalAmount: 100_000,
+      monthlyPaymentAmount: 25_000,
+      paymentDay: null,
+      dueDate: null,
+    })
+    const scheduled = await debts.editDebt({
+      debtId: debt.id,
+      expectedRevision: debt.revision,
+      name: debt.name,
+      dueDate: asCivilDate("2026-08-20"),
+      monthlyPaymentAmount: 20_000,
+      paymentDay: 15,
+    })
+    expect(scheduled).toMatchObject({
+      dueDate: "2026-08-20",
+      monthlyPaymentAmount: 20_000,
+      paymentDay: 15,
+      paymentStatus: "overdue",
+      revision: 2,
+    })
+
+    const unscheduled = await debts.editDebt({
+      debtId: scheduled.id,
+      expectedRevision: scheduled.revision,
+      name: scheduled.name,
+      dueDate: null,
+      monthlyPaymentAmount: scheduled.monthlyPaymentAmount,
+      paymentDay: null,
+    })
+    expect(unscheduled).toMatchObject({
+      dueDate: null,
+      paymentDay: null,
+      paymentStatus: "active",
+      revision: 3,
     })
   })
 
@@ -247,6 +363,7 @@ describe("DebtUseCases", () => {
       id: NEXT_PERIOD_ID,
       periodKey: asPeriodKey("2026-09"),
       plannedSalaryAmount: asClpAmount(0),
+      variableExpenseBudgetAmount: asClpAmount(0),
       openedAt: LATER,
       status: "open",
       closedAt: null,

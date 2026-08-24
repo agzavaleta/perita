@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 
 import type { Account } from "@/domain/entities"
 import {
@@ -12,8 +12,13 @@ import type { AccountUseCasesPort } from "@/features/accounts/application/accoun
 import type { BalanceAdjustmentUseCasesPort } from "@/features/accounts/application/balance-adjustment-use-cases"
 import { AccountsPage } from "@/features/accounts/presentation/AccountsPage"
 
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+})
+
 const account: Account = {
   id: asEntityId("20000000-0000-4000-8000-000000000001"),
+  emoji: "💳",
   name: "Cuenta principal",
   bank: "Banco Estado",
   openingBalance: asClpAmount(0),
@@ -52,22 +57,96 @@ describe("AccountsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Nueva" }))
 
     expect(screen.getByText("La cuenta se creará activa y con saldo $0.")).toBeInTheDocument()
+    expect(screen.getByRole("textbox", { name: "Emoji" })).toHaveValue("💳")
+    expect(screen.getByRole("textbox", { name: "Emoji" })).toBeRequired()
     expect(screen.queryByLabelText(/saldo/i)).not.toBeInTheDocument()
+    const dialog = screen.getByRole("dialog")
+    expect(dialog).toHaveClass(
+      "max-h-[92dvh]",
+      "overflow-y-auto",
+      "pb-[calc(1rem+env(safe-area-inset-bottom))]",
+    )
+    expect(document.querySelector("[autofocus]")).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText("Nombre"), {
       target: { value: "Cuenta principal" },
     })
-    fireEvent.change(screen.getByLabelText("Banco o institución"), {
-      target: { value: "Banco Estado" },
-    })
+    fireEvent.click(
+      screen.getByRole("combobox", { name: "Banco o institución (opcional)" }),
+    )
+    fireEvent.click(screen.getByRole("option", { name: "BancoEstado" }))
     fireEvent.click(screen.getByRole("button", { name: "Crear cuenta" }))
 
     await waitFor(() =>
       expect(createAccount).toHaveBeenCalledWith({
+        emoji: "💳",
         name: "Cuenta principal",
-        bank: "Banco Estado",
+        bank: "BancoEstado",
       }),
     )
     expect(await screen.findByText("Saldo actual")).toBeInTheDocument()
+  })
+
+  it("creates with no institution and preserves a custom institution on edit", async () => {
+    const createAccount = vi.fn().mockResolvedValue({ ...account, bank: null })
+    const editAccount = vi.fn().mockResolvedValue(account)
+    const listAccounts = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([account])
+    const useCases = service({ listAccounts, createAccount, editAccount })
+    const { unmount } = render(<AccountsPage useCases={useCases} />)
+
+    await screen.findByText("Aún no has agregado ninguna cuenta")
+    fireEvent.click(screen.getByRole("button", { name: "Nueva" }))
+    expect(
+      screen.getByRole("combobox", { name: "Banco o institución (opcional)" }),
+    ).toHaveTextContent("Sin institución")
+    fireEvent.change(screen.getByLabelText("Nombre"), {
+      target: { value: "Sin banco" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Crear cuenta" }))
+    await waitFor(() =>
+      expect(createAccount).toHaveBeenCalledWith({
+        emoji: "💳",
+        name: "Sin banco",
+        bank: null,
+      }),
+    )
+
+    unmount()
+    render(
+      <AccountsPage
+        useCases={service({
+          listAccounts: vi.fn().mockResolvedValue([account]),
+          editAccount,
+        })}
+      />,
+    )
+    await screen.findByText("Cuenta principal")
+    fireEvent.click(
+      screen.getByRole("button", { name: "Ver detalle de Cuenta principal" }),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Editar" }))
+
+    expect(
+      screen.getByRole("combobox", { name: "Banco o institución (opcional)" }),
+    ).toHaveTextContent("Otro")
+    expect(screen.getByLabelText("Otra institución")).toHaveValue("Banco Estado")
+    expect(screen.getByRole("textbox", { name: "Emoji" })).toHaveValue("💳")
+    fireEvent.change(screen.getByRole("textbox", { name: "Emoji" }), {
+      target: { value: "🏦" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Guardar cambios" }))
+
+    await waitFor(() =>
+      expect(editAccount).toHaveBeenCalledWith({
+        accountId: account.id,
+        expectedRevision: account.revision,
+        emoji: "🏦",
+        name: account.name,
+        bank: "Banco Estado",
+      }),
+    )
   })
 
   it("shows account detail and the prepared empty movement structure", async () => {
@@ -75,12 +154,20 @@ describe("AccountsPage", () => {
     render(<AccountsPage useCases={useCases} />)
 
     await screen.findByText("Cuenta principal")
+    expect(
+      screen.getByRole("img", { name: "Emoji de Cuenta principal" }),
+    ).toHaveTextContent("💳")
+    expect(document.querySelector(".lucide-landmark, .lucide-wallet-cards")).toBeNull()
     fireEvent.click(
       screen.getByRole("button", { name: "Ver detalle de Cuenta principal" }),
     )
 
     expect(screen.getByText("Saldo actual")).toBeInTheDocument()
+    expect(
+      screen.getAllByRole("img", { name: "Emoji de Cuenta principal" }),
+    ).toHaveLength(1)
     expect(await screen.findByText("Aún no hay movimientos relacionados")).toBeInTheDocument()
+    expect(screen.queryByText(/Fase 6/i)).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Editar" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Desactivar" })).toBeInTheDocument()
   })
@@ -102,9 +189,18 @@ describe("AccountsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Cuenta principal" }))
     fireEvent.click(screen.getByRole("button", { name: "Ajustar saldo" }))
     expect(screen.getByText("El saldo no se edita directamente")).toBeInTheDocument()
-    fireEvent.change(screen.getByRole("spinbutton", { name: "Saldo real CLP" }), {
+    const dialog = screen.getByRole("dialog")
+    expect(dialog).toHaveClass(
+      "max-h-[92dvh]",
+      "overflow-y-auto",
+      "pb-[calc(1rem+env(safe-area-inset-bottom))]",
+    )
+    expect(screen.getByLabelText("Motivo")).toBeRequired()
+    const balance = screen.getByRole("textbox", { name: "Saldo real" })
+    fireEvent.change(balance, {
       target: { value: "50000" },
     })
+    expect(balance).toHaveValue("50.000")
     fireEvent.change(screen.getByRole("textbox", { name: "Motivo" }), {
       target: { value: "Conciliar con banco" },
     })
@@ -117,5 +213,32 @@ describe("AccountsPage", () => {
       targetBalance: 50_000,
       reason: "Conciliar con banco",
     }))
+  })
+
+  it("keeps an unchanged balance from being submitted", async () => {
+    const createAdjustment = vi.fn()
+    const balanceAdjustmentUseCases: BalanceAdjustmentUseCasesPort = {
+      getCurrentDate: () => "2026-08-21" as ReturnType<BalanceAdjustmentUseCasesPort["getCurrentDate"]>,
+      createAdjustment,
+    }
+    render(
+      <AccountsPage
+        useCases={service({ listAccounts: vi.fn().mockResolvedValue([account]) })}
+        balanceAdjustmentUseCases={balanceAdjustmentUseCases}
+      />,
+    )
+
+    await screen.findByText("Cuenta principal")
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Cuenta principal" }))
+    fireEvent.click(screen.getByRole("button", { name: "Ajustar saldo" }))
+    fireEvent.change(screen.getByLabelText("Motivo"), {
+      target: { value: "Verificación" },
+    })
+
+    const submit = screen.getByRole("button", { name: "Registrar ajuste" })
+    expect(submit).toBeDisabled()
+    fireEvent.click(submit)
+    expect(createAdjustment).not.toHaveBeenCalled()
+    expect(document.querySelector("[autofocus]")).not.toBeInTheDocument()
   })
 })

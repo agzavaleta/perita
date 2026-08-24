@@ -40,7 +40,10 @@ const snapshot: PeriodSnapshot = {
   snapshotKind: "canonical",
   closedAt: NOW,
   data: {
-    periodPlan: { plannedSalaryAmount: asClpAmount(0) },
+    periodPlan: {
+      plannedSalaryAmount: asClpAmount(0),
+      variableExpenseBudgetAmount: asClpAmount(0),
+    },
     operations: [],
     movements: [],
     fixedExpenses: [],
@@ -62,6 +65,7 @@ function service(overrides: Partial<MonthlyCloseUseCasesPort> = {}): MonthlyClos
         id: PERIOD_ID,
         periodKey: asPeriodKey("2026-08"),
         plannedSalaryAmount: asClpAmount(0),
+        variableExpenseBudgetAmount: asClpAmount(0),
         openedAt: NOW,
         status: "open",
         closedAt: null,

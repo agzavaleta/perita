@@ -1,13 +1,14 @@
 import { useState, type FormEvent } from "react"
 import { CalendarClock } from "lucide-react"
 
+import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
+import { FormSheetContent } from "@/components/forms/FormSheetContent"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   Sheet,
-  SheetContent,
   SheetDescription,
   SheetFooter,
   SheetHeader,
@@ -42,12 +43,10 @@ export function FixedExpenseForm({
 }) {
   const instanceMode = editor.mode === "instance"
   const [name, setName] = useState(editor.item?.template.name ?? "")
-  const [amount, setAmount] = useState(
-    String(
-      instanceMode
-        ? (editor.item?.currentInstance?.plannedAmount ?? "")
-        : (editor.item?.template.referenceAmount ?? ""),
-    ),
+  const [amount, setAmount] = useState<number | null>(
+    instanceMode
+      ? (editor.item?.currentInstance?.plannedAmount ?? null)
+      : (editor.item?.template.referenceAmount ?? null),
   )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -63,19 +62,19 @@ export function FixedExpenseForm({
         await useCases.updateCurrentPlannedAmount(
           instance.id,
           instance.revision,
-          Number(amount),
+          amount ?? 0,
         )
       } else if (editor.item) {
         await useCases.editFixedExpense({
           templateId: editor.item.template.id,
           expectedRevision: editor.item.template.revision,
           name,
-          referenceAmount: Number(amount),
+          referenceAmount: amount ?? 0,
         })
       } else {
         await useCases.createFixedExpense({
           name,
-          referenceAmount: Number(amount),
+          referenceAmount: amount ?? 0,
         })
       }
       onSaved()
@@ -89,10 +88,7 @@ export function FixedExpenseForm({
   const creating = !editor.item
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent
-        side="bottom"
-        className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
-      >
+      <FormSheetContent>
         <SheetHeader>
           <SheetTitle>
             {instanceMode
@@ -122,16 +118,12 @@ export function FixedExpenseForm({
           ) : null}
           <div className="space-y-2">
             <Label htmlFor="fixed-amount">
-              {instanceMode ? "Monto planificado CLP" : "Monto de referencia CLP"}
+              {instanceMode ? "Monto planificado" : "Monto de referencia"}
             </Label>
-            <Input
+            <ClpAmountInput
               id="fixed-amount"
-              type="number"
-              inputMode="numeric"
-              min="1"
-              step="1"
               value={amount}
-              onChange={(event) => setAmount(event.target.value)}
+              onValueChange={setAmount}
               placeholder="0"
               disabled={saving}
             />
@@ -156,7 +148,7 @@ export function FixedExpenseForm({
             </Button>
           </SheetFooter>
         </form>
-      </SheetContent>
+      </FormSheetContent>
     </Sheet>
   )
 }

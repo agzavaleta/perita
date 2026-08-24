@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest"
 
 import {
   asCivilDate,
+  asClpAmount,
   asEntityId,
   asNonZeroClpDelta,
+  asPeriodKey,
   asPositiveClpAmount,
   asRevision,
   asUtcTimestamp,
@@ -12,6 +14,8 @@ import {
   type Category,
   type Movement,
   type Operation,
+  type Period,
+  type SavingsGoal,
 } from "@/domain"
 import {
   createRepositories,
@@ -20,18 +24,24 @@ import {
   openPeritaDatabase,
   STORE_NAMES,
 } from "@/data"
-import { SCHEMA_MIGRATIONS } from "@/data/migrations"
+import {
+  applySchemaMigrations,
+  SCHEMA_MIGRATIONS,
+} from "@/data/migrations"
 
 const ACCOUNT_ID = asEntityId("00000000-0000-4000-8000-000000000001")
 const PERIOD_ID = asEntityId("00000000-0000-4000-8000-000000000002")
 const OPERATION_ID = asEntityId("00000000-0000-4000-8000-000000000003")
 const MOVEMENT_ID = asEntityId("00000000-0000-4000-8000-000000000004")
 const CATEGORY_ID = asEntityId("00000000-0000-4000-8000-000000000005")
+const GOAL_ID = asEntityId("00000000-0000-4000-8000-000000000006")
+const SNAPSHOT_ID = asEntityId("00000000-0000-4000-8000-000000000007")
 const NOW = asUtcTimestamp("2026-08-21T12:00:00.000Z")
 
 function account(overrides: Partial<Account> = {}): Account {
   return {
     id: ACCOUNT_ID,
+    emoji: "💳",
     name: "Cuenta principal",
     bank: "Banco",
     openingBalance: asPositiveClpAmount(100_000),
@@ -99,6 +109,32 @@ function openNative(factory: IDBFactory, name: string) {
   })
 }
 
+function openVersionOne(factory: IDBFactory, name: string) {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = factory.open(name, 1)
+    request.onupgradeneeded = (event) => {
+      const transaction = request.transaction
+      if (!transaction) throw new Error("Missing V1 upgrade transaction")
+      applySchemaMigrations(
+        request.result,
+        transaction,
+        event.oldVersion,
+        event.newVersion ?? 1,
+      )
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+function transactionCompletion(transaction: IDBTransaction) {
+  return new Promise<void>((resolve, reject) => {
+    transaction.oncomplete = () => resolve()
+    transaction.onerror = () => reject(transaction.error)
+    transaction.onabort = () => reject(transaction.error)
+  })
+}
+
 describe("Perita IndexedDB persistence", () => {
   it("applies the explicit initial migration with the expected stores and indexes", async () => {
     const factory = new IDBFactory()
@@ -106,7 +142,7 @@ describe("Perita IndexedDB persistence", () => {
     const database = await openPeritaDatabase({ name, indexedDB: factory })
 
     expect(database.version).toBe(DATABASE_VERSION)
-    expect(SCHEMA_MIGRATIONS.map(({ version }) => version)).toEqual([1])
+    expect(SCHEMA_MIGRATIONS.map(({ version }) => version)).toEqual([1, 2])
     expect([...database.storeNames].sort()).toEqual(
       Object.values(STORE_NAMES).sort(),
     )
@@ -139,6 +175,91 @@ describe("Perita IndexedDB persistence", () => {
       ].sort(),
     )
     nativeDatabase.close()
+  })
+
+  it("backfills V1 records during the real V1 to V2 upgrade without changing financial data", async () => {
+    const factory = new IDBFactory()
+    const name = "perita-mobile-v1-to-v2"
+    const periodV1: Omit<Period, "variableExpenseBudgetAmount"> = {
+      id: PERIOD_ID,
+      periodKey: asPeriodKey("2026-08"),
+      plannedSalaryAmount: asClpAmount(900_000),
+      status: "open",
+      openedAt: NOW,
+      closedAt: null,
+      snapshotId: null,
+      revision: asRevision(3),
+    }
+    const { emoji: _accountEmoji, ...accountV1Base } = account({
+      openingBalance: asClpAmount(125_000),
+      currentBalance: asClpAmount(140_000),
+      revision: asRevision(4),
+    })
+    const accountV1: Omit<Account, "emoji"> = accountV1Base
+    const goalV1: Omit<SavingsGoal, "emoji"> = {
+      id: GOAL_ID,
+      name: "Vacaciones",
+      bank: null,
+      targetAmount: asPositiveClpAmount(1_500_000),
+      openingBalance: asClpAmount(40_000),
+      currentBalance: asClpAmount(75_000),
+      plannedMonthlyAmount: asClpAmount(50_000),
+      lifecycleStatus: "active",
+      progressStatus: "in_progress",
+      closedAt: null,
+      revision: asRevision(2),
+      createdAt: NOW,
+      updatedAt: NOW,
+    }
+    const snapshotV1 = {
+      id: SNAPSHOT_ID,
+      periodId: asEntityId("00000000-0000-4000-8000-000000000008"),
+      periodKey: asPeriodKey("2026-07"),
+      schemaVersion: "1.1.0",
+      snapshotKind: "canonical",
+      closedAt: NOW,
+      data: { preservedMarker: "unchanged" },
+      integrity: {
+        algorithm: "SHA-256",
+        payloadHash: "original-hash-must-not-change",
+      },
+    }
+
+    const versionOne = await openVersionOne(factory, name)
+    const seedTransaction = versionOne.transaction(
+      [
+        STORE_NAMES.periods,
+        STORE_NAMES.accounts,
+        STORE_NAMES.savingsGoals,
+        STORE_NAMES.periodSnapshots,
+      ],
+      "readwrite",
+    )
+    seedTransaction.objectStore(STORE_NAMES.periods).add(periodV1)
+    seedTransaction.objectStore(STORE_NAMES.accounts).add(accountV1)
+    seedTransaction.objectStore(STORE_NAMES.savingsGoals).add(goalV1)
+    seedTransaction.objectStore(STORE_NAMES.periodSnapshots).add(snapshotV1)
+    await transactionCompletion(seedTransaction)
+    versionOne.close()
+
+    const upgraded = await openPeritaDatabase({ name, indexedDB: factory })
+    const repositories = createRepositories(upgraded)
+
+    expect(upgraded.version).toBe(2)
+    expect(await repositories.periods.get(PERIOD_ID)).toEqual({
+      ...periodV1,
+      variableExpenseBudgetAmount: 0,
+    })
+    expect(await repositories.accounts.get(ACCOUNT_ID)).toEqual({
+      ...accountV1,
+      emoji: "💳",
+    })
+    expect(await repositories.savingsGoals.get(GOAL_ID)).toEqual({
+      ...goalV1,
+      emoji: "💰",
+    })
+    expect(await repositories.periodSnapshots.get(SNAPSHOT_ID)).toEqual(snapshotV1)
+    upgraded.close()
   })
 
   it("supports basic CRUD through a domain repository", async () => {

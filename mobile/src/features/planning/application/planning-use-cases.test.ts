@@ -32,6 +32,7 @@ function period(): Period {
     id: PERIOD_ID,
     periodKey: asPeriodKey("2026-08"),
     plannedSalaryAmount: asClpAmount(900_000),
+    variableExpenseBudgetAmount: asClpAmount(0),
     openedAt: NOW,
     status: "open",
     closedAt: null,
@@ -43,6 +44,7 @@ function period(): Period {
 function account(): Account {
   return {
     id: ACCOUNT_ID,
+    emoji: "💳",
     name: "Cuenta principal",
     bank: null,
     openingBalance: asClpAmount(200_000),
@@ -92,12 +94,14 @@ describe("PlanningUseCases", () => {
 
   it("creates a zero-balance goal with opening and audit, then derives progress from transfers", async () => {
     const goal = await planning.createSavingsGoal({
+      emoji: "✈️",
       name: "Viaje",
       bank: "BancoEstado",
       targetAmount: 100_000,
       plannedMonthlyAmount: 20_000,
     })
     expect(goal).toMatchObject({
+      emoji: "✈️",
       openingBalance: 0,
       currentBalance: 0,
       lifecycleStatus: "active",
@@ -129,12 +133,14 @@ describe("PlanningUseCases", () => {
     const edited = await planning.editSavingsGoal({
       goalId: detail.goal.id,
       expectedRevision: detail.goal.revision,
+      emoji: "🌍",
       name: "Gran viaje",
       bank: null,
       targetAmount: 200_000,
       plannedMonthlyAmount: 25_000,
     })
     expect(edited).toMatchObject({
+      emoji: "🌍",
       name: "Gran viaje",
       currentBalance: 100_000,
       progressStatus: "in_progress",

@@ -29,6 +29,7 @@ export interface FinancialSettings {
 }
 
 export interface Account extends MutableEntityRecord {
+  readonly emoji: string
   readonly name: string
   readonly bank: string | null
   readonly openingBalance: ClpAmount
@@ -37,6 +38,7 @@ export interface Account extends MutableEntityRecord {
 }
 
 export interface SavingsGoal extends MutableEntityRecord {
+  readonly emoji: string
   readonly name: string
   readonly bank: string | null
   readonly targetAmount: PositiveClpAmount
@@ -54,7 +56,7 @@ export interface Debt extends MutableEntityRecord {
   readonly openingOutstanding: ClpAmount
   readonly outstandingAmount: ClpAmount
   readonly dueDate: CivilDate | null
-  readonly monthlyPaymentAmount: PositiveClpAmount | null
+  readonly monthlyPaymentAmount: PositiveClpAmount
   readonly paymentDay: number | null
   readonly lifecycleStatus: DebtLifecycleStatus
   readonly paymentStatus: DebtPaymentStatus

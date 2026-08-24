@@ -249,12 +249,27 @@ export function HomePage({
         <Card>
           <CardHeader><div className="flex items-center gap-2"><HandCoins aria-hidden="true" className="size-5 text-muted-foreground" /><CardTitle className="text-base">Deudas relevantes</CardTitle></div></CardHeader>
           <CardContent className="space-y-3">
-            {dashboard.relevantDebts.map(({ debt, schedule }, index) => (
-              <div key={debt.id}>
-                {index > 0 ? <Separator className="mb-3" /> : null}
-                <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{debt.name}</p><p className="text-xs text-muted-foreground">{formatCivilDate(schedule.nextPaymentDate)}</p></div><div className="text-right"><p className="money-figure text-sm font-semibold">{formatClp(debt.outstandingAmount)}</p>{debt.paymentStatus === "overdue" ? <Badge variant="destructive" className="mt-1">Atrasada</Badge> : null}</div></div>
-              </div>
-            ))}
+            {dashboard.relevantDebts.map(
+              ({ debt, schedule, progressPercent }, index) => (
+                <div key={debt.id} className="space-y-2">
+                  {index > 0 ? <Separator className="mb-3" /> : null}
+                  <div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{debt.name}</p><p className="text-xs text-muted-foreground">{formatCivilDate(schedule.nextPaymentDate)}</p></div><div className="text-right"><p className="money-figure text-sm font-semibold">{formatClp(debt.outstandingAmount)}</p>{debt.paymentStatus === "overdue" ? <Badge variant="destructive" className="mt-1">Atrasada</Badge> : null}</div></div>
+                  <div
+                    role="progressbar"
+                    aria-label={`Progreso de deuda ${debt.name}`}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={progressPercent}
+                    className="h-2 overflow-hidden rounded-full bg-muted"
+                  >
+                    <div
+                      className="h-full rounded-full bg-primary"
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
+                </div>
+              ),
+            )}
           </CardContent>
         </Card>
       ) : null}

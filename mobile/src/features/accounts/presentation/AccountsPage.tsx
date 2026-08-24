@@ -2,16 +2,16 @@ import { useCallback, useEffect, useState, type FormEvent } from "react"
 import {
   ChevronRight,
   History,
-  Landmark,
   Pencil,
   Plus,
   PowerOff,
   Scale,
-  WalletCards,
 } from "lucide-react"
 
 import type { Account } from "@/domain/entities"
+import { FinancialInstitutionField } from "@/components/finance/FinancialInstitutionField"
 import { MoneyAmount } from "@/components/finance/MoneyAmount"
+import { FormSheetContent } from "@/components/forms/FormSheetContent"
 import { EmptyState } from "@/components/states/EmptyState"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { LoadingState } from "@/components/states/LoadingState"
@@ -99,12 +99,12 @@ function AccountCard({
     <Card className={account.status === "inactive" ? "opacity-75" : undefined}>
       <CardHeader>
         <div className="flex min-w-0 items-center gap-3">
-          <div className="grid size-10 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
-            {account.bank ? (
-              <Landmark aria-hidden="true" className="size-5" />
-            ) : (
-              <WalletCards aria-hidden="true" className="size-5" />
-            )}
+          <div
+            className="grid size-10 shrink-0 place-items-center rounded-lg bg-muted text-2xl"
+            role="img"
+            aria-label={`Emoji de ${account.name}`}
+          >
+            {account.emoji}
           </div>
           <div className="min-w-0">
             <CardTitle className="truncate">{account.name}</CardTitle>
@@ -145,8 +145,11 @@ function AccountEditor({
   readonly onClose: () => void
 }) {
   const editing = editor.mode === "edit"
+  const [emoji, setEmoji] = useState(editing ? editor.account.emoji : "💳")
   const [name, setName] = useState(editing ? editor.account.name : "")
-  const [bank, setBank] = useState(editing ? (editor.account.bank ?? "") : "")
+  const [bank, setBank] = useState<string | null>(
+    editing ? editor.account.bank : null,
+  )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -159,10 +162,11 @@ function AccountEditor({
         ? await useCases.editAccount({
             accountId: editor.account.id,
             expectedRevision: editor.account.revision,
+            emoji,
             name,
             bank,
           })
-        : await useCases.createAccount({ name, bank })
+        : await useCases.createAccount({ emoji, name, bank })
       onSaved(account)
     } catch (cause) {
       setError(accountErrorMessage(cause))
@@ -173,24 +177,32 @@ function AccountEditor({
 
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
-      <SheetContent
-        side="bottom"
-        className="mx-auto max-h-[90dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
-      >
+      <FormSheetContent>
         <SheetHeader>
           <SheetTitle>{editing ? "Editar cuenta" : "Nueva cuenta"}</SheetTitle>
           <SheetDescription>
             {editing
-              ? "Puedes cambiar el nombre y la institución."
+              ? "Puedes cambiar el emoji, el nombre y la institución."
               : "La cuenta se creará activa y con saldo $0."}
           </SheetDescription>
         </SheetHeader>
         <form className="space-y-4 px-4" onSubmit={submit}>
           <div className="space-y-2">
+            <Label htmlFor="account-emoji">Emoji</Label>
+            <Input
+              id="account-emoji"
+              required
+              autoComplete="off"
+              value={emoji}
+              onChange={(event) => setEmoji(event.target.value)}
+              disabled={saving}
+            />
+          </div>
+          <div className="space-y-2">
             <Label htmlFor="account-name">Nombre</Label>
             <Input
               id="account-name"
-              autoFocus
+              required
               autoComplete="off"
               value={name}
               onChange={(event) => setName(event.target.value)}
@@ -200,14 +212,11 @@ function AccountEditor({
             />
           </div>
           <div className="space-y-2">
-            <Label htmlFor="account-bank">Banco o institución</Label>
-            <Input
+            <Label htmlFor="account-bank">Banco o institución (opcional)</Label>
+            <FinancialInstitutionField
               id="account-bank"
-              autoComplete="organization"
               value={bank}
-              onChange={(event) => setBank(event.target.value)}
-              placeholder="Opcional"
-              maxLength={80}
+              onValueChange={setBank}
               disabled={saving}
             />
           </div>
@@ -230,7 +239,7 @@ function AccountEditor({
             </Button>
           </SheetFooter>
         </form>
-      </SheetContent>
+      </FormSheetContent>
     </Sheet>
   )
 }
@@ -274,7 +283,12 @@ function AccountDetail({
         className="mx-auto max-h-[90dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
       >
         <SheetHeader>
-          <SheetTitle>{account.name}</SheetTitle>
+          <SheetTitle className="flex items-center gap-2">
+            <span role="img" aria-label={`Emoji de ${account.name}`}>
+              {account.emoji}
+            </span>
+            <span>{account.name}</span>
+          </SheetTitle>
           <SheetDescription>{account.bank ?? "Sin institución"}</SheetDescription>
         </SheetHeader>
         <div className="space-y-4 px-4">
@@ -327,9 +341,6 @@ function AccountDetail({
                       : movementCount === 0
                       ? "Aún no hay movimientos relacionados"
                       : `${movementCount} movimientos relacionados`}
-                </p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  El historial completo se habilitará en la Fase 6.
                 </p>
               </CardContent>
             </Card>
