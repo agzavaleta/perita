@@ -390,6 +390,323 @@ describe("MovementUseCases", () => {
     expect(await repositories.operations.count()).toBe(1)
   })
 
+  it("edits a savings deposit by replacing its prior impact and records the revision", async () => {
+    const accountsBefore = await repositories.accounts.getAll()
+    const created = await useCases.registerSavingsDeposit({
+      goalId: GOAL_A,
+      operationDate: TODAY,
+      amount: 100_000,
+      concept: "Ahorro inicial",
+    })
+    const edited = await useCases.editSavingsMovement({
+      operationId: created.operation.id,
+      expectedRevision: created.operation.revision,
+      operationDate: asCivilDate("2026-08-20"),
+      amount: 150_000,
+      concept: "Ahorro corregido",
+      observation: "Edición",
+    })
+
+    expect(edited.operation).toMatchObject({
+      type: "savings_deposit",
+      revision: 2,
+      amount: 150_000,
+      operationDate: "2026-08-20",
+      details: {
+        goalId: GOAL_A,
+        concept: "Ahorro corregido",
+        observation: "Edición",
+      },
+      createdAt: created.operation.createdAt,
+    })
+    expect(edited.movement.delta).toBe(150_000)
+    expect(edited.goal.currentBalance).toBe(200_000)
+    expect(await repositories.accounts.getAll()).toEqual(accountsBefore)
+    expect(
+      await repositories.operationRevisions.listByOperation(created.operation.id),
+    ).toEqual([
+      expect.objectContaining({
+        changeType: "edit",
+        revisionNumber: 1,
+        previousOperation: created.operation,
+        previousMovements: [created.movement],
+      }),
+    ])
+
+    const lowered = await useCases.editSavingsMovement({
+      operationId: edited.operation.id,
+      expectedRevision: edited.operation.revision,
+      operationDate: edited.operation.operationDate,
+      amount: 80_000,
+      concept: edited.operation.details.concept,
+      observation: edited.operation.details.observation,
+    })
+    expect(lowered.goal.currentBalance).toBe(130_000)
+    expect(lowered.movement.delta).toBe(80_000)
+
+    await expect(
+      useCases.editSavingsMovement({
+        operationId: lowered.operation.id,
+        expectedRevision: lowered.operation.revision,
+        operationDate: lowered.operation.operationDate,
+        amount: lowered.operation.amount,
+        concept: lowered.operation.details.concept,
+        observation: lowered.operation.details.observation,
+      }),
+    ).rejects.toMatchObject({ code: "no_changes" })
+  })
+
+  it("edits a withdrawal using the final projected balance for larger and smaller amounts", async () => {
+    await useCases.registerSavingsDeposit({
+      goalId: GOAL_A,
+      operationDate: TODAY,
+      amount: 100_000,
+    })
+    const withdrawal = await useCases.registerSavingsWithdrawal({
+      goalId: GOAL_A,
+      operationDate: TODAY,
+      amount: 40_000,
+    })
+    const larger = await useCases.editSavingsMovement({
+      operationId: withdrawal.operation.id,
+      expectedRevision: withdrawal.operation.revision,
+      operationDate: TODAY,
+      amount: 70_000,
+    })
+    expect(larger.goal.currentBalance).toBe(80_000)
+    expect(larger.movement.delta).toBe(-70_000)
+
+    const smaller = await useCases.editSavingsMovement({
+      operationId: larger.operation.id,
+      expectedRevision: larger.operation.revision,
+      operationDate: TODAY,
+      amount: 20_000,
+    })
+    expect(smaller.goal.currentBalance).toBe(130_000)
+    expect(smaller.movement.delta).toBe(-20_000)
+    await expect(
+      useCases.editSavingsMovement({
+        operationId: smaller.operation.id,
+        expectedRevision: smaller.operation.revision,
+        operationDate: TODAY,
+        amount: 160_000,
+      }),
+    ).rejects.toMatchObject({
+      code: "insufficient_balance",
+      message: expect.stringContaining("$10.000"),
+    })
+    expect((await repositories.savingsGoals.get(GOAL_A))?.currentBalance).toBe(
+      130_000,
+    )
+  })
+
+  it("voids savings operations atomically and blocks a deposit reversal with an exact shortage", async () => {
+    const deposit = await useCases.registerSavingsDeposit({
+      goalId: GOAL_A,
+      operationDate: TODAY,
+      amount: 100_000,
+    })
+    const withdrawal = await useCases.registerSavingsWithdrawal({
+      goalId: GOAL_A,
+      operationDate: TODAY,
+      amount: 120_000,
+    })
+    expect(withdrawal.goal.currentBalance).toBe(30_000)
+
+    await expect(
+      useCases.voidSavingsMovement({
+        operationId: deposit.operation.id,
+        expectedRevision: deposit.operation.revision,
+      }),
+    ).rejects.toMatchObject({
+      code: "insufficient_balance",
+      message: expect.stringContaining("$70"),
+    })
+    expect((await repositories.savingsGoals.get(GOAL_A))?.currentBalance).toBe(30_000)
+    expect((await repositories.operations.get(deposit.operation.id))?.status).toBe(
+      "posted",
+    )
+
+    const voided = await useCases.voidSavingsMovement({
+      operationId: withdrawal.operation.id,
+      expectedRevision: withdrawal.operation.revision,
+      reason: "Ya no corresponde",
+    })
+    expect(voided.goal.currentBalance).toBe(150_000)
+    expect(voided.operation).toMatchObject({
+      status: "voided",
+      revision: 2,
+      voidReason: "Ya no corresponde",
+    })
+    expect(voided.movement).toMatchObject({ status: "voided", delta: -120_000 })
+    expect(
+      await repositories.operationRevisions.listByOperation(withdrawal.operation.id),
+    ).toEqual([expect.objectContaining({ changeType: "void", revisionNumber: 1 })])
+    const voidedDeposit = await useCases.voidSavingsMovement({
+      operationId: deposit.operation.id,
+      expectedRevision: deposit.operation.revision,
+    })
+    expect(voidedDeposit.goal.currentBalance).toBe(50_000)
+    expect(voidedDeposit.movement.status).toBe("voided")
+    await expect(
+      useCases.voidSavingsMovement({
+        operationId: voided.operation.id,
+        expectedRevision: voided.operation.revision,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_operation_state" })
+    await expect(
+      useCases.editSavingsMovement({
+        operationId: voided.operation.id,
+        expectedRevision: voided.operation.revision,
+        operationDate: TODAY,
+        amount: 10_000,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_operation_state" })
+  })
+
+  it("derives monthly savings from the edited posted state and excludes voided savings", async () => {
+    const deposit = await useCases.registerSavingsDeposit({
+      goalId: GOAL_A,
+      operationDate: TODAY,
+      amount: 100_000,
+    })
+    await useCases.editSavingsMovement({
+      operationId: deposit.operation.id,
+      expectedRevision: deposit.operation.revision,
+      operationDate: TODAY,
+      amount: 140_000,
+    })
+    const withdrawal = await useCases.registerSavingsWithdrawal({
+      goalId: GOAL_A,
+      operationDate: TODAY,
+      amount: 40_000,
+    })
+    await useCases.voidSavingsMovement({
+      operationId: withdrawal.operation.id,
+      expectedRevision: withdrawal.operation.revision,
+    })
+
+    const summary = deriveMonthlySummary({
+      period: period(),
+      operations: await repositories.operations.getAll(),
+      movements: await repositories.movements.getAll(),
+      fixedExpenseInstances: [],
+    })
+    expect(summary.netSavingsAmount).toBe(140_000)
+    expect(summary.additionalIncomeAmount).toBe(0)
+    expect(summary.variableExpenseAmount).toBe(0)
+  })
+
+  it("rejects stale or closed-period savings changes without partial writes", async () => {
+    const created = await useCases.registerSavingsDeposit({
+      goalId: GOAL_A,
+      operationDate: TODAY,
+      amount: 10_000,
+    })
+    await expect(
+      useCases.editSavingsMovement({
+        operationId: created.operation.id,
+        expectedRevision: asRevision(99),
+        operationDate: TODAY,
+        amount: 20_000,
+      }),
+    ).rejects.toMatchObject({ code: "revision_conflict" })
+    expect((await repositories.savingsGoals.get(GOAL_A))?.currentBalance).toBe(60_000)
+    await expect(
+      useCases.editSavingsMovement({
+        operationId: created.operation.id,
+        expectedRevision: created.operation.revision,
+        operationDate: asCivilDate("2026-08-22"),
+        amount: 20_000,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_date" })
+
+    await repositories.periods.put({
+      ...period(),
+      status: "closed",
+      closedAt: NOW,
+      snapshotId: asEntityId("30000000-0000-4000-8000-000000000999"),
+    })
+    await expect(
+      useCases.voidSavingsMovement({
+        operationId: created.operation.id,
+        expectedRevision: created.operation.revision,
+      }),
+    ).rejects.toMatchObject({ code: "no_open_period" })
+    expect((await repositories.operations.get(created.operation.id))?.status).toBe(
+      "posted",
+    )
+  })
+
+  it("rolls back every B2 record when the atomic savings change conflicts", async () => {
+    const created = await useCases.registerSavingsDeposit({
+      goalId: GOAL_A,
+      operationDate: TODAY,
+      amount: 10_000,
+    })
+    await repositories.savingsGoals.put({
+      ...created.goal,
+      name: "Cambio concurrente",
+      revision: asRevision(3),
+    })
+    const changedOperation = {
+      ...created.operation,
+      amount: asPositiveClpAmount(20_000),
+      revision: asRevision(2),
+    }
+    const changedMovement = {
+      ...created.movement,
+      delta: asNonZeroClpDelta(20_000),
+    }
+
+    await expect(
+      repositories.operations.commitSavingsGoalMovement({
+        kind: "change",
+        period: { id: PERIOD_ID, revision: asRevision(1) },
+        expectedSavingsGoal: {
+          id: GOAL_A,
+          revision: created.goal.revision,
+        },
+        expectedOperation: {
+          id: created.operation.id,
+          revision: created.operation.revision,
+        },
+        savingsGoal: {
+          ...created.goal,
+          currentBalance: asClpAmount(70_000),
+          revision: asRevision(3),
+        },
+        operation: changedOperation,
+        movement: changedMovement,
+        operationRevision: {
+          id: asEntityId("30000000-0000-4000-8000-000000000998"),
+          operationId: created.operation.id,
+          periodId: PERIOD_ID,
+          revisionNumber: created.operation.revision,
+          changeType: "edit",
+          previousOperation: created.operation,
+          previousMovements: [created.movement],
+          reason: null,
+          createdAt: NOW,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "conflict" })
+    expect(await repositories.savingsGoals.get(GOAL_A)).toMatchObject({
+      name: "Cambio concurrente",
+      currentBalance: 60_000,
+      revision: 3,
+    })
+    expect(await repositories.operations.get(created.operation.id)).toEqual(
+      created.operation,
+    )
+    expect(await repositories.movements.get(created.movement.id)).toEqual(
+      created.movement,
+    )
+    expect(
+      await repositories.operationRevisions.listByOperation(created.operation.id),
+    ).toEqual([])
+  })
+
   it("rejects a stale savings-goal revision without partial persistence", async () => {
     const storedGoal = await repositories.savingsGoals.get(GOAL_A)
     if (!storedGoal) throw new Error("fixture goal missing")
@@ -406,6 +723,7 @@ describe("MovementUseCases", () => {
     )
     await expect(
       repositories.operations.commitSavingsGoalMovement({
+        kind: "create",
         period: { id: PERIOD_ID, revision: asRevision(1) },
         expectedSavingsGoal: { id: GOAL_A, revision: asRevision(1) },
         savingsGoal: {

@@ -358,11 +358,14 @@ export interface InternalTransferMutation {
 }
 
 export interface SavingsGoalMovementMutation {
+  readonly kind: "create" | "change"
   readonly period: ExpectedRecordState
   readonly expectedSavingsGoal: ExpectedRecordState
+  readonly expectedOperation?: ExpectedRecordState
   readonly savingsGoal: SavingsGoal
   readonly operation: SavingsDepositOperation | SavingsWithdrawalOperation
   readonly movement: Movement
+  readonly operationRevision?: OperationRevision
 }
 
 export interface DebtOperationMutation {
@@ -792,6 +795,7 @@ class IndexedDbOperationRepository
         STORE_NAMES.savingsGoals,
         STORE_NAMES.operations,
         STORE_NAMES.movements,
+        STORE_NAMES.operationRevisions,
       ],
       "readwrite",
       async ({ store }) => {
@@ -807,9 +811,39 @@ class IndexedDbOperationRepository
           mutation.expectedSavingsGoal,
           "SavingsGoal",
         )
+        if (mutation.kind === "change") {
+          if (!mutation.expectedOperation || !mutation.operationRevision) {
+            throw new PersistenceError(
+              "transaction_failed",
+              "A changed SavingsGoal operation requires its expected state and revision",
+            )
+          }
+          const operation = await store(STORE_NAMES.operations).get(
+            mutation.expectedOperation.id,
+          )
+          assertStoredRevision(
+            operation,
+            mutation.expectedOperation,
+            "SavingsGoal Operation",
+          )
+          if (operation?.status !== "posted") {
+            throw new PersistenceError(
+              "conflict",
+              "The SavingsGoal Operation is no longer posted",
+            )
+          }
+        }
         await store(STORE_NAMES.savingsGoals).put(mutation.savingsGoal)
-        await store(STORE_NAMES.operations).add(mutation.operation)
-        await store(STORE_NAMES.movements).add(mutation.movement)
+        if (mutation.kind === "create") {
+          await store(STORE_NAMES.operations).add(mutation.operation)
+          await store(STORE_NAMES.movements).add(mutation.movement)
+          return
+        }
+        await store(STORE_NAMES.operations).put(mutation.operation)
+        await store(STORE_NAMES.movements).put(mutation.movement)
+        await store(STORE_NAMES.operationRevisions).add(
+          mutation.operationRevision!,
+        )
       },
     )
   }

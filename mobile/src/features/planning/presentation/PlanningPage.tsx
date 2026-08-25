@@ -12,6 +12,7 @@ import {
   PiggyBank,
   Plus,
   ReceiptText,
+  Trash2,
 } from "lucide-react"
 
 import { EmptyState } from "@/components/states/EmptyState"
@@ -48,7 +49,12 @@ import {
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { SavingsGoal } from "@/domain/entities"
-import type { Operation } from "@/domain/operations"
+import type {
+  Operation,
+  SavingsDepositOperation,
+  SavingsWithdrawalOperation,
+} from "@/domain/operations"
+import type { EntityId } from "@/domain/primitives"
 import type { MovementUseCasesPort } from "@/features/movements/application/movement-use-cases"
 import {
   SavingsMovementForm,
@@ -140,6 +146,19 @@ function savingsMovementConcept(operation: Operation) {
     default:
       return null
   }
+}
+
+type EditableSavingsOperation =
+  | SavingsDepositOperation
+  | SavingsWithdrawalOperation
+
+function isEditableSavingsOperation(
+  operation: Operation,
+): operation is EditableSavingsOperation {
+  return (
+    operation.type === "savings_deposit" ||
+    operation.type === "savings_withdrawal"
+  )
 }
 
 function Progress({ goal }: { readonly goal: SavingsGoal }) {
@@ -276,6 +295,9 @@ function GoalDetailSheet({
   onWithdraw,
   onMoveMoney,
   onRequestClose,
+  openPeriodId,
+  onEditSavingsMovement,
+  onVoidSavingsMovement,
 }: {
   readonly detail: SavingsGoalDetail
   readonly onClose: () => void
@@ -284,6 +306,9 @@ function GoalDetailSheet({
   readonly onWithdraw: () => void
   readonly onMoveMoney: () => void
   readonly onRequestClose: () => void
+  readonly openPeriodId: EntityId | null
+  readonly onEditSavingsMovement: (operation: EditableSavingsOperation) => void
+  readonly onVoidSavingsMovement: (operation: EditableSavingsOperation) => void
 }) {
   const { goal } = detail
   return (
@@ -351,28 +376,60 @@ function GoalDetailSheet({
                 Aún no hay aportes o retiros para esta meta.
               </p>
             ) : (
-              detail.relatedMovements.map(({ operation, movement }) => (
+              detail.relatedMovements.map(({ operation, movement }) => {
+                const canChange =
+                  goal.lifecycleStatus === "active" &&
+                  isEditableSavingsOperation(operation) &&
+                  operation.status === "posted" &&
+                  operation.periodId === openPeriodId
+                const title = savingsMovementTitle(operation)
+                return (
                 <div
                   key={movement.id}
-                  className="flex items-center justify-between gap-3 border-b py-2 text-sm last:border-b-0"
+                  className="space-y-2 border-b py-2 text-sm last:border-b-0"
                 >
-                  <div>
-                    <p>{savingsMovementTitle(operation)}</p>
-                    {savingsMovementConcept(operation) ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p>{title}</p>
+                      {savingsMovementConcept(operation) ? (
+                        <p className="text-xs text-muted-foreground">
+                          {savingsMovementConcept(operation)}
+                        </p>
+                      ) : null}
                       <p className="text-xs text-muted-foreground">
-                        {savingsMovementConcept(operation)}
+                        {formatDate(operation.operationDate)}
+                        {operation.status === "voided" ? " · Anulado" : ""}
                       </p>
-                    ) : null}
-                    <p className="text-xs text-muted-foreground">
-                      {formatDate(operation.operationDate)}
-                      {operation.status === "voided" ? " · Anulado" : ""}
+                    </div>
+                    <p className="money-figure font-medium">
+                      {formatClp(movement.delta, true)}
                     </p>
                   </div>
-                  <p className="money-figure font-medium">
-                    {formatClp(movement.delta, true)}
-                  </p>
+                  {canChange ? (
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Editar ${title.toLowerCase()}`}
+                        onClick={() => onEditSavingsMovement(operation)}
+                      >
+                        <Pencil aria-hidden="true" /> Editar
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Anular ${title.toLowerCase()}`}
+                        onClick={() => onVoidSavingsMovement(operation)}
+                      >
+                        <Trash2 aria-hidden="true" /> Anular
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
-              ))
+                )
+              })
             )}
           </div>
 
@@ -521,7 +578,15 @@ export function PlanningPage({
   const [savingsMovementTarget, setSavingsMovementTarget] = useState<{
     readonly goal: SavingsGoal
     readonly mode: SavingsMovementMode
+    readonly operation?: EditableSavingsOperation
   } | null>(null)
+  const [openPeriodId, setOpenPeriodId] = useState<EntityId | null>(null)
+  const [voidSavingsTarget, setVoidSavingsTarget] = useState<{
+    readonly goal: SavingsGoal
+    readonly operation: EditableSavingsOperation
+  } | null>(null)
+  const [voidingSavings, setVoidingSavings] = useState(false)
+  const [voidSavingsError, setVoidSavingsError] = useState<string | null>(null)
   const [closeTarget, setCloseTarget] = useState<SavingsGoal | null>(null)
   const [fixedEditor, setFixedEditor] = useState<FixedExpenseEditor | null>(null)
   const [fixedDetail, setFixedDetail] = useState<FixedExpenseListItem | null>(null)
@@ -577,6 +642,22 @@ export function PlanningPage({
     }
   }, [refreshKey, useCases])
 
+  useEffect(() => {
+    if (!movementUseCases) return
+    let active = true
+    void movementUseCases
+      .getOpenPeriodId()
+      .then((periodId) => {
+        if (active) setOpenPeriodId(periodId)
+      })
+      .catch((cause) => {
+        if (active) setError(message(cause))
+      })
+    return () => {
+      active = false
+    }
+  }, [movementUseCases, refreshKey])
+
   function saved() {
     setError(null)
     setGoalEditor(null)
@@ -618,6 +699,26 @@ export function PlanningPage({
       setError(message(cause))
     } finally {
       setCloseTarget(null)
+    }
+  }
+
+  async function confirmVoidSavingsMovement() {
+    if (!movementUseCases || !voidSavingsTarget || voidingSavings) return
+    setVoidingSavings(true)
+    setError(null)
+    setVoidSavingsError(null)
+    try {
+      await movementUseCases.voidSavingsMovement({
+        operationId: voidSavingsTarget.operation.id,
+        expectedRevision: voidSavingsTarget.operation.revision,
+      })
+      const goalId = voidSavingsTarget.goal.id
+      setVoidSavingsTarget(null)
+      await refreshGoalAfterSavingsMovement(goalId)
+    } catch (cause) {
+      setVoidSavingsError(message(cause))
+    } finally {
+      setVoidingSavings(false)
     }
   }
 
@@ -777,6 +878,20 @@ export function PlanningPage({
             onMoveMoney()
           }}
           onRequestClose={() => setCloseTarget(goalDetail.goal)}
+          openPeriodId={openPeriodId}
+          onEditSavingsMovement={(operation) => {
+            setSavingsMovementTarget({
+              goal: goalDetail.goal,
+              mode:
+                operation.type === "savings_deposit" ? "deposit" : "withdrawal",
+              operation,
+            })
+            setGoalDetail(null)
+          }}
+          onVoidSavingsMovement={(operation) => {
+            setVoidSavingsError(null)
+            setVoidSavingsTarget({ goal: goalDetail.goal, operation })
+          }}
         />
       ) : null}
       {savingsMovementTarget && movementUseCases ? (
@@ -784,6 +899,7 @@ export function PlanningPage({
           key={`${savingsMovementTarget.mode}-${savingsMovementTarget.goal.id}`}
           goal={savingsMovementTarget.goal}
           mode={savingsMovementTarget.mode}
+          operation={savingsMovementTarget.operation}
           useCases={movementUseCases}
           onSaved={() => {
             void refreshGoalAfterSavingsMovement(savingsMovementTarget.goal.id)
@@ -794,6 +910,50 @@ export function PlanningPage({
             void openGoal(goal)
           }}
         />
+      ) : null}
+
+      {voidSavingsTarget ? (
+        <AlertDialog
+          open
+          onOpenChange={(open) => {
+            if (!open && !voidingSavings) setVoidSavingsTarget(null)
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogMedia>
+                <Trash2 aria-hidden="true" />
+              </AlertDialogMedia>
+              <AlertDialogTitle>
+                {voidSavingsTarget.operation.type === "savings_deposit"
+                  ? "Anular depósito"
+                  : "Anular retiro"}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                Se revertirá su impacto en el saldo de la meta. Esta acción quedará
+                registrada en el historial.
+              </AlertDialogDescription>
+              {voidSavingsError ? (
+                <ErrorMessage
+                  title="No se pudo anular"
+                  description={voidSavingsError}
+                />
+              ) : null}
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={voidingSavings}>Cancelar</AlertDialogCancel>
+              <AlertDialogAction
+                disabled={voidingSavings}
+                onClick={(event) => {
+                  event.preventDefault()
+                  void confirmVoidSavingsMovement()
+                }}
+              >
+                {voidingSavings ? "Anulando…" : "Anular movimiento"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       ) : null}
 
       {fixedEditor && useCases ? (

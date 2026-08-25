@@ -2,6 +2,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 
 import type { SavingsGoal } from "@/domain/entities"
+import type {
+  SavingsDepositOperation,
+  SavingsWithdrawalOperation,
+} from "@/domain/operations"
 import {
   asCivilDate,
   asClpAmount,
@@ -34,6 +38,30 @@ const goal: SavingsGoal = {
   revision: asRevision(2),
   createdAt: NOW,
   updatedAt: NOW,
+}
+
+function savingsOperation(
+  type: "savings_deposit" | "savings_withdrawal",
+  amount: number,
+): SavingsDepositOperation | SavingsWithdrawalOperation {
+  return {
+    id: asEntityId("b1000000-0000-4000-8000-000000000010"),
+    periodId: asEntityId("b1000000-0000-4000-8000-000000000011"),
+    type,
+    operationDate: asCivilDate("2026-08-20"),
+    amount: asPositiveClpAmount(amount),
+    details: {
+      goalId: GOAL_ID,
+      concept: "Ahorro original",
+      observation: "Nota original",
+    },
+    status: "posted",
+    voidedAt: null,
+    voidReason: null,
+    revision: asRevision(3),
+    createdAt: NOW,
+    updatedAt: NOW,
+  } as SavingsDepositOperation | SavingsWithdrawalOperation
 }
 
 function service(overrides: Partial<MovementUseCasesPort> = {}) {
@@ -131,5 +159,77 @@ describe("SavingsMovementForm", () => {
         expect.objectContaining({ goalId: GOAL_ID, amount: 40_000 }),
       ),
     )
+  })
+
+  it("edits a deposit with its initial values and fixed operation type", async () => {
+    const operation = savingsOperation("savings_deposit", 100_000)
+    const editSavingsMovement = vi.fn().mockResolvedValue({ goal, operation })
+    render(
+      <SavingsMovementForm
+        goal={goal}
+        mode="deposit"
+        operation={operation}
+        useCases={service({ editSavingsMovement })}
+        onSaved={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("heading", { name: "Editar depósito" }))
+      .toBeInTheDocument()
+    expect(screen.getByLabelText("Monto")).toHaveValue("100.000")
+    expect(screen.getByLabelText("Fecha")).toHaveValue("2026-08-20")
+    expect(screen.getByLabelText("Concepto (opcional)")).toHaveValue(
+      "Ahorro original",
+    )
+    fireEvent.change(screen.getByLabelText("Monto"), {
+      target: { value: "150000" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Guardar cambios" }))
+
+    await waitFor(() =>
+      expect(editSavingsMovement).toHaveBeenCalledWith({
+        operationId: operation.id,
+        expectedRevision: operation.revision,
+        operationDate: asCivilDate("2026-08-20"),
+        amount: 150_000,
+        concept: "Ahorro original",
+        observation: "Nota original",
+      }),
+    )
+    expect(screen.queryByRole("button", { name: "Retirar" })).toBeNull()
+  })
+
+  it("validates an edited withdrawal against the final projected balance", async () => {
+    const operation = savingsOperation("savings_withdrawal", 390_000)
+    const lowGoal = { ...goal, currentBalance: asClpAmount(10_000) }
+    const editSavingsMovement = vi.fn().mockResolvedValue({
+      goal: lowGoal,
+      operation,
+    })
+    render(
+      <SavingsMovementForm
+        goal={lowGoal}
+        mode="withdrawal"
+        operation={operation}
+        useCases={service({ editSavingsMovement })}
+        onSaved={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole("heading", { name: "Editar retiro" }))
+      .toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Monto"), {
+      target: { value: "400000" },
+    })
+    expect(screen.queryByText("Saldo insuficiente")).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Guardar cambios" }))
+    await waitFor(() => expect(editSavingsMovement).toHaveBeenCalledOnce())
+
+    fireEvent.change(screen.getByLabelText("Monto"), {
+      target: { value: "400001" },
+    })
+    expect(screen.getByText("Saldo insuficiente")).toBeInTheDocument()
   })
 })

@@ -156,6 +156,21 @@ export interface SavingsMovementResult {
   readonly movement: Movement
 }
 
+export interface EditSavingsMovementInput {
+  readonly operationId: EntityId
+  readonly expectedRevision: Revision
+  readonly operationDate: CivilDate
+  readonly amount: number
+  readonly concept?: string | null
+  readonly observation?: string | null
+}
+
+export interface VoidSavingsMovementInput {
+  readonly operationId: EntityId
+  readonly expectedRevision: Revision
+  readonly reason?: string | null
+}
+
 export interface EditTransferInput extends TransferDraft {
   readonly operationId: EntityId
   readonly expectedRevision: Revision
@@ -179,6 +194,7 @@ export interface TransferFormOptions {
 
 export interface MovementUseCasesPort {
   getCurrentDate(): CivilDate
+  getOpenPeriodId(): Promise<EntityId>
   getFormOptions(): Promise<MovementFormOptions>
   getTransferFormOptions(): Promise<TransferFormOptions>
   listMovements(filters?: MovementFilters): Promise<MovementListItem[]>
@@ -193,6 +209,8 @@ export interface MovementUseCasesPort {
   registerSavingsWithdrawal(
     input: SavingsMovementDraft,
   ): Promise<SavingsMovementResult>
+  editSavingsMovement(input: EditSavingsMovementInput): Promise<SavingsMovementResult>
+  voidSavingsMovement(input: VoidSavingsMovementInput): Promise<SavingsMovementResult>
   editMovement(input: EditMovementInput): Promise<MovementListItem>
   editTransfer(input: EditTransferInput): Promise<MovementListItem>
   voidMovement(input: VoidMovementInput): Promise<MovementListItem>
@@ -374,6 +392,10 @@ export class MovementUseCases implements MovementUseCasesPort {
 
   getCurrentDate() {
     return this.today()
+  }
+
+  async getOpenPeriodId() {
+    return (await this.requireOpenPeriod()).id
   }
 
   async getTransferFormOptions() {
@@ -723,6 +745,143 @@ export class MovementUseCases implements MovementUseCasesPort {
 
   registerSavingsWithdrawal(input: SavingsMovementDraft) {
     return this.registerSavingsGoalMovement(input, "savings_withdrawal")
+  }
+
+  async editSavingsMovement(input: EditSavingsMovementInput) {
+    const period = await this.requireOpenPeriod()
+    const previousOperation = await this.requireSavingsMovementOperation(
+      input.operationId,
+    )
+    this.assertPostedSavingsMovement(previousOperation)
+    this.assertRevision(previousOperation.revision, input.expectedRevision)
+    this.assertSavingsMovementPeriod(previousOperation, period)
+    const previousMovement = await this.requireSavingsMovementProjection(
+      previousOperation,
+    )
+    const goal = await this.requireSavingsGoal(previousOperation.details.goalId)
+    const amount = positiveAmount(input.amount)
+    const occurredAt = this.now()
+    const operation = {
+      ...previousOperation,
+      operationDate: input.operationDate,
+      amount,
+      details: {
+        goalId: previousOperation.details.goalId,
+        concept:
+          input.concept === undefined
+            ? previousOperation.details.concept
+            : optionalText(input.concept),
+        observation:
+          input.observation === undefined
+            ? previousOperation.details.observation
+            : optionalText(input.observation),
+      },
+      revision: asRevision(Number(previousOperation.revision) + 1),
+      updatedAt: occurredAt,
+    } satisfies SavingsDepositOperation | SavingsWithdrawalOperation
+    if (
+      operation.operationDate === previousOperation.operationDate &&
+      operation.amount === previousOperation.amount &&
+      JSON.stringify(operation.details) === JSON.stringify(previousOperation.details)
+    ) {
+      throw new MovementUseCaseError("no_changes", "No hay cambios para guardar.")
+    }
+    this.assertSavingsMovementPeriod(operation, period)
+    const nextDelta = asNonZeroClpDelta(
+      operation.type === "savings_deposit" ? amount : -amount,
+    )
+    const movement: Movement = {
+      ...previousMovement,
+      delta: nextDelta,
+      updatedAt: occurredAt,
+    }
+    assertOperationMovementInvariant(operation, [movement])
+    const goalDelta = nextDelta - previousMovement.delta
+    const updatedGoal = this.applySavingsGoalNetChange(
+      goal,
+      goalDelta,
+      occurredAt,
+    )
+    const operationRevision: OperationRevision = {
+      id: this.createId(),
+      operationId: operation.id,
+      periodId: period.id,
+      revisionNumber: previousOperation.revision,
+      changeType: "edit",
+      previousOperation,
+      previousMovements: [previousMovement],
+      reason: null,
+      createdAt: occurredAt,
+    }
+    await this.commitSavingsGoalMovement({
+      kind: "change",
+      period,
+      expectedGoal: goal,
+      expectedOperation: previousOperation,
+      goal: updatedGoal,
+      operation,
+      movement,
+      operationRevision,
+    })
+    return { goal: updatedGoal, operation, movement }
+  }
+
+  async voidSavingsMovement(input: VoidSavingsMovementInput) {
+    const period = await this.requireOpenPeriod()
+    const previousOperation = await this.requireSavingsMovementOperation(
+      input.operationId,
+    )
+    this.assertPostedSavingsMovement(previousOperation)
+    this.assertRevision(previousOperation.revision, input.expectedRevision)
+    this.assertSavingsMovementPeriod(previousOperation, period)
+    const previousMovement = await this.requireSavingsMovementProjection(
+      previousOperation,
+    )
+    const goal = await this.requireSavingsGoal(previousOperation.details.goalId)
+    const occurredAt = this.now()
+    const goalDelta = -previousMovement.delta
+    const updatedGoal = this.applySavingsGoalNetChange(
+      goal,
+      goalDelta,
+      occurredAt,
+    )
+    const reason = optionalText(input.reason)
+    const operation = {
+      ...previousOperation,
+      status: "voided",
+      voidedAt: occurredAt,
+      voidReason: reason,
+      revision: asRevision(Number(previousOperation.revision) + 1),
+      updatedAt: occurredAt,
+    } satisfies SavingsDepositOperation | SavingsWithdrawalOperation
+    const movement: Movement = {
+      ...previousMovement,
+      status: "voided",
+      updatedAt: occurredAt,
+    }
+    assertOperationMovementInvariant(operation, [movement])
+    const operationRevision: OperationRevision = {
+      id: this.createId(),
+      operationId: operation.id,
+      periodId: period.id,
+      revisionNumber: previousOperation.revision,
+      changeType: "void",
+      previousOperation,
+      previousMovements: [previousMovement],
+      reason,
+      createdAt: occurredAt,
+    }
+    await this.commitSavingsGoalMovement({
+      kind: "change",
+      period,
+      expectedGoal: goal,
+      expectedOperation: previousOperation,
+      goal: updatedGoal,
+      operation,
+      movement,
+      operationRevision,
+    })
+    return { goal: updatedGoal, operation, movement }
   }
 
   async editTransfer(input: EditTransferInput) {
@@ -1274,6 +1433,7 @@ export class MovementUseCases implements MovementUseCasesPort {
     })
     try {
       await this.repositories.operations.commitSavingsGoalMovement({
+        kind: "create",
         period: { id: period.id, revision: period.revision },
         expectedSavingsGoal: { id: goal.id, revision: goal.revision },
         savingsGoal: updatedGoal,
@@ -1290,6 +1450,138 @@ export class MovementUseCases implements MovementUseCasesPort {
       throw error
     }
     return { goal: updatedGoal, operation, movement }
+  }
+
+  private async requireSavingsMovementOperation(operationId: EntityId) {
+    const operation = await this.repositories.operations.get(operationId)
+    if (
+      !operation ||
+      (operation.type !== "savings_deposit" &&
+        operation.type !== "savings_withdrawal")
+    ) {
+      throw new MovementUseCaseError(
+        operation ? "unsupported_operation" : "operation_not_found",
+        operation
+          ? "La operación no es un depósito ni retiro de meta."
+          : "El movimiento solicitado no existe.",
+      )
+    }
+    return operation
+  }
+
+  private assertPostedSavingsMovement(
+    operation: SavingsDepositOperation | SavingsWithdrawalOperation,
+  ) {
+    if (operation.status !== "posted") {
+      throw new MovementUseCaseError(
+        "invalid_operation_state",
+        "El movimiento de ahorro ya está anulado.",
+      )
+    }
+  }
+
+  private assertSavingsMovementPeriod(
+    operation: SavingsDepositOperation | SavingsWithdrawalOperation,
+    period: Period,
+  ) {
+    try {
+      assertOperationDateContext(operation, period, this.today())
+    } catch {
+      throw new MovementUseCaseError(
+        "invalid_date",
+        "El movimiento debe pertenecer al período abierto y no puede ser futuro.",
+      )
+    }
+  }
+
+  private async requireSavingsMovementProjection(
+    operation: SavingsDepositOperation | SavingsWithdrawalOperation,
+  ) {
+    const movements = await this.repositories.movements.listByOperation(
+      operation.id,
+    )
+    try {
+      assertOperationMovementInvariant(operation, movements)
+    } catch {
+      throw new MovementUseCaseError(
+        "invalid_operation_state",
+        "El movimiento no tiene una proyección financiera íntegra.",
+      )
+    }
+    const movement = movements[0]
+    if (!movement) {
+      throw new MovementUseCaseError(
+        "invalid_operation_state",
+        "El movimiento no tiene impacto financiero.",
+      )
+    }
+    return movement
+  }
+
+  private applySavingsGoalNetChange(
+    goal: SavingsGoal,
+    delta: number,
+    occurredAt: UtcTimestamp,
+  ) {
+    const finalBalance = goal.currentBalance + delta
+    if (finalBalance < 0) {
+      const missing = -finalBalance
+      throw new MovementUseCaseError(
+        "insufficient_balance",
+        `Faltan ${new Intl.NumberFormat("es-CL", {
+          style: "currency",
+          currency: "CLP",
+          maximumFractionDigits: 0,
+        }).format(missing)} para completar este cambio.`,
+      )
+    }
+    if (delta === 0) return goal
+    return applySavingsGoalMovementChange({
+      goal,
+      previousDelta: null,
+      nextDelta: asNonZeroClpDelta(delta),
+      occurredAt,
+    })
+  }
+
+  private async commitSavingsGoalMovement(input: {
+    readonly kind: "create" | "change"
+    readonly period: Period
+    readonly expectedGoal: SavingsGoal
+    readonly expectedOperation?: SavingsDepositOperation | SavingsWithdrawalOperation
+    readonly goal: SavingsGoal
+    readonly operation: SavingsDepositOperation | SavingsWithdrawalOperation
+    readonly movement: Movement
+    readonly operationRevision?: OperationRevision
+  }) {
+    try {
+      await this.repositories.operations.commitSavingsGoalMovement({
+        kind: input.kind,
+        period: { id: input.period.id, revision: input.period.revision },
+        expectedSavingsGoal: {
+          id: input.expectedGoal.id,
+          revision: input.expectedGoal.revision,
+        },
+        expectedOperation: input.expectedOperation
+          ? {
+              id: input.expectedOperation.id,
+              revision: input.expectedOperation.revision,
+            }
+          : undefined,
+        savingsGoal: input.goal,
+        operation: input.operation,
+        movement: input.movement,
+        operationRevision: input.operationRevision,
+      })
+    } catch (error) {
+      if (error instanceof PersistenceError && error.code === "conflict") {
+        throw new MovementUseCaseError(
+          "revision_conflict",
+          "La meta o el movimiento cambiaron antes de guardar.",
+        )
+      }
+      throw error
+    }
   }
 
   private async loadTransferTargets(

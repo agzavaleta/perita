@@ -163,6 +163,7 @@ const transferOptions: TransferFormOptions = {
 function service(overrides: Partial<MovementUseCasesPort> = {}): MovementUseCasesPort {
   return {
     getCurrentDate: vi.fn(() => asCivilDate("2026-08-21")),
+    getOpenPeriodId: vi.fn().mockResolvedValue(PERIOD_ID),
     getFormOptions: vi.fn().mockResolvedValue(options),
     getTransferFormOptions: vi.fn().mockResolvedValue(transferOptions),
     listMovements: vi.fn().mockResolvedValue([item]),
@@ -173,6 +174,8 @@ function service(overrides: Partial<MovementUseCasesPort> = {}): MovementUseCase
     registerTransfer: vi.fn().mockResolvedValue(item),
     registerSavingsDeposit: vi.fn(),
     registerSavingsWithdrawal: vi.fn(),
+    editSavingsMovement: vi.fn(),
+    voidSavingsMovement: vi.fn(),
     editMovement: vi.fn().mockResolvedValue(item),
     editTransfer: vi.fn().mockResolvedValue(item),
     voidMovement: vi.fn().mockResolvedValue(item),

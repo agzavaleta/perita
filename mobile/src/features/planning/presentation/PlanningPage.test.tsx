@@ -221,6 +221,7 @@ function movementService(
 ): MovementUseCasesPort {
   return {
     getCurrentDate: vi.fn(() => asCivilDate("2026-08-21")),
+    getOpenPeriodId: vi.fn().mockResolvedValue(PERIOD_ID),
     getFormOptions: vi.fn().mockResolvedValue({
       currentDate: asCivilDate("2026-08-21"),
       categories: [],
@@ -245,6 +246,8 @@ function movementService(
     registerTransfer: vi.fn(),
     registerSavingsDeposit: vi.fn(),
     registerSavingsWithdrawal: vi.fn(),
+    editSavingsMovement: vi.fn(),
+    voidSavingsMovement: vi.fn(),
     editMovement: vi.fn(),
     editTransfer: vi.fn(),
     voidMovement: vi.fn(),
@@ -378,6 +381,109 @@ describe("PlanningPage", () => {
     expect(screen.getByText("Ahorro extra")).toBeInTheDocument()
     expect(screen.getByText("Desde cuenta")).toBeInTheDocument()
     expect(screen.getByText("Saldo informado")).toBeInTheDocument()
+  })
+
+  it("edits and voids posted savings movements from the open-period history", async () => {
+    const deposit = relatedMovement("savings_deposit", 1, 100_000)
+    const historyDetail: SavingsGoalDetail = {
+      goal,
+      relatedMovements: [deposit],
+    }
+    const getSavingsGoalDetail = vi.fn().mockResolvedValue(historyDetail)
+    const editSavingsMovement = vi.fn().mockResolvedValue({
+      goal,
+      operation: deposit.operation,
+      movement: deposit.movement,
+    })
+    const voidSavingsMovement = vi.fn().mockResolvedValue({
+      goal,
+      operation: { ...deposit.operation, status: "voided" },
+      movement: { ...deposit.movement, status: "voided" },
+    })
+    render(
+      <PlanningPage
+        useCases={service({ getSavingsGoalDetail })}
+        movementUseCases={movementService({
+          editSavingsMovement,
+          voidSavingsMovement,
+        })}
+      />,
+    )
+
+    await screen.findByText("Viaje")
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Viaje" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Editar depósito" }))
+    expect(
+      await screen.findByRole("heading", { name: "Editar depósito" }),
+    ).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Monto"), {
+      target: { value: "120000" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Guardar cambios" }))
+    await waitFor(() =>
+      expect(editSavingsMovement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operationId: deposit.operation.id,
+          expectedRevision: deposit.operation.revision,
+          amount: 120_000,
+        }),
+      ),
+    )
+
+    fireEvent.click(await screen.findByRole("button", { name: "Anular depósito" }))
+    expect(
+      screen.getByRole("heading", { name: "Anular depósito" }),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Anular movimiento" }))
+    await waitFor(() =>
+      expect(voidSavingsMovement).toHaveBeenCalledWith({
+        operationId: deposit.operation.id,
+        expectedRevision: deposit.operation.revision,
+      }),
+    )
+    expect(getSavingsGoalDetail).toHaveBeenCalledTimes(3)
+  })
+
+  it("does not offer savings edit or void actions for voided, transfer, or closed-period history", async () => {
+    const voidedDeposit = relatedMovement("savings_deposit", 1, 10_000)
+    const closedWithdrawal = relatedMovement("savings_withdrawal", 2, -5_000)
+    const historyDetail: SavingsGoalDetail = {
+      goal,
+      relatedMovements: [
+        {
+          ...voidedDeposit,
+          operation: {
+            ...voidedDeposit.operation,
+            status: "voided",
+            voidedAt: NOW,
+            voidReason: null,
+          } as Operation,
+          movement: { ...voidedDeposit.movement, status: "voided" },
+        },
+        {
+          ...closedWithdrawal,
+          operation: {
+            ...closedWithdrawal.operation,
+            periodId: asEntityId("60000000-0000-4000-8000-000000000999"),
+          },
+        },
+        relatedMovement("transfer", 3, 20_000),
+        relatedMovement("balance_adjustment", 4, 50_000),
+      ],
+    }
+    render(
+      <PlanningPage
+        useCases={service({
+          getSavingsGoalDetail: vi.fn().mockResolvedValue(historyDetail),
+        })}
+        movementUseCases={movementService()}
+      />,
+    )
+    await screen.findByText("Viaje")
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Viaje" }))
+    await screen.findByText(/Anulado/)
+    expect(screen.queryByRole("button", { name: /Editar (depósito|retiro)/ })).toBeNull()
+    expect(screen.queryByRole("button", { name: /Anular (depósito|retiro)/ })).toBeNull()
   })
 
   it("shows fixed expenses and delegates persistent creation without payment flow", async () => {

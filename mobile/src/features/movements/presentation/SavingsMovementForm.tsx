@@ -16,6 +16,10 @@ import {
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
 import type { SavingsGoal } from "@/domain/entities"
+import type {
+  SavingsDepositOperation,
+  SavingsWithdrawalOperation,
+} from "@/domain/operations"
 import type { CivilDate } from "@/domain/primitives"
 import type {
   MovementUseCasesPort,
@@ -41,26 +45,39 @@ function formatClp(value: number) {
 export function SavingsMovementForm({
   goal,
   mode,
+  operation,
   useCases,
   onSaved,
   onClose,
 }: {
   readonly goal: SavingsGoal
   readonly mode: SavingsMovementMode
+  readonly operation?: SavingsDepositOperation | SavingsWithdrawalOperation
   readonly useCases: MovementUseCasesPort
   readonly onSaved: (result: SavingsMovementResult) => void
   readonly onClose: () => void
 }) {
   const currentDate = useCases.getCurrentDate()
-  const [amount, setAmount] = useState<number | null>(null)
-  const [operationDate, setOperationDate] = useState<string>(currentDate)
-  const [concept, setConcept] = useState("")
-  const [observation, setObservation] = useState("")
+  const [amount, setAmount] = useState<number | null>(operation?.amount ?? null)
+  const [operationDate, setOperationDate] = useState<string>(
+    operation?.operationDate ?? currentDate,
+  )
+  const [concept, setConcept] = useState(operation?.details.concept ?? "")
+  const [observation, setObservation] = useState(
+    operation?.details.observation ?? "",
+  )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const isWithdrawal = mode === "withdrawal"
+  const isEditing = operation !== undefined
+  const previousDelta = operation
+    ? operation.type === "savings_deposit"
+      ? operation.amount
+      : -operation.amount
+    : 0
+  const nextDelta = amount === null ? 0 : isWithdrawal ? -amount : amount
   const exceedsBalance =
-    isWithdrawal && amount !== null && amount > goal.currentBalance
+    amount !== null && goal.currentBalance - previousDelta + nextDelta < 0
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -68,15 +85,20 @@ export function SavingsMovementForm({
     setError(null)
     try {
       const draft = {
-        goalId: goal.id,
         amount: amount ?? 0,
         operationDate: operationDate as CivilDate,
         concept,
         observation,
       }
-      const result = isWithdrawal
-        ? await useCases.registerSavingsWithdrawal(draft)
-        : await useCases.registerSavingsDeposit(draft)
+      const result = operation
+        ? await useCases.editSavingsMovement({
+            ...draft,
+            operationId: operation.id,
+            expectedRevision: operation.revision,
+          })
+        : isWithdrawal
+          ? await useCases.registerSavingsWithdrawal({ ...draft, goalId: goal.id })
+          : await useCases.registerSavingsDeposit({ ...draft, goalId: goal.id })
       onSaved(result)
     } catch (cause) {
       setError(message(cause))
@@ -90,7 +112,13 @@ export function SavingsMovementForm({
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>
-            {isWithdrawal ? `Retirar de ${goal.name}` : `Depositar en ${goal.name}`}
+            {isEditing
+              ? isWithdrawal
+                ? "Editar retiro"
+                : "Editar depósito"
+              : isWithdrawal
+                ? `Retirar de ${goal.name}`
+                : `Depositar en ${goal.name}`}
           </SheetTitle>
           <SheetDescription>
             {isWithdrawal
@@ -150,7 +178,10 @@ export function SavingsMovementForm({
             />
           ) : null}
           {error ? (
-            <ErrorMessage title="No se pudo registrar" description={error} />
+            <ErrorMessage
+              title={isEditing ? "No se pudo guardar" : "No se pudo registrar"}
+              description={error}
+            />
           ) : null}
           <SheetFooter className="px-0">
             <Button
@@ -171,10 +202,14 @@ export function SavingsMovementForm({
                 <ArrowDownToLine aria-hidden="true" />
               )}
               {saving
-                ? "Registrando…"
-                : isWithdrawal
-                  ? "Retirar"
-                  : "Depositar"}
+                ? isEditing
+                  ? "Guardando…"
+                  : "Registrando…"
+                : isEditing
+                  ? "Guardar cambios"
+                  : isWithdrawal
+                    ? "Retirar"
+                    : "Depositar"}
             </Button>
             <Button
               type="button"
