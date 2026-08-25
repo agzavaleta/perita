@@ -22,7 +22,7 @@ export function AppShell({
   onQuickAction,
 }: AppShellProps) {
   return (
-    <div className="app-shell mx-auto flex h-dvh w-full max-w-[430px] flex-col overflow-hidden border-x bg-background shadow-sm">
+    <div className="app-shell mx-auto flex w-full max-w-[430px] flex-col overflow-hidden border-x bg-background shadow-sm">
       <AppHeader onOpenSettings={onOpenSettings} />
       <PwaStatus />
       <main

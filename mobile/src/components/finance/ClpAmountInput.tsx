@@ -3,7 +3,7 @@ import * as React from "react"
 import { Input } from "@/components/ui/input"
 import {
   formatClpInputValue,
-  parseClpInputText,
+  normalizeEditableClpText,
 } from "@/lib/money"
 
 export interface ClpAmountInputProps extends Omit<
@@ -21,37 +21,84 @@ export function ClpAmountInput({
   allowNegative = false,
   onBlur,
   onFocus,
+  ref: forwardedRef,
   ...props
 }: ClpAmountInputProps) {
   const [focused, setFocused] = React.useState(false)
   const [draft, setDraft] = React.useState("")
+  const [caretVersion, setCaretVersion] = React.useState(0)
+  const inputRef = React.useRef<HTMLInputElement | null>(null)
+  const pendingCaret = React.useRef<number | null>(null)
 
   const visibleValue = focused
     ? draft
     : formatClpInputValue(value, { allowNegative })
 
+  React.useLayoutEffect(() => {
+    const caret = pendingCaret.current
+    if (caret === null || !focused) return
+    pendingCaret.current = null
+    inputRef.current?.setSelectionRange(caret, caret)
+  }, [caretVersion, draft, focused])
+
+  function caretAfterDigits(
+    text: string,
+    digitCount: number,
+    rawCaret: number,
+  ) {
+    if (digitCount === 0) {
+      return text.startsWith("-") && rawCaret > 0 ? 1 : 0
+    }
+    let seen = 0
+    for (let index = 0; index < text.length; index += 1) {
+      if (/\d/.test(text[index] ?? "")) seen += 1
+      if (seen === digitCount) return index + 1
+    }
+    return text.length
+  }
+
+  function setInputRef(node: HTMLInputElement | null) {
+    inputRef.current = node
+    if (typeof forwardedRef === "function") forwardedRef(node)
+    else if (forwardedRef) forwardedRef.current = node
+  }
+
   return (
     <Input
       {...props}
+      ref={setInputRef}
       type="text"
       inputMode={allowNegative ? "decimal" : "numeric"}
       pattern={allowNegative ? "-?[0-9.]*" : "[0-9.]*"}
       value={visibleValue}
       onFocus={(event) => {
-        setDraft(value === null ? "" : String(value))
+        setDraft(formatClpInputValue(value, { allowNegative }))
         setFocused(true)
         onFocus?.(event)
       }}
       onChange={(event) => {
-        const result = parseClpInputText(event.currentTarget.value, {
+        const rawText = event.currentTarget.value
+        const rawCaret = event.currentTarget.selectionStart ?? rawText.length
+        const result = normalizeEditableClpText(rawText, {
           allowNegative,
         })
         if (!result.valid) return
+        const digitsBeforeCaret = rawText
+          .slice(0, rawCaret)
+          .replace(/\D/g, "").length
         if (result.text === "-") {
+          pendingCaret.current = 1
           setDraft("-")
+          setCaretVersion((current) => current + 1)
           return
         }
-        setDraft(result.value === null ? "" : String(result.value))
+        pendingCaret.current = caretAfterDigits(
+          result.text,
+          digitsBeforeCaret,
+          rawCaret,
+        )
+        setDraft(result.text)
+        setCaretVersion((current) => current + 1)
         onValueChange(result.value)
       }}
       onBlur={(event) => {

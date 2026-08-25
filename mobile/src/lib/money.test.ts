@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   formatClpInputValue,
+  normalizeEditableClpText,
   parseClpInputText,
 } from "@/lib/money"
 
@@ -22,6 +23,19 @@ describe("CLP input formatting", () => {
       text: "1.500.000",
     })
     expect(parseClpInputText("1500000")).toEqual({
+      valid: true,
+      value: 1_500_000,
+      text: "1.500.000",
+    })
+  })
+
+  it("normalizes incomplete grouping produced during live editing", () => {
+    expect(normalizeEditableClpText("70.00")).toEqual({
+      valid: true,
+      value: 7_000,
+      text: "7.000",
+    })
+    expect(normalizeEditableClpText("1.500.000")).toEqual({
       valid: true,
       value: 1_500_000,
       text: "1.500.000",

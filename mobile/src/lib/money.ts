@@ -61,3 +61,36 @@ export function parseClpInputText(
     text: formatClpInputValue(value, { allowNegative }),
   }
 }
+
+/**
+ * Normalizes the transient text produced while editing a grouped CLP amount.
+ * Group separators may be temporarily incomplete after insertion/backspace.
+ */
+export function normalizeEditableClpText(
+  input: string,
+  { allowNegative = false }: ClpInputOptions = {},
+): ClpInputParseResult {
+  if (input === "") return { valid: true, value: null, text: "" }
+  if (input === "-" && allowNegative) {
+    return { valid: true, value: null, text: "-" }
+  }
+  if (!/^-?[0-9.]+$/.test(input)) {
+    return { valid: false, value: null, text: "" }
+  }
+
+  const negative = input.startsWith("-")
+  if (negative && !allowNegative) {
+    return { valid: false, value: null, text: "" }
+  }
+  const digits = input.slice(negative ? 1 : 0).replaceAll(".", "")
+  if (!digits) return { valid: false, value: null, text: "" }
+  const value = Number(`${negative ? "-" : ""}${digits}`)
+  if (!Number.isSafeInteger(value)) {
+    return { valid: false, value: null, text: "" }
+  }
+  return {
+    valid: true,
+    value,
+    text: formatClpInputValue(value, { allowNegative }),
+  }
+}
