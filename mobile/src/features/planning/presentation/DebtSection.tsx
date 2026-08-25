@@ -12,6 +12,7 @@ import {
 
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
 import { FormSheetContent } from "@/components/forms/FormSheetContent"
+import { useUnsavedChangesGuard } from "@/components/forms/useUnsavedChangesGuard"
 import { EmptyState } from "@/components/states/EmptyState"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { LoadingState } from "@/components/states/LoadingState"
@@ -58,6 +59,7 @@ import type {
   DebtPaymentItem,
   DebtUseCasesPort,
 } from "@/features/planning/application/debt-use-cases"
+import { toast } from "sonner"
 
 function formatClp(value: number) {
   return new Intl.NumberFormat("es-CL", {
@@ -145,6 +147,19 @@ function DebtEditor({
           ? "El saldo pendiente no puede superar el total de la deuda."
           : null
       : null
+  const initialDay =
+    debt?.paymentDay !== null && debt?.paymentDay !== undefined
+      ? String(debt.paymentDay)
+      : ""
+  const dirty =
+    name !== (debt?.name ?? "") ||
+    total !== (debt?.totalAmount ?? null) ||
+    currentOutstanding !== null ||
+    monthly !== (debt?.monthlyPaymentAmount ?? null) ||
+    dueDate !== (debt?.dueDate ?? "") ||
+    hasDueDate !== (debt?.dueDate != null) ||
+    day !== initialDay
+  const guard = useUnsavedChangesGuard({ dirty, saving, onClose })
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -170,6 +185,7 @@ function DebtEditor({
           paymentDay: day === "" ? null : Number(day),
         })
       }
+      toast.success(debt ? "Deuda actualizada" : "Deuda creada")
       onSaved()
     } catch (cause) {
       setError(message(cause))
@@ -179,7 +195,8 @@ function DebtEditor({
   }
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>{debt ? "Editar deuda" : "Nueva deuda"}</SheetTitle>
@@ -261,11 +278,13 @@ function DebtEditor({
             <Button type="submit" size="lg" className="h-11" disabled={saving || currentOutstandingError !== null}>
               <ReceiptText aria-hidden="true" /> {saving ? "Guardando…" : "Guardar"}
             </Button>
-            <Button type="button" variant="outline" size="lg" className="h-11" onClick={onClose} disabled={saving}>Cancelar</Button>
+            <Button type="button" variant="outline" size="lg" className="h-11" onClick={guard.requestClose} disabled={saving}>Cancelar</Button>
           </SheetFooter>
         </form>
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    </>
   )
 }
 
@@ -292,6 +311,13 @@ function PaymentEditor({
   const [observation, setObservation] = useState(operation?.details.observation ?? "")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const dirty =
+    accountId !== (operation?.details.accountId ?? options.accounts[0]?.id ?? "") ||
+    date !== (operation?.operationDate ?? options.currentDate) ||
+    amount !== (operation?.amount ?? null) ||
+    concept !== (operation?.details.concept ?? "") ||
+    observation !== (operation?.details.observation ?? "")
+  const guard = useUnsavedChangesGuard({ dirty, saving, onClose })
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -315,6 +341,7 @@ function PaymentEditor({
       } else {
         await useCases.registerPayment(draft)
       }
+      toast.success(operation ? "Cambios guardados" : "Pago registrado")
       onSaved()
     } catch (cause) {
       setError(message(cause))
@@ -324,7 +351,8 @@ function PaymentEditor({
   }
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>{operation ? "Editar pago" : "Registrar pago"}</SheetTitle>
@@ -351,11 +379,13 @@ function PaymentEditor({
           {error ? <ErrorMessage title="No se pudo guardar el pago" description={error} /> : null}
           <SheetFooter className="px-0">
             <Button type="submit" size="lg" className="h-11" disabled={saving || !accountId}><HandCoins aria-hidden="true" /> {saving ? "Guardando…" : "Guardar pago"}</Button>
-            <Button type="button" variant="outline" size="lg" className="h-11" onClick={onClose} disabled={saving}>Cancelar</Button>
+            <Button type="button" variant="outline" size="lg" className="h-11" onClick={guard.requestClose} disabled={saving}>Cancelar</Button>
           </SheetFooter>
         </form>
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    </>
   )
 }
 
@@ -369,12 +399,18 @@ function TotalEditor({ debt, currentDate, useCases, onSaved, onClose }: {
   const [total, setTotal] = useState<number | null>(debt.totalAmount)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const guard = useUnsavedChangesGuard({
+    dirty: total !== debt.totalAmount,
+    saving,
+    onClose,
+  })
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setSaving(true)
     setError(null)
     try {
       await useCases.adjustDebtTotal(debt.id, debt.revision, currentDate, total ?? 0)
+      toast.success("Cambios guardados")
       onSaved()
     } catch (cause) {
       setError(message(cause))
@@ -383,16 +419,19 @@ function TotalEditor({ debt, currentDate, useCases, onSaved, onClose }: {
     }
   }
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader><SheetTitle>Ajustar total</SheetTitle><SheetDescription>Se conservarán los pagos vigentes y el saldo pendiente se recalculará.</SheetDescription></SheetHeader>
         <form className="space-y-4 px-4" onSubmit={submit}>
           <div className="space-y-2"><Label htmlFor="debt-new-total">Nuevo total</Label><ClpAmountInput id="debt-new-total" value={total} onValueChange={setTotal} disabled={saving} /></div>
           {error ? <ErrorMessage title="No se pudo ajustar" description={error} /> : null}
-          <SheetFooter className="px-0"><Button type="submit" size="lg" disabled={saving}>{saving ? "Guardando…" : "Ajustar total"}</Button><Button type="button" variant="outline" size="lg" onClick={onClose}>Cancelar</Button></SheetFooter>
+          <SheetFooter className="px-0"><Button type="submit" size="lg" disabled={saving}>{saving ? "Guardando…" : "Ajustar total"}</Button><Button type="button" variant="outline" size="lg" onClick={guard.requestClose} disabled={saving}>Cancelar</Button></SheetFooter>
         </form>
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    </>
   )
 }
 
@@ -447,6 +486,7 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
     if (!useCases || !voidTarget) return
     try {
       await useCases.voidPayment(voidTarget.operation.id, voidTarget.operation.revision)
+      toast.success("Pago anulado")
       saved()
     } catch (cause) {
       setError(message(cause))

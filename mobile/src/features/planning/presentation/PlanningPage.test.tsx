@@ -251,6 +251,7 @@ function movementService(
     registerExpense: vi.fn(),
     registerFixedExpensePayment: vi.fn(),
     registerTransfer: vi.fn(),
+    previewTransfer: vi.fn(),
     registerSavingsDeposit: vi.fn(),
     registerSavingsWithdrawal: vi.fn(),
     editSavingsMovement: vi.fn(),

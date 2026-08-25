@@ -4,6 +4,7 @@ import { PiggyBank } from "lucide-react"
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
 import { FinancialInstitutionField } from "@/components/finance/FinancialInstitutionField"
 import { FormSheetContent } from "@/components/forms/FormSheetContent"
+import { useUnsavedChangesGuard } from "@/components/forms/useUnsavedChangesGuard"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -17,6 +18,7 @@ import {
 } from "@/components/ui/sheet"
 import type { SavingsGoal } from "@/domain/entities"
 import type { PlanningUseCasesPort } from "@/features/planning/application/planning-use-cases"
+import { toast } from "sonner"
 
 function message(error: unknown) {
   return error instanceof Error ? error.message : "No fue posible guardar la meta."
@@ -48,6 +50,15 @@ export function SavingsGoalForm({
   )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const dirty =
+    emoji !== (goal?.emoji ?? "💰") ||
+    name !== (goal?.name ?? "") ||
+    bank !== (goal?.bank ?? null) ||
+    targetAmount !== (goal?.targetAmount ?? null) ||
+    currentBalance !== (goal?.currentBalance ?? 0) ||
+    plannedMonthlyAmount !== (goal?.plannedMonthlyAmount ?? 0) ||
+    balanceAdjustmentReason !== ""
+  const guard = useUnsavedChangesGuard({ dirty, saving, onClose })
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -70,6 +81,7 @@ export function SavingsGoalForm({
             balanceAdjustmentReason,
           })
         : await useCases.createSavingsGoal(draft)
+      toast.success(goal ? "Meta actualizada" : "Meta creada")
       onSaved(saved)
     } catch (cause) {
       setError(message(cause))
@@ -79,7 +91,8 @@ export function SavingsGoalForm({
   }
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>{goal ? "Editar meta" : "Nueva meta"}</SheetTitle>
@@ -173,7 +186,7 @@ export function SavingsGoalForm({
               variant="outline"
               size="lg"
               className="h-11"
-              onClick={onClose}
+              onClick={guard.requestClose}
               disabled={saving}
             >
               Cancelar
@@ -182,5 +195,7 @@ export function SavingsGoalForm({
         </form>
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    </>
   )
 }

@@ -3,6 +3,7 @@ import { Scale } from "lucide-react"
 
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
 import { FormSheetContent } from "@/components/forms/FormSheetContent"
+import { useUnsavedChangesGuard } from "@/components/forms/useUnsavedChangesGuard"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
@@ -45,6 +46,11 @@ export function BalanceAdjustmentForm({
   const [reason, setReason] = useState("")
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const dirty =
+    targetBalance !== account.currentBalance ||
+    operationDate !== currentDate ||
+    reason !== ""
+  const guard = useUnsavedChangesGuard({ dirty, saving, onClose })
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -66,7 +72,8 @@ export function BalanceAdjustmentForm({
   }
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>Ajustar saldo</SheetTitle>
@@ -135,7 +142,7 @@ export function BalanceAdjustmentForm({
               variant="outline"
               size="lg"
               className="h-11"
-              onClick={onClose}
+              onClick={guard.requestClose}
               disabled={saving}
             >
               Cancelar
@@ -144,5 +151,7 @@ export function BalanceAdjustmentForm({
         </form>
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    </>
   )
 }

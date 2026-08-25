@@ -3,6 +3,7 @@ import { CalendarClock } from "lucide-react"
 
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
 import { FormSheetContent } from "@/components/forms/FormSheetContent"
+import { useUnsavedChangesGuard } from "@/components/forms/useUnsavedChangesGuard"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -18,6 +19,7 @@ import type {
   FixedExpenseListItem,
   PlanningUseCasesPort,
 } from "@/features/planning/application/planning-use-cases"
+import { toast } from "sonner"
 
 export interface FixedExpenseEditor {
   readonly item?: FixedExpenseListItem
@@ -50,6 +52,12 @@ export function FixedExpenseForm({
   )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const initialAmount = instanceMode
+    ? (editor.item?.currentInstance?.plannedAmount ?? null)
+    : (editor.item?.template.referenceAmount ?? null)
+  const dirty =
+    name !== (editor.item?.template.name ?? "") || amount !== initialAmount
+  const guard = useUnsavedChangesGuard({ dirty, saving, onClose })
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -77,6 +85,7 @@ export function FixedExpenseForm({
           referenceAmount: amount ?? 0,
         })
       }
+      toast.success(editor.item ? "Cambios guardados" : "Gasto fijo creado")
       onSaved()
     } catch (cause) {
       setError(message(cause))
@@ -87,7 +96,8 @@ export function FixedExpenseForm({
 
   const creating = !editor.item
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>
@@ -141,7 +151,7 @@ export function FixedExpenseForm({
               variant="outline"
               size="lg"
               className="h-11"
-              onClick={onClose}
+              onClick={guard.requestClose}
               disabled={saving}
             >
               Cancelar
@@ -150,5 +160,7 @@ export function FixedExpenseForm({
         </form>
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    </>
   )
 }

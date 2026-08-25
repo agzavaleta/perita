@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { beforeAll, describe, expect, it, vi } from "vitest"
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { Account, SavingsGoal } from "@/domain/entities"
 import type { Movement, TransferOperation } from "@/domain/operations"
@@ -16,12 +16,19 @@ import type {
   MovementListItem,
   MovementUseCasesPort,
   TransferFormOptions,
+  TransferPreview,
+  TransferDraft,
 } from "@/features/movements/application/movement-use-cases"
 import { TransferForm } from "@/features/movements/presentation/TransferForm"
+
+const { toastSuccess } = vi.hoisted(() => ({ toastSuccess: vi.fn() }))
+vi.mock("sonner", () => ({ toast: { success: toastSuccess } }))
 
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn()
 })
+
+beforeEach(() => toastSuccess.mockClear())
 
 const NOW = asUtcTimestamp("2026-08-24T12:00:00.000Z")
 const TODAY = asCivilDate("2026-08-24")
@@ -133,8 +140,32 @@ const item: MovementListItem = {
   signedAmount: 0,
 }
 
+function previewFor(input: TransferDraft): TransferPreview {
+  const source = input.sourceType === "account"
+    ? options.accounts.find(({ id }) => id === input.sourceId)!
+    : options.savingsGoals.find(({ id }) => id === input.sourceId)!
+  const destination = input.destinationType === "account"
+    ? options.accounts.find(({ id }) => id === input.destinationId)!
+    : options.savingsGoals.find(({ id }) => id === input.destinationId)!
+  return {
+    source: {
+      name: source.name,
+      currentBalance: source.currentBalance,
+      resultingBalance: source.currentBalance - input.amount,
+    },
+    destination: {
+      name: destination.name,
+      currentBalance: destination.currentBalance,
+      resultingBalance: destination.currentBalance + input.amount,
+    },
+    amount: input.amount,
+    operationDate: input.operationDate,
+  }
+}
+
 function service(overrides: Partial<MovementUseCasesPort> = {}) {
   return {
+    previewTransfer: vi.fn((input: TransferDraft) => Promise.resolve(previewFor(input))),
     registerTransfer: vi.fn().mockResolvedValue(item),
     editTransfer: vi.fn().mockResolvedValue(item),
     ...overrides,
@@ -184,6 +215,10 @@ async function submitAndExpect(
   if (!form) throw new Error("Transfer form not found")
   fireEvent.submit(form)
 
+  expect(registerTransfer).not.toHaveBeenCalled()
+  await screen.findByRole("alertdialog")
+  fireEvent.click(screen.getByRole("button", { name: "Confirmar transferencia" }))
+
   await waitFor(() =>
     expect(registerTransfer).toHaveBeenCalledWith({
       ...expected,
@@ -193,6 +228,7 @@ async function submitAndExpect(
       observation: "",
     }),
   )
+  expect(toastSuccess).toHaveBeenCalledWith("Transferencia realizada")
 }
 
 describe("TransferForm C6F", () => {
@@ -294,7 +330,9 @@ describe("TransferForm C6F", () => {
     fireEvent.change(screen.getByLabelText("Observación (opcional)"), {
       target: { value: "Sin comisión" },
     })
-    fireEvent.click(screen.getByRole("button", { name: "Guardar cambios" }))
+    fireEvent.click(screen.getByRole("button", { name: "Revisar cambios" }))
+    await screen.findByRole("alertdialog")
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar transferencia" }))
 
     await waitFor(() =>
       expect(editTransfer).toHaveBeenCalledWith({
@@ -310,5 +348,41 @@ describe("TransferForm C6F", () => {
         observation: "Sin comisión",
       }),
     )
+  })
+
+  it("muestra el resumen y Volver no persiste", async () => {
+    const registerTransfer = vi.fn().mockResolvedValue(item)
+    renderForm({ useCases: service({ registerTransfer }) })
+    fireEvent.change(screen.getByRole("textbox", { name: "Monto" }), {
+      target: { value: "10000" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Mover dinero" }))
+
+    const dialog = await screen.findByRole("alertdialog")
+    expect(dialog).toHaveTextContent("Cuenta A")
+    expect(dialog).toHaveTextContent("Cuenta B")
+    expect(dialog).toHaveTextContent("$10.000")
+    expect(dialog).toHaveTextContent(TODAY)
+    expect(dialog).toHaveTextContent("$100.000")
+    expect(dialog).toHaveTextContent("$90.000")
+    expect(dialog).toHaveTextContent("$110.000")
+    fireEvent.click(screen.getByRole("button", { name: "Volver" }))
+    expect(registerTransfer).not.toHaveBeenCalled()
+    expect(toastSuccess).not.toHaveBeenCalled()
+    expect(screen.getByRole("textbox", { name: "Monto" })).toHaveValue("10.000")
+  })
+
+  it("no muestra éxito cuando falla la persistencia confirmada", async () => {
+    const registerTransfer = vi.fn().mockRejectedValue(new Error("Conflicto"))
+    renderForm({ useCases: service({ registerTransfer }) })
+    fireEvent.change(screen.getByRole("textbox", { name: "Monto" }), {
+      target: { value: "10000" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Mover dinero" }))
+    await screen.findByRole("alertdialog")
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar transferencia" }))
+
+    expect(await screen.findByText("Conflicto")).toBeInTheDocument()
+    expect(toastSuccess).not.toHaveBeenCalled()
   })
 })

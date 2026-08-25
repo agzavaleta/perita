@@ -209,6 +209,12 @@ function service(overrides: Partial<MovementUseCasesPort> = {}): MovementUseCase
     registerExpense: vi.fn().mockResolvedValue(item),
     registerFixedExpensePayment: vi.fn().mockResolvedValue(item),
     registerTransfer: vi.fn().mockResolvedValue(item),
+    previewTransfer: vi.fn().mockResolvedValue({
+      source: { name: account.name, currentBalance: account.currentBalance, resultingBalance: account.currentBalance - 15_000 },
+      destination: { name: goal.name, currentBalance: goal.currentBalance, resultingBalance: goal.currentBalance + 15_000 },
+      amount: 15_000,
+      operationDate: options.currentDate,
+    }),
     registerSavingsDeposit: vi.fn(),
     registerSavingsWithdrawal: vi.fn(),
     editSavingsMovement: vi.fn(),
@@ -413,6 +419,8 @@ describe("MovementsPage", () => {
       target: { value: "Aporte viaje" },
     })
     fireEvent.click(screen.getByRole("button", { name: "Mover dinero" }))
+    await screen.findByRole("alertdialog")
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar transferencia" }))
 
     await waitFor(() =>
       expect(registerTransfer).toHaveBeenCalledWith(

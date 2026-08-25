@@ -10,13 +10,13 @@ import {
   RotateCcw,
   Save,
   Settings2,
-  ShieldCheck,
   Trash2,
   Upload,
 } from "lucide-react"
 
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
 import { FormSheetContent } from "@/components/forms/FormSheetContent"
+import { useUnsavedChangesGuard } from "@/components/forms/useUnsavedChangesGuard"
 import { EmptyState } from "@/components/states/EmptyState"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { LoadingState } from "@/components/states/LoadingState"
@@ -50,13 +50,14 @@ import { createSettingsModule, type SettingsModule } from "@/features/settings/a
 import type { PeritaBackup } from "@/features/settings/application/backup"
 import type { CategoryUseCasesPort } from "@/features/settings/application/category-use-cases"
 import type { SettingsUseCasesPort } from "@/features/settings/application/settings-use-cases"
+import { toast } from "sonner"
 
 interface SettingsPageProps {
   readonly useCases?: SettingsUseCasesPort
   readonly categoryUseCases?: CategoryUseCasesPort
 }
 
-type Notice = { readonly kind: "success" | "error"; readonly text: string } | null
+type Notice = { readonly kind: "error"; readonly text: string } | null
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "No fue posible completar la acción."
@@ -105,6 +106,13 @@ export function SettingsPage({
   const [categoryBusy, setCategoryBusy] = useState(false)
   const [deactivateTarget, setDeactivateTarget] = useState<Category | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const categoryInitialName =
+    categoryEditor?.kind === "rename" ? categoryEditor.category.name : ""
+  const categoryGuard = useUnsavedChangesGuard({
+    dirty: categoryEditor !== null && categoryName !== categoryInitialName,
+    saving: categoryBusy,
+    onClose: () => setCategoryEditor(null),
+  })
 
   useEffect(() => {
     if (injectedUseCases || injectedCategoryUseCases) return
@@ -168,7 +176,7 @@ export function SettingsPage({
       const backup = await useCases.exportBackup()
       download(backup, backupFilename())
       setLastBackup(backup)
-      setNotice({ kind: "success", text: "Respaldo generado. Verifica que el archivo se haya guardado." })
+      toast.success("Respaldo exportado")
     })
   }
 
@@ -191,7 +199,7 @@ export function SettingsPage({
     setRestoreOpen(false)
     await run(async () => {
       await useCases.restoreBackup(importCandidate)
-      setNotice({ kind: "success", text: "Respaldo restaurado y validado correctamente." })
+      toast.success("Respaldo restaurado")
       setImportCandidate(null)
       setLoaded(false)
       const settings = await useCases.getSettings()
@@ -208,7 +216,7 @@ export function SettingsPage({
       setSalary(0)
       setConfirmation("")
       setLastBackup(null)
-      setNotice({ kind: "success", text: "Todos los datos de Perita Mobile fueron eliminados." })
+      toast.success("Datos eliminados")
     })
   }
 
@@ -236,6 +244,7 @@ export function SettingsPage({
         : current.map((category) => category.id === saved.id ? saved : category))
       setCategoryEditor(null)
       setCategoryName("")
+      toast.success(categoryEditor.kind === "create" ? "Categoría creada" : "Categoría actualizada")
     } catch (error) {
       setCategoryFormError(errorMessage(error))
     } finally {
@@ -257,6 +266,7 @@ export function SettingsPage({
         current.map((category) => category.id === saved.id ? saved : category),
       )
       setDeactivateTarget(null)
+      toast.success("Categoría desactivada")
     } catch (error) {
       setCategoryError(errorMessage(error))
     } finally {
@@ -276,7 +286,6 @@ export function SettingsPage({
       </div>
 
       {notice?.kind === "error" ? <ErrorMessage title="No se pudo completar la acción" description={notice.text} /> : null}
-      {notice?.kind === "success" ? <div role="status" className="rounded-surface border bg-surface-subtle p-card text-sm"><ShieldCheck className="mr-2 inline size-4" aria-hidden="true" />{notice.text}</div> : null}
 
       <Card>
         <CardHeader><CardTitle className="flex items-center gap-2"><Settings2 className="size-4" aria-hidden="true" />Configuración general</CardTitle><CardDescription>El sueldo mensual de referencia permitido por V1.1.0.</CardDescription></CardHeader>
@@ -285,7 +294,7 @@ export function SettingsPage({
           <Button className="w-full" disabled={busy || !useCases} onClick={() => void run(async () => {
             const next = await useCases!.updateReferenceSalary(salary ?? 0)
             setSalary(next.salaryReferenceAmount)
-            setNotice({ kind: "success", text: "Configuración guardada." })
+            toast.success("Configuración guardada")
           })}><Save aria-hidden="true" />Guardar</Button>
         </CardContent>
       </Card>
@@ -393,7 +402,7 @@ export function SettingsPage({
       <Sheet
         open={categoryEditor !== null}
         onOpenChange={(open) => {
-          if (!open && !categoryBusy) setCategoryEditor(null)
+          if (!open) categoryGuard.requestClose()
         }}
       >
         <FormSheetContent>
@@ -427,10 +436,19 @@ export function SettingsPage({
                 <Save aria-hidden="true" />
                 {categoryBusy ? "Guardando…" : "Guardar categoría"}
               </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={categoryBusy}
+                onClick={categoryGuard.requestClose}
+              >
+                Cancelar
+              </Button>
             </SheetFooter>
           </form>
         </FormSheetContent>
       </Sheet>
+      {categoryGuard.confirmation}
 
       <AlertDialog
         open={deactivateTarget !== null}

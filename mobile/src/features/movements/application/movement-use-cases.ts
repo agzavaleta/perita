@@ -190,6 +190,21 @@ export interface EditTransferInput extends TransferDraft {
   readonly expectedRevision: Revision
 }
 
+export interface TransferPreview {
+  readonly source: {
+    readonly name: string
+    readonly currentBalance: number
+    readonly resultingBalance: number
+  }
+  readonly destination: {
+    readonly name: string
+    readonly currentBalance: number
+    readonly resultingBalance: number
+  }
+  readonly amount: number
+  readonly operationDate: CivilDate
+}
+
 export interface MovementDetail extends MovementListItem {
   readonly revisions: readonly OperationRevision[]
 }
@@ -219,6 +234,7 @@ export interface MovementUseCasesPort {
     input: FixedExpensePaymentDraft,
   ): Promise<MovementListItem>
   registerTransfer(input: TransferDraft): Promise<MovementListItem>
+  previewTransfer(input: TransferDraft | EditTransferInput): Promise<TransferPreview>
   registerSavingsDeposit(input: SavingsMovementDraft): Promise<SavingsMovementResult>
   registerSavingsWithdrawal(
     input: SavingsMovementDraft,
@@ -808,6 +824,133 @@ export class MovementUseCases implements MovementUseCasesPort {
       movements,
       `${source.name} → ${destination.name}`,
     )
+  }
+
+  async previewTransfer(
+    input: TransferDraft | EditTransferInput,
+  ): Promise<TransferPreview> {
+    this.assertDistinctEndpoints(input)
+    const period = await this.requireOpenPeriod()
+    const editing = "operationId" in input
+    const previousOperation = editing
+      ? await this.requireTransfer(input.operationId)
+      : null
+    if (previousOperation && previousOperation.status !== "posted") {
+      throw new MovementUseCaseError(
+        "invalid_operation_state",
+        "Solo se puede editar un movimiento vigente.",
+      )
+    }
+    if (previousOperation && editing) {
+      this.assertRevision(previousOperation.revision, input.expectedRevision)
+      assertOperationDateContext(previousOperation, period, this.today())
+    }
+    const previousMovements = previousOperation
+      ? await this.requireMovements(previousOperation)
+      : []
+    const declarations = previousOperation
+      ? [
+          {
+            type: previousOperation.details.sourceType,
+            id: previousOperation.details.sourceId,
+            active: false,
+          },
+          {
+            type: previousOperation.details.destinationType,
+            id: previousOperation.details.destinationId,
+            active: false,
+          },
+          { type: input.sourceType, id: input.sourceId, active: true },
+          { type: input.destinationType, id: input.destinationId, active: true },
+        ] as const
+      : [
+          { type: input.sourceType, id: input.sourceId, active: true },
+          { type: input.destinationType, id: input.destinationId, active: true },
+        ] as const
+    const targets = await this.loadTransferTargets(declarations)
+    const amount = positiveAmount(input.amount)
+    const occurredAt = previousOperation?.updatedAt ?? period.openedAt
+    const operation: TransferOperation = previousOperation
+      ? {
+          ...previousOperation,
+          operationDate: input.operationDate,
+          amount,
+          details: {
+            sourceType: input.sourceType,
+            sourceId: input.sourceId,
+            destinationType: input.destinationType,
+            destinationId: input.destinationId,
+            concept: optionalText(input.concept),
+            observation: optionalText(input.observation),
+          },
+          updatedAt: occurredAt,
+        }
+      : {
+          id: period.id,
+          periodId: period.id,
+          type: "transfer",
+          operationDate: input.operationDate,
+          amount,
+          details: {
+            sourceType: input.sourceType,
+            sourceId: input.sourceId,
+            destinationType: input.destinationType,
+            destinationId: input.destinationId,
+            concept: optionalText(input.concept),
+            observation: optionalText(input.observation),
+          },
+          status: "posted",
+          voidedAt: null,
+          voidReason: null,
+          revision: asRevision(1),
+          createdAt: occurredAt,
+          updatedAt: occurredAt,
+        }
+    assertOperationDateContext(operation, period, this.today())
+    const movements = this.transferMovements(
+      operation,
+      occurredAt,
+      previousMovements,
+      [input.sourceId, input.destinationId],
+    )
+    const updates = this.applyTransferImpacts(
+      targets,
+      previousMovements,
+      movements,
+      occurredAt,
+    )
+    const source = targets.get(targetKey(input.sourceType, input.sourceId))
+    const destination = targets.get(
+      targetKey(input.destinationType, input.destinationId),
+    )
+    if (!source || !destination) {
+      throw new MovementUseCaseError(
+        "invalid_operation_state",
+        "No fue posible resolver los fondos del movimiento.",
+      )
+    }
+    const resultingBalance = (target: TransferTargetRecord) => {
+      const collection =
+        target.type === "account" ? updates.accounts : updates.savingsGoals
+      return (
+        collection.find(({ id }) => id === target.entity.id)?.currentBalance ??
+        target.entity.currentBalance
+      )
+    }
+    return {
+      source: {
+        name: source.entity.name,
+        currentBalance: source.entity.currentBalance,
+        resultingBalance: resultingBalance(source),
+      },
+      destination: {
+        name: destination.entity.name,
+        currentBalance: destination.entity.currentBalance,
+        resultingBalance: resultingBalance(destination),
+      },
+      amount,
+      operationDate: input.operationDate,
+    }
   }
 
   registerSavingsDeposit(input: SavingsMovementDraft) {
@@ -1406,9 +1549,10 @@ export class MovementUseCases implements MovementUseCasesPort {
     operation: TransferOperation,
     occurredAt: UtcTimestamp,
     previous: readonly Movement[] = [],
+    previewIds?: readonly [EntityId, EntityId],
   ) {
-    const sourceId = previous[0]?.id ?? this.createId()
-    const destinationId = previous[1]?.id ?? this.createId()
+    const sourceId = previous[0]?.id ?? previewIds?.[0] ?? this.createId()
+    const destinationId = previous[1]?.id ?? previewIds?.[1] ?? this.createId()
     const common = {
       operationId: operation.id,
       periodId: operation.periodId,

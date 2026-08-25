@@ -12,6 +12,7 @@ import type { Account } from "@/domain/entities"
 import { FinancialInstitutionField } from "@/components/finance/FinancialInstitutionField"
 import { MoneyAmount } from "@/components/finance/MoneyAmount"
 import { FormSheetContent } from "@/components/forms/FormSheetContent"
+import { useUnsavedChangesGuard } from "@/components/forms/useUnsavedChangesGuard"
 import { EmptyState } from "@/components/states/EmptyState"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { LoadingState } from "@/components/states/LoadingState"
@@ -57,6 +58,7 @@ import {
 import type { BalanceAdjustmentUseCasesPort } from "@/features/accounts/application/balance-adjustment-use-cases"
 import { BalanceAdjustmentForm } from "@/features/accounts/presentation/BalanceAdjustmentForm"
 import { cn } from "@/lib/utils"
+import { toast } from "sonner"
 
 type EditorState =
   | { readonly mode: "create" }
@@ -160,6 +162,11 @@ function AccountEditor({
   )
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const dirty =
+    emoji !== (editing ? editor.account.emoji : "💳") ||
+    name !== (editing ? editor.account.name : "") ||
+    bank !== (editing ? editor.account.bank : null)
+  const guard = useUnsavedChangesGuard({ dirty, saving, onClose })
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -175,6 +182,7 @@ function AccountEditor({
             bank,
           })
         : await useCases.createAccount({ emoji, name, bank })
+      toast.success(editing ? "Cambios guardados" : "Cuenta creada")
       onSaved(account)
     } catch (cause) {
       setError(accountErrorMessage(cause))
@@ -184,7 +192,8 @@ function AccountEditor({
   }
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>{editing ? "Editar cuenta" : "Nueva cuenta"}</SheetTitle>
@@ -240,7 +249,7 @@ function AccountEditor({
               variant="outline"
               size="lg"
               className="h-11"
-              onClick={onClose}
+              onClick={guard.requestClose}
               disabled={saving}
             >
               Cancelar
@@ -249,6 +258,8 @@ function AccountEditor({
         </form>
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    </>
   )
 }
 
@@ -487,6 +498,7 @@ export function AccountsPage({
         expectedRevision: statusTarget.revision,
       })
       setSelected(account)
+      toast.success("Cuenta desactivada")
       await loadAccounts()
     } catch (cause) {
       setError(accountErrorMessage(cause))
@@ -573,6 +585,7 @@ export function AccountsPage({
           account={adjustmentTarget}
           useCases={balanceAdjustmentUseCases}
           onSaved={({ account }) => {
+            toast.success("Ajuste de saldo registrado")
             setAdjustmentTarget(null)
             setSelected(account)
             void loadAccounts()

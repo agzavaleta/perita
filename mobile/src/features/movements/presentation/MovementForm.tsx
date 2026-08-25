@@ -2,6 +2,7 @@ import { useState, type FormEvent } from "react"
 
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
 import { FormSheetContent } from "@/components/forms/FormSheetContent"
+import { useUnsavedChangesGuard } from "@/components/forms/useUnsavedChangesGuard"
 import type { EntityId } from "@/domain/primitives"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { Button } from "@/components/ui/button"
@@ -29,6 +30,7 @@ import type {
   MovementUseCasesPort,
 } from "@/features/movements/application/movement-use-cases"
 import { CategoryBadge } from "@/features/movements/presentation/CategoryBadge"
+import { toast } from "sonner"
 
 export interface MovementEditor {
   readonly kind: Exclude<MovementKind, "transfer">
@@ -113,6 +115,15 @@ export function MovementForm({
     !categoryChanged &&
     historicalInactiveCategory?.id === categoryId
   )
+  const dirty =
+    incomeType !== (operation?.type === "salary_receipt" ? "salary" : "additional") ||
+    accountId !== (operation ? operation.details.accountId : (options.accounts[0]?.id ?? "")) ||
+    categoryId !== (variableDetails?.categoryId ?? options.categories.find(({ status }) => status === "active")?.id ?? "") ||
+    operationDate !== (operation?.operationDate ?? options.currentDate) ||
+    amount !== (operation?.amount ?? null) ||
+    concept !== (variableDetails?.concept ?? incomeDetails?.concept ?? "") ||
+    observation !== (variableDetails?.observation ?? incomeDetails?.observation ?? "")
+  const guard = useUnsavedChangesGuard({ dirty, saving, onClose })
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -155,6 +166,13 @@ export function MovementForm({
           observation,
         })
       }
+      toast.success(
+        editing
+          ? "Cambios guardados"
+          : editor.kind === "income"
+            ? "Ingreso registrado"
+            : "Gasto registrado",
+      )
       onSaved(item)
     } catch (cause) {
       setError(message(cause))
@@ -164,7 +182,8 @@ export function MovementForm({
   }
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>
@@ -343,7 +362,7 @@ export function MovementForm({
               variant="outline"
               size="lg"
               className="h-11"
-              onClick={onClose}
+              onClick={guard.requestClose}
               disabled={saving}
             >
               Cancelar
@@ -352,5 +371,7 @@ export function MovementForm({
         </form>
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    </>
   )
 }

@@ -3,6 +3,7 @@ import { CircleDollarSign } from "lucide-react"
 
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
 import { FormSheetContent } from "@/components/forms/FormSheetContent"
+import { useUnsavedChangesGuard } from "@/components/forms/useUnsavedChangesGuard"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { LoadingState } from "@/components/states/LoadingState"
 import { Button } from "@/components/ui/button"
@@ -25,6 +26,7 @@ import {
 import type { CivilDate, EntityId } from "@/domain/primitives"
 import type { MovementUseCasesPort } from "@/features/movements/application/movement-use-cases"
 import type { FixedExpenseListItem } from "@/features/planning/application/planning-use-cases"
+import { toast } from "sonner"
 
 function message(error: unknown) {
   return error instanceof Error
@@ -56,6 +58,12 @@ export function FixedExpensePaymentForm({
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const dirty =
+    !loading &&
+    (accountId !== (accounts[0]?.id ?? "") ||
+      operationDate !== currentDate ||
+      amount !== (instance?.plannedAmount ?? null))
+  const guard = useUnsavedChangesGuard({ dirty, saving, onClose })
 
   useEffect(() => {
     let active = true
@@ -91,6 +99,7 @@ export function FixedExpensePaymentForm({
         operationDate: operationDate as CivilDate,
         amount: amount ?? 0,
       })
+      toast.success("Pago registrado")
       onSaved()
     } catch (cause) {
       setError(message(cause))
@@ -100,7 +109,8 @@ export function FixedExpensePaymentForm({
   }
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>Registrar pago</SheetTitle>
@@ -178,7 +188,7 @@ export function FixedExpensePaymentForm({
                 variant="outline"
                 size="lg"
                 className="h-11"
-                onClick={onClose}
+                onClick={guard.requestClose}
                 disabled={saving}
               >
                 Cancelar
@@ -188,5 +198,7 @@ export function FixedExpensePaymentForm({
         )}
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    </>
   )
 }

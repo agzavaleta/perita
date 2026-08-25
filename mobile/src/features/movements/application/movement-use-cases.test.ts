@@ -1316,6 +1316,45 @@ describe("MovementUseCases", () => {
     ])
   })
 
+  it("previews create and edit transfers without persisting and reverses the edited impact", async () => {
+    const draft = {
+      sourceType: "account" as const,
+      sourceId: ACCOUNT_A,
+      destinationType: "account" as const,
+      destinationId: ACCOUNT_B,
+      operationDate: TODAY,
+      amount: 20_000,
+    }
+    const preview = await useCases.previewTransfer(draft)
+    expect(preview).toMatchObject({
+      source: { name: "Cuenta A", currentBalance: 100_000, resultingBalance: 80_000 },
+      destination: { name: "Cuenta B", currentBalance: 50_000, resultingBalance: 70_000 },
+      amount: 20_000,
+      operationDate: TODAY,
+    })
+    expect(await repositories.operations.count()).toBe(0)
+    expect((await repositories.accounts.get(ACCOUNT_A))?.currentBalance).toBe(100_000)
+
+    const created = await useCases.registerTransfer(draft)
+    const editPreview = await useCases.previewTransfer({
+      operationId: created.operation.id,
+      expectedRevision: created.operation.revision,
+      sourceType: "account",
+      sourceId: ACCOUNT_B,
+      destinationType: "savings_goal",
+      destinationId: GOAL_A,
+      operationDate: TODAY,
+      amount: 30_000,
+    })
+    expect(editPreview).toMatchObject({
+      source: { currentBalance: 70_000, resultingBalance: 20_000 },
+      destination: { currentBalance: 50_000, resultingBalance: 80_000 },
+    })
+    expect((await repositories.accounts.get(ACCOUNT_A))?.currentBalance).toBe(80_000)
+    expect((await repositories.accounts.get(ACCOUNT_B))?.currentBalance).toBe(70_000)
+    expect(await repositories.operations.count()).toBe(1)
+  })
+
   it("voids both impacts and rejects an unfunded reversal atomically", async () => {
     const created = await useCases.registerTransfer({
       sourceType: "account",

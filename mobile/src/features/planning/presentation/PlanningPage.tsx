@@ -78,6 +78,7 @@ import {
 } from "@/features/planning/presentation/FixedExpenseForm"
 import { FixedExpensePaymentForm } from "@/features/planning/presentation/FixedExpensePaymentForm"
 import { SavingsGoalForm } from "@/features/planning/presentation/SavingsGoalForm"
+import { toast } from "sonner"
 
 interface PlanningPageProps {
   readonly useCases?: PlanningUseCasesPort
@@ -694,6 +695,7 @@ export function PlanningPage({
     if (!useCases || !closeTarget) return
     try {
       await useCases.closeSavingsGoal(closeTarget.id, closeTarget.revision)
+      toast.success("Meta cerrada")
       saved()
     } catch (cause) {
       setError(message(cause))
@@ -712,6 +714,7 @@ export function PlanningPage({
         operationId: voidSavingsTarget.operation.id,
         expectedRevision: voidSavingsTarget.operation.revision,
       })
+      toast.success("Movimiento anulado")
       const goalId = voidSavingsTarget.goal.id
       setVoidSavingsTarget(null)
       await refreshGoalAfterSavingsMovement(goalId)
@@ -729,6 +732,7 @@ export function PlanningPage({
         deactivateTarget.template.id,
         deactivateTarget.template.revision,
       )
+      toast.success("Gasto fijo desactivado")
       saved()
     } catch (cause) {
       setError(message(cause))

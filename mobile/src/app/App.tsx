@@ -6,6 +6,7 @@ import type { QuickAction } from "@/app/quick-actions"
 import { HomePage } from "@/features/home/presentation/HomePage"
 import { LoadingState } from "@/components/states/LoadingState"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
+import { Toaster } from "@/components/ui/sonner"
 import {
   createSetupModule,
   type SetupModule,
@@ -137,8 +138,10 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
     setActiveSection(section)
   }
 
+  let appContent
+
   if (setupError || !setupState || !setupUseCases) {
-    return (
+    appContent = (
       <div className="mx-auto flex h-dvh w-full max-w-[430px] flex-col overflow-hidden border-x bg-background shadow-sm">
         <main className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] scroll-pb-8">
           <section className="space-y-section py-section" aria-labelledby="setup-loading-title">
@@ -152,10 +155,8 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
         </main>
       </div>
     )
-  }
-
-  if (setupState.status !== "completed") {
-    return (
+  } else if (setupState.status !== "completed") {
+    appContent = (
       <div className="mx-auto flex h-dvh w-full max-w-[430px] flex-col overflow-hidden border-x bg-background shadow-sm">
         <main className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-4 pb-[env(safe-area-inset-bottom)] pt-[env(safe-area-inset-top)] scroll-pb-8">
           <SetupPage
@@ -169,10 +170,8 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
         </main>
       </div>
     )
-  }
-
-  return (
-    <AppShell
+  } else {
+    appContent = <AppShell
       activeSection={activeSection}
       onNavigate={navigate}
       onOpenSettings={() => navigate("settings")}
@@ -187,5 +186,12 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
         onRegisterIncome={() => openQuickAction("income")}
       />
     </AppShell>
+  }
+
+  return (
+    <>
+      {appContent}
+      <Toaster />
+    </>
   )
 }

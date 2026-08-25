@@ -40,6 +40,7 @@ import type {
   MonthlyCloseUseCasesPort,
   MonthlyHistoryItem,
 } from "@/features/planning/application/monthly-close-use-cases"
+import { toast } from "sonner"
 
 function formatClp(value: number) {
   return new Intl.NumberFormat("es-CL", {
@@ -179,6 +180,7 @@ export function MonthlyCloseSection({
     setError(null)
     try {
       await useCases.closeCurrentPeriod()
+      toast.success("Cierre mensual completado")
       setConfirming(false)
       setRefreshKey((value) => value + 1)
       onClosed()

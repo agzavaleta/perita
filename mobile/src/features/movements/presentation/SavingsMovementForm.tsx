@@ -3,6 +3,7 @@ import { ArrowDownToLine, ArrowUpFromLine } from "lucide-react"
 
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
 import { FormSheetContent } from "@/components/forms/FormSheetContent"
+import { useUnsavedChangesGuard } from "@/components/forms/useUnsavedChangesGuard"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -25,6 +26,7 @@ import type {
   MovementUseCasesPort,
   SavingsMovementResult,
 } from "@/features/movements/application/movement-use-cases"
+import { toast } from "sonner"
 
 export type SavingsMovementMode = "deposit" | "withdrawal"
 
@@ -78,6 +80,12 @@ export function SavingsMovementForm({
   const nextDelta = amount === null ? 0 : isWithdrawal ? -amount : amount
   const exceedsBalance =
     amount !== null && goal.currentBalance - previousDelta + nextDelta < 0
+  const dirty =
+    amount !== (operation?.amount ?? null) ||
+    operationDate !== (operation?.operationDate ?? currentDate) ||
+    concept !== (operation?.details.concept ?? "") ||
+    observation !== (operation?.details.observation ?? "")
+  const guard = useUnsavedChangesGuard({ dirty, saving, onClose })
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -99,6 +107,13 @@ export function SavingsMovementForm({
         : isWithdrawal
           ? await useCases.registerSavingsWithdrawal({ ...draft, goalId: goal.id })
           : await useCases.registerSavingsDeposit({ ...draft, goalId: goal.id })
+      toast.success(
+        isEditing
+          ? "Cambios guardados"
+          : isWithdrawal
+            ? "Retiro registrado"
+            : "Depósito registrado",
+      )
       onSaved(result)
     } catch (cause) {
       setError(message(cause))
@@ -108,7 +123,8 @@ export function SavingsMovementForm({
   }
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>
@@ -216,7 +232,7 @@ export function SavingsMovementForm({
               variant="outline"
               size="lg"
               className="h-11"
-              onClick={onClose}
+              onClick={guard.requestClose}
               disabled={saving}
             >
               Cancelar
@@ -225,5 +241,7 @@ export function SavingsMovementForm({
         </form>
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    </>
   )
 }

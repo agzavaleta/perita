@@ -85,6 +85,7 @@ import {
   type TransferEditor,
 } from "@/features/movements/presentation/TransferForm"
 import { cn } from "@/lib/utils"
+import { toast } from "sonner"
 
 interface MovementsPageProps {
   readonly useCases?: MovementUseCasesPort
@@ -472,6 +473,7 @@ export function MovementsPage({
           reason: "Anulado desde la interfaz",
         })
       }
+      toast.success("Movimiento anulado")
       setDetail(null)
       setRefreshKey((value) => value + 1)
     } catch (cause) {

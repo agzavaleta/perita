@@ -3,7 +3,18 @@ import { ArrowRightLeft, Landmark, PiggyBank } from "lucide-react"
 
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
 import { FormSheetContent } from "@/components/forms/FormSheetContent"
+import { useUnsavedChangesGuard } from "@/components/forms/useUnsavedChangesGuard"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -25,10 +36,14 @@ import { Textarea } from "@/components/ui/textarea"
 import type { TransferEndpointType } from "@/domain/operations"
 import type { EntityId } from "@/domain/primitives"
 import type {
+  EditTransferInput,
   MovementListItem,
   MovementUseCasesPort,
   TransferFormOptions,
+  TransferPreview,
+  TransferDraft,
 } from "@/features/movements/application/movement-use-cases"
+import { toast } from "sonner"
 
 export interface TransferEditor {
   readonly item?: MovementListItem
@@ -38,6 +53,14 @@ function errorMessage(error: unknown) {
   return error instanceof Error
     ? error.message
     : "No fue posible mover el dinero."
+}
+
+function formatClp(value: number) {
+  return new Intl.NumberFormat("es-CL", {
+    style: "currency",
+    currency: "CLP",
+    maximumFractionDigits: 0,
+  }).format(value)
 }
 
 export function TransferForm({
@@ -63,18 +86,22 @@ export function TransferForm({
   const initialDestinationType =
     operation?.details.destinationType ??
     (options.accounts.length > 1 ? "account" : "savings_goal")
+  const initialSourceId =
+    operation?.details.sourceId ?? options.accounts[0]?.id ?? options.savingsGoals[0]?.id ?? ""
+  const initialDestinationId =
+    operation?.details.destinationId ??
+    options.accounts.find(({ id }) => id !== initialSourceId)?.id ??
+    options.savingsGoals.find(({ id }) => id !== initialSourceId)?.id ??
+    ""
   const [sourceType, setSourceType] =
     useState<TransferEndpointType>(initialSourceType)
   const [destinationType, setDestinationType] =
     useState<TransferEndpointType>(initialDestinationType)
   const [sourceId, setSourceId] = useState(
-    operation?.details.sourceId ?? options.accounts[0]?.id ?? options.savingsGoals[0]?.id ?? "",
+    initialSourceId,
   )
   const [destinationId, setDestinationId] = useState(
-    operation?.details.destinationId ??
-      options.accounts.find(({ id }) => id !== sourceId)?.id ??
-      options.savingsGoals.find(({ id }) => id !== sourceId)?.id ??
-      "",
+    initialDestinationId,
   )
   const [operationDate, setOperationDate] = useState(
     operation?.operationDate ?? options.currentDate,
@@ -85,8 +112,24 @@ export function TransferForm({
     operation?.details.observation ?? "",
   )
   const [saving, setSaving] = useState(false)
+  const [previewing, setPreviewing] = useState(false)
+  const [preview, setPreview] = useState<TransferPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const editing = operation !== undefined
+  const dirty =
+    sourceType !== initialSourceType ||
+    destinationType !== initialDestinationType ||
+    sourceId !== initialSourceId ||
+    destinationId !== initialDestinationId ||
+    operationDate !== (operation?.operationDate ?? options.currentDate) ||
+    amount !== (operation?.amount ?? null) ||
+    concept !== (operation?.details.concept ?? "") ||
+    observation !== (operation?.details.observation ?? "")
+  const guard = useUnsavedChangesGuard({
+    dirty,
+    saving: saving || previewing,
+    onClose,
+  })
 
   function funds(type: TransferEndpointType) {
     return type === "account" ? options.accounts : options.savingsGoals
@@ -102,12 +145,8 @@ export function TransferForm({
     setDestinationId(funds(type)[0]?.id ?? "")
   }
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setSaving(true)
-    setError(null)
-    try {
-      const draft = {
+  function transferInput() {
+    const draft = {
         sourceType,
         sourceId: sourceId as EntityId,
         destinationType,
@@ -117,15 +156,42 @@ export function TransferForm({
         concept,
         observation,
       }
+    return editing
+      ? {
+          ...draft,
+          operationId: operation.id,
+          expectedRevision: operation.revision,
+        }
+      : draft
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setPreviewing(true)
+    setError(null)
+    try {
+      setPreview(await useCases.previewTransfer(transferInput()))
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setPreviewing(false)
+    }
+  }
+
+  async function confirmTransfer() {
+    if (saving) return
+    setSaving(true)
+    setError(null)
+    try {
+      const input = transferInput()
       const item = editing
-        ? await useCases.editTransfer({
-            ...draft,
-            operationId: operation.id,
-            expectedRevision: operation.revision,
-          })
-        : await useCases.registerTransfer(draft)
+        ? await useCases.editTransfer(input as EditTransferInput)
+        : await useCases.registerTransfer(input as TransferDraft)
+      toast.success(editing ? "Transferencia editada" : "Transferencia realizada")
+      setPreview(null)
       onSaved(item)
     } catch (cause) {
+      setPreview(null)
       setError(errorMessage(cause))
     } finally {
       setSaving(false)
@@ -137,7 +203,8 @@ export function TransferForm({
   const hasEnoughFunds = options.accounts.length + options.savingsGoals.length >= 2
 
   return (
-    <Sheet open onOpenChange={(open) => !open && onClose()}>
+    <>
+    <Sheet open onOpenChange={(open) => !open && guard.requestClose()}>
       <FormSheetContent>
         <SheetHeader>
           <SheetTitle>{editing ? "Editar movimiento" : "Mover dinero"}</SheetTitle>
@@ -314,7 +381,7 @@ export function TransferForm({
               size="lg"
               className="h-11"
               disabled={
-                saving ||
+                saving || previewing ||
                 !sourceId ||
                 !destinationId ||
                 sameEndpoint ||
@@ -322,14 +389,14 @@ export function TransferForm({
               }
             >
               <ArrowRightLeft aria-hidden="true" />
-              {saving ? "Moviendo…" : editing ? "Guardar cambios" : "Mover dinero"}
+              {saving || previewing ? "Validando…" : editing ? "Revisar cambios" : "Mover dinero"}
             </Button>
             <Button
               type="button"
               variant="outline"
               size="lg"
               className="h-11"
-              onClick={onClose}
+              onClick={guard.requestClose}
               disabled={saving}
             >
               Cancelar
@@ -338,5 +405,42 @@ export function TransferForm({
         </form>
       </FormSheetContent>
     </Sheet>
+    {guard.confirmation}
+    <AlertDialog
+      open={preview !== null}
+      onOpenChange={(open) => !open && !saving && setPreview(null)}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Confirmar transferencia</AlertDialogTitle>
+          <AlertDialogDescription>Revisa el movimiento antes de guardarlo.</AlertDialogDescription>
+        </AlertDialogHeader>
+        {preview ? (
+          <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 gap-y-2 text-sm">
+            <dt className="text-muted-foreground">Origen</dt><dd className="text-right font-medium">{preview.source.name}</dd>
+            <dt className="text-muted-foreground">Destino</dt><dd className="text-right font-medium">{preview.destination.name}</dd>
+            <dt className="text-muted-foreground">Monto</dt><dd className="text-right font-medium">{formatClp(preview.amount)}</dd>
+            <dt className="text-muted-foreground">Fecha</dt><dd className="text-right font-medium">{preview.operationDate}</dd>
+            <dt className="text-muted-foreground">Saldo actual origen</dt><dd className="text-right">{formatClp(preview.source.currentBalance)}</dd>
+            <dt className="text-muted-foreground">Saldo resultante origen</dt><dd className="text-right font-medium">{formatClp(preview.source.resultingBalance)}</dd>
+            <dt className="text-muted-foreground">Saldo actual destino</dt><dd className="text-right">{formatClp(preview.destination.currentBalance)}</dd>
+            <dt className="text-muted-foreground">Saldo resultante destino</dt><dd className="text-right font-medium">{formatClp(preview.destination.resultingBalance)}</dd>
+          </dl>
+        ) : null}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={saving}>Volver</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={saving}
+            onClick={(event) => {
+              event.preventDefault()
+              void confirmTransfer()
+            }}
+          >
+            {saving ? "Guardando…" : "Confirmar transferencia"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   )
 }
