@@ -1,9 +1,10 @@
-import type { ReactNode } from "react"
+import { useEffect, type ReactNode } from "react"
 
 import type { AppSection } from "@/app/navigation"
 import type { QuickAction } from "@/app/quick-actions"
 import { AppHeader } from "@/components/layout/AppHeader"
 import { BottomNavigation } from "@/components/layout/BottomNavigation"
+import { installIosViewportRecovery } from "@/lib/ios-viewport-recovery"
 import { PwaStatus } from "@/pwa/PwaStatus"
 
 type AppShellProps = {
@@ -21,6 +22,8 @@ export function AppShell({
   onOpenSettings,
   onQuickAction,
 }: AppShellProps) {
+  useEffect(() => installIosViewportRecovery(), [])
+
   return (
     <div className="app-shell mx-auto flex min-h-0 w-full max-w-[430px] flex-col overflow-hidden border-x bg-background shadow-sm">
       <AppHeader onOpenSettings={onOpenSettings} />
