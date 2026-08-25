@@ -48,6 +48,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Textarea } from "@/components/ui/textarea"
+import { Switch } from "@/components/ui/switch"
 import type { Debt } from "@/domain/entities"
 import type { CivilDate, EntityId } from "@/domain/primitives"
 import type {
@@ -99,6 +100,7 @@ function DebtEditor({
     debt?.monthlyPaymentAmount ?? null,
   )
   const [dueDate, setDueDate] = useState(debt?.dueDate ?? "")
+  const [hasDueDate, setHasDueDate] = useState(debt?.dueDate != null)
   const [day, setDay] = useState(
     debt?.paymentDay !== null && debt?.paymentDay !== undefined
       ? String(debt.paymentDay)
@@ -117,7 +119,7 @@ function DebtEditor({
           debtId: debt.id,
           expectedRevision: debt.revision,
           name,
-          dueDate: dueDate ? dueDate as CivilDate : null,
+          dueDate: hasDueDate && dueDate ? dueDate as CivilDate : null,
           monthlyPaymentAmount: monthly ?? 0,
           paymentDay: day === "" ? null : Number(day),
         })
@@ -125,7 +127,7 @@ function DebtEditor({
         await useCases.createDebt({
           name,
           totalAmount: total ?? 0,
-          dueDate: dueDate ? dueDate as CivilDate : null,
+          dueDate: hasDueDate && dueDate ? dueDate as CivilDate : null,
           monthlyPaymentAmount: monthly ?? 0,
           paymentDay: day === "" ? null : Number(day),
         })
@@ -160,15 +162,32 @@ function DebtEditor({
               <ClpAmountInput id="debt-total" value={total} onValueChange={setTotal} disabled={saving} />
             </div>
           ) : null}
-          <div className="space-y-2">
-            <Label htmlFor="debt-due-date">Fecha de vencimiento (opcional)</Label>
-            <Input
-              id="debt-due-date"
-              type="date"
-              value={dueDate}
-              onChange={(event) => setDueDate(event.target.value)}
-              disabled={saving}
-            />
+          <div className="space-y-3">
+            <div className="flex min-h-11 items-center justify-between gap-3">
+              <Label htmlFor="debt-has-due-date">Tiene fecha de vencimiento</Label>
+              <Switch
+                id="debt-has-due-date"
+                checked={hasDueDate}
+                onCheckedChange={(checked) => {
+                  setHasDueDate(checked)
+                  if (!checked) setDueDate("")
+                }}
+                disabled={saving}
+              />
+            </div>
+            {hasDueDate ? (
+              <div className="space-y-2">
+                <Label htmlFor="debt-due-date">Fecha de vencimiento</Label>
+                <Input
+                  id="debt-due-date"
+                  type="date"
+                  required
+                  value={dueDate}
+                  onChange={(event) => setDueDate(event.target.value)}
+                  disabled={saving}
+                />
+              </div>
+            ) : null}
           </div>
           <div className="space-y-2">
             <Label htmlFor="debt-monthly">Cuota mensual</Label>

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 
 import type { Account, Debt } from "@/domain/entities"
 import {
@@ -16,6 +16,17 @@ import type {
   DebtUseCasesPort,
 } from "@/features/planning/application/debt-use-cases"
 import { DebtSection } from "@/features/planning/presentation/DebtSection"
+
+beforeAll(() => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  )
+})
 
 const NOW = asUtcTimestamp("2026-08-24T12:00:00.000Z")
 const DEBT_ID = asEntityId("c5b00000-0000-4000-8000-000000000001")
@@ -119,6 +130,11 @@ describe("DebtSection C5B", () => {
     const api = service({ items: [], createDebt })
     await openNewDebt(api)
 
+    expect(
+      screen.getByRole("switch", { name: "Tiene fecha de vencimiento" }),
+    ).not.toBeChecked()
+    expect(screen.queryByLabelText("Fecha de vencimiento")).toBeNull()
+
     fireEvent.change(screen.getByLabelText("Nombre"), {
       target: { value: "Crédito personal" },
     })
@@ -152,7 +168,12 @@ describe("DebtSection C5B", () => {
     fireEvent.change(screen.getByLabelText("Total"), {
       target: { value: "120000" },
     })
-    fireEvent.change(screen.getByLabelText("Fecha de vencimiento (opcional)"), {
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Tiene fecha de vencimiento" }),
+    )
+    expect(screen.getByLabelText("Fecha de vencimiento")).toHaveValue("")
+    expect(screen.getByLabelText("Fecha de vencimiento")).toBeRequired()
+    fireEvent.change(screen.getByLabelText("Fecha de vencimiento"), {
       target: { value: "2026-12-31" },
     })
     fireEvent.change(screen.getByLabelText("Cuota mensual"), {
@@ -200,13 +221,17 @@ describe("DebtSection C5B", () => {
     await openDebtDetail(api)
     fireEvent.click(screen.getByRole("button", { name: "Editar" }))
 
-    expect(screen.getByLabelText("Fecha de vencimiento (opcional)")).toHaveValue(
+    expect(
+      screen.getByRole("switch", { name: "Tiene fecha de vencimiento" }),
+    ).toBeChecked()
+    expect(screen.getByLabelText("Fecha de vencimiento")).toHaveValue(
       "2026-12-31",
     )
     expect(screen.getByLabelText("Día de pago (opcional)")).toHaveValue(15)
-    fireEvent.change(screen.getByLabelText("Fecha de vencimiento (opcional)"), {
-      target: { value: "" },
-    })
+    fireEvent.click(
+      screen.getByRole("switch", { name: "Tiene fecha de vencimiento" }),
+    )
+    expect(screen.queryByLabelText("Fecha de vencimiento")).toBeNull()
     fireEvent.change(screen.getByLabelText("Día de pago (opcional)"), {
       target: { value: "" },
     })
@@ -222,6 +247,18 @@ describe("DebtSection C5B", () => {
         paymentDay: null,
       }),
     )
+  })
+
+  it("starts editing without a due date with the switch off", async () => {
+    const current = debt({ dueDate: null })
+    const api = service({ current, debtDetail: detail(current) })
+    await openDebtDetail(api)
+    fireEvent.click(screen.getByRole("button", { name: "Editar" }))
+
+    expect(
+      screen.getByRole("switch", { name: "Tiene fecha de vencimiento" }),
+    ).not.toBeChecked()
+    expect(screen.queryByLabelText("Fecha de vencimiento")).toBeNull()
   })
 
   it("shows complete scheduled planning data in detail", async () => {
@@ -299,7 +336,10 @@ describe("DebtSection C6B form infrastructure", () => {
     fireEvent.change(monthly, { target: { value: "25000" } })
     expect(total).toHaveValue("1.500.000")
     expect(monthly).toHaveValue("25.000")
-    expect(screen.getByLabelText("Fecha de vencimiento (opcional)")).toBeInTheDocument()
+    expect(
+      screen.getByRole("switch", { name: "Tiene fecha de vencimiento" }),
+    ).not.toBeChecked()
+    expect(screen.queryByLabelText("Fecha de vencimiento")).toBeNull()
     expect(screen.getByLabelText("Día de pago (opcional)")).toBeInTheDocument()
     expect(document.querySelector("[autofocus]")).not.toBeInTheDocument()
     expect(total).not.toHaveFocus()
