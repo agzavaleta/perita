@@ -103,8 +103,11 @@ export function assertFixedExpenseInstanceInvariant(
 export function assertDebtInvariant(debt: Debt): Debt {
   assertNonEmpty(debt.name, "Debt.name")
   asPositiveClpAmount(debt.totalAmount)
-  asClpAmount(debt.openingOutstanding)
+  asPositiveClpAmount(debt.openingOutstanding)
   asClpAmount(debt.outstandingAmount)
+  if (debt.outstandingAmount > debt.totalAmount) {
+    fail("Debt outstanding amount cannot exceed total amount")
+  }
   if (debt.dueDate !== null) asCivilDate(debt.dueDate)
 
   asPositiveClpAmount(debt.monthlyPaymentAmount)
@@ -164,16 +167,29 @@ export function assertNewDebtOpening(
 ) {
   assertDebtInvariant(debt)
   if (
-    debt.openingOutstanding !== debt.totalAmount ||
-    debt.outstandingAmount !== debt.totalAmount ||
+    debt.openingOutstanding !== debt.outstandingAmount ||
+    debt.openingOutstanding <= 0 ||
+    debt.openingOutstanding > debt.totalAmount ||
     opening.periodId !== periodId ||
     opening.targetType !== "debt" ||
     opening.targetId !== debt.id ||
-    opening.openingAmount !== debt.totalAmount
+    opening.openingAmount !== debt.openingOutstanding
   ) {
-    fail("A new Debt must open with outstanding amounts equal to total amount")
+    fail("A new Debt opening must match its positive outstanding amount")
   }
   return { debt, opening } as const
+}
+
+export function deriveDebtProgress(
+  debt: Pick<Debt, "totalAmount" | "outstandingAmount">,
+) {
+  const paidAmount = debt.totalAmount - debt.outstandingAmount
+  const rawProgressPercent =
+    debt.totalAmount > 0
+      ? Math.min(100, Math.max(0, (paidAmount / debt.totalAmount) * 100))
+      : 0
+  const progressPercent = Math.round(rawProgressPercent * 100) / 100
+  return { paidAmount, progressPercent } as const
 }
 
 export function assertCurrentPeriodFixedExpenseInstance(input: {

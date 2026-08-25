@@ -83,6 +83,34 @@ function statusLabel(debt: Debt) {
   return "Activa"
 }
 
+function DebtProgressBar({
+  progressPercent,
+}: {
+  readonly progressPercent: number
+}) {
+  const label = `${new Intl.NumberFormat("es-CL", {
+    maximumFractionDigits: 0,
+  }).format(progressPercent)}% pagado`
+  return (
+    <div className="space-y-1.5">
+      <div
+        role="progressbar"
+        aria-label="Progreso de pago"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={progressPercent}
+        className="h-2 overflow-hidden rounded-full bg-muted"
+      >
+        <div
+          className="h-full rounded-full bg-brand transition-[width]"
+          style={{ width: `${progressPercent}%` }}
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">{label}</p>
+    </div>
+  )
+}
+
 function DebtEditor({
   debt,
   useCases,
@@ -96,6 +124,7 @@ function DebtEditor({
 }) {
   const [name, setName] = useState(debt?.name ?? "")
   const [total, setTotal] = useState<number | null>(debt?.totalAmount ?? null)
+  const [currentOutstanding, setCurrentOutstanding] = useState<number | null>(null)
   const [monthly, setMonthly] = useState<number | null>(
     debt?.monthlyPaymentAmount ?? null,
   )
@@ -108,6 +137,14 @@ function DebtEditor({
   )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const currentOutstandingError =
+    !debt && currentOutstanding !== null
+      ? currentOutstanding <= 0
+        ? "El saldo pendiente debe ser mayor que cero."
+        : total !== null && currentOutstanding > total
+          ? "El saldo pendiente no puede superar el total de la deuda."
+          : null
+      : null
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -127,6 +164,7 @@ function DebtEditor({
         await useCases.createDebt({
           name,
           totalAmount: total ?? 0,
+          currentOutstandingAmount: currentOutstanding,
           dueDate: hasDueDate && dueDate ? dueDate as CivilDate : null,
           monthlyPaymentAmount: monthly ?? 0,
           paymentDay: day === "" ? null : Number(day),
@@ -157,10 +195,31 @@ function DebtEditor({
             <Input id="debt-name" value={name} onChange={(event) => setName(event.target.value)} disabled={saving} />
           </div>
           {!debt ? (
-            <div className="space-y-2">
-              <Label htmlFor="debt-total">Total</Label>
-              <ClpAmountInput id="debt-total" value={total} onValueChange={setTotal} disabled={saving} />
-            </div>
+            <>
+              <div className="space-y-2">
+                <Label htmlFor="debt-total">Total</Label>
+                <ClpAmountInput id="debt-total" value={total} onValueChange={setTotal} disabled={saving} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="debt-current-outstanding">
+                  Saldo pendiente actual (opcional)
+                </Label>
+                <ClpAmountInput
+                  id="debt-current-outstanding"
+                  value={currentOutstanding}
+                  onValueChange={setCurrentOutstanding}
+                  disabled={saving}
+                  aria-invalid={currentOutstandingError ? true : undefined}
+                  aria-describedby="debt-current-outstanding-help"
+                />
+                <p
+                  id="debt-current-outstanding-help"
+                  className={currentOutstandingError ? "text-xs text-destructive" : "text-xs text-muted-foreground"}
+                >
+                  {currentOutstandingError ?? "Úsalo si ya pagaste parte de esta deuda."}
+                </p>
+              </div>
+            </>
           ) : null}
           <div className="space-y-3">
             <div className="flex min-h-11 items-center justify-between gap-3">
@@ -199,7 +258,7 @@ function DebtEditor({
           </div>
           {error ? <ErrorMessage title="No se pudo guardar" description={error} /> : null}
           <SheetFooter className="px-0">
-            <Button type="submit" size="lg" className="h-11" disabled={saving}>
+            <Button type="submit" size="lg" className="h-11" disabled={saving || currentOutstandingError !== null}>
               <ReceiptText aria-hidden="true" /> {saving ? "Guardando…" : "Guardar"}
             </Button>
             <Button type="button" variant="outline" size="lg" className="h-11" onClick={onClose} disabled={saving}>Cancelar</Button>
@@ -405,10 +464,10 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
       {error ? <ErrorMessage title="No se pudo completar la acción" description={error} /> : null}
       {loading && useCases ? <LoadingState label="Cargando deudas" /> : items.length === 0 ? <EmptyState title="Aún no tienes deudas" description="Registra una deuda para planificar y controlar sus pagos." /> : (
         <div className="space-y-3">
-          {items.map(({ debt, schedule }) => (
-            <Card key={debt.id} className={debt.paymentStatus === "paid" ? "opacity-65" : undefined}>
-              <CardHeader className="flex-row items-center justify-between"><div><CardTitle>{debt.name}</CardTitle><p className="mt-1 text-xs text-muted-foreground">{schedule.remainingInstallments ?? 0} cuota(s) estimada(s)</p></div><Badge variant={debt.paymentStatus === "overdue" ? "destructive" : "secondary"}>{statusLabel(debt)}</Badge></CardHeader>
-              <CardContent className="flex items-end justify-between gap-3"><div><p className="text-xs text-muted-foreground">Saldo pendiente</p><p className="money-figure text-xl font-semibold">{formatClp(debt.outstandingAmount)}</p></div><Button type="button" variant="ghost" size="icon-lg" aria-label={`Ver detalle de ${debt.name}`} onClick={() => void open({ debt, schedule })}><ChevronRight aria-hidden="true" /></Button></CardContent>
+          {items.map((item) => (
+            <Card key={item.debt.id} className={item.debt.paymentStatus === "paid" ? "opacity-65" : undefined}>
+              <CardHeader className="flex-row items-center justify-between"><div><CardTitle>{item.debt.name}</CardTitle><p className="mt-1 text-xs text-muted-foreground">{item.schedule.remainingInstallments ?? 0} cuota(s) estimada(s)</p></div><Badge variant={item.debt.paymentStatus === "overdue" ? "destructive" : "secondary"}>{statusLabel(item.debt)}</Badge></CardHeader>
+              <CardContent className="space-y-3"><div className="flex items-end justify-between gap-3"><div><p className="text-xs text-muted-foreground">Saldo pendiente</p><p className="money-figure text-xl font-semibold">{formatClp(item.debt.outstandingAmount)}</p></div><Button type="button" variant="ghost" size="icon-lg" aria-label={`Ver detalle de ${item.debt.name}`} onClick={() => void open(item)}><ChevronRight aria-hidden="true" /></Button></div><DebtProgressBar progressPercent={item.progressPercent} /></CardContent>
             </Card>
           ))}
         </div>
@@ -422,10 +481,12 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
             <div className="space-y-4 px-4">
               <Card>
                 <CardContent className="space-y-3 pt-1">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Saldo pendiente</p>
-                    <p className="money-figure text-3xl font-semibold">{formatClp(detail.debt.outstandingAmount)}</p>
-                  </div>
+                  <dl className="grid grid-cols-1 gap-3 text-sm min-[360px]:grid-cols-2">
+                    <div><dt className="text-xs text-muted-foreground">Total</dt><dd className="money-figure text-lg font-semibold">{formatClp(detail.debt.totalAmount)}</dd></div>
+                    <div><dt className="text-xs text-muted-foreground">Pagado</dt><dd className="money-figure text-lg font-semibold">{formatClp(detail.paidAmount)}</dd></div>
+                    <div className="min-[360px]:col-span-2"><dt className="text-xs text-muted-foreground">Pendiente</dt><dd className="money-figure text-2xl font-semibold">{formatClp(detail.debt.outstandingAmount)}</dd></div>
+                  </dl>
+                  <DebtProgressBar progressPercent={detail.progressPercent} />
                   <Separator />
                   <dl className="grid grid-cols-1 gap-3 text-sm min-[360px]:grid-cols-2">
                     <div>

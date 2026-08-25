@@ -157,6 +157,8 @@ const debt: Debt = {
 
 const debtDetail: DebtDetail = {
   debt,
+  paidAmount: 25_000,
+  progressPercent: 25,
   schedule: {
     remainingInstallments: 3,
     nextPaymentDate: asCivilDate("2026-08-31"),
@@ -189,7 +191,12 @@ function service(
 function debtService(overrides: Partial<DebtUseCasesPort> = {}): DebtUseCasesPort {
   return {
     listDebts: vi.fn().mockResolvedValue([
-      { debt, schedule: debtDetail.schedule },
+      {
+        debt,
+        schedule: debtDetail.schedule,
+        paidAmount: debtDetail.paidAmount,
+        progressPercent: debtDetail.progressPercent,
+      },
     ]),
     getDebtDetail: vi.fn().mockResolvedValue(debtDetail),
     getPaymentFormOptions: vi.fn().mockResolvedValue({

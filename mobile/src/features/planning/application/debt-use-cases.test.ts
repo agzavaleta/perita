@@ -113,11 +113,68 @@ describe("DebtUseCases", () => {
       }),
     ])
     const [item] = await debts.listDebts()
+    expect(item).toMatchObject({ paidAmount: 0, progressPercent: 0 })
     expect(item?.schedule).toEqual({
       remainingInstallments: 4,
       nextPaymentDate: "2026-08-31",
       estimatedEndDate: "2026-11-30",
     })
+  })
+
+  it("creates a partially paid opening without operations, movements or account impact", async () => {
+    const accountsBefore = await repositories.accounts.getAll()
+    const debt = await debts.createDebt({
+      name: "Crédito anterior",
+      totalAmount: 1_000_000,
+      currentOutstandingAmount: 600_000,
+      monthlyPaymentAmount: 100_000,
+    })
+
+    expect(debt).toMatchObject({
+      totalAmount: 1_000_000,
+      openingOutstanding: 600_000,
+      outstandingAmount: 600_000,
+    })
+    expect(await repositories.periodOpenings.listByPeriod(PERIOD_ID)).toEqual([
+      expect.objectContaining({
+        targetType: "debt",
+        targetId: debt.id,
+        openingAmount: 600_000,
+      }),
+    ])
+    expect(await repositories.operations.count()).toBe(0)
+    expect(await repositories.movements.count()).toBe(0)
+    expect(await repositories.accounts.getAll()).toEqual(accountsBefore)
+    expect((await debts.listDebts())[0]).toMatchObject({
+      paidAmount: 400_000,
+      progressPercent: 40,
+    })
+    expect(await debts.getDebtDetail(debt.id)).toMatchObject({
+      paidAmount: 400_000,
+      progressPercent: 40,
+    })
+  })
+
+  it("rejects an informed opening outstanding amount outside its valid range", async () => {
+    const draft = {
+      name: "Inválida",
+      totalAmount: 100_000,
+      monthlyPaymentAmount: 25_000,
+    }
+    await expect(
+      debts.createDebt({ ...draft, currentOutstandingAmount: 100_001 }),
+    ).rejects.toMatchObject({
+      code: "invalid_amount",
+      message: "El saldo pendiente no puede superar el total de la deuda.",
+    })
+    await expect(
+      debts.createDebt({ ...draft, currentOutstandingAmount: 0 }),
+    ).rejects.toMatchObject({ code: "invalid_amount" })
+    await expect(
+      debts.createDebt({ ...draft, currentOutstandingAmount: -1 }),
+    ).rejects.toMatchObject({ code: "invalid_amount" })
+    expect(await repositories.debts.count()).toBe(0)
+    expect(await repositories.periodOpenings.count()).toBe(0)
   })
 
   it("creates a debt with optional due date and payment day", async () => {
@@ -304,6 +361,78 @@ describe("DebtUseCases", () => {
     const detail = await debts.getDebtDetail(debt.id)
     expect(detail.payments[0]?.operation).toMatchObject({ status: "voided", revision: 3 })
     expect(detail.payments[0]?.revisions).toHaveLength(2)
+  })
+
+  it("recalculates partial-opening progress after payment edit and void", async () => {
+    const debt = await debts.createDebt({
+      name: "Crédito anterior",
+      totalAmount: 1_000_000,
+      currentOutstandingAmount: 600_000,
+      monthlyPaymentAmount: 100_000,
+    })
+    const payment = await debts.registerPayment({
+      debtId: debt.id,
+      accountId: ACCOUNT_A,
+      operationDate: TODAY,
+      amount: 100_000,
+    })
+    expect(await debts.getDebtDetail(debt.id)).toMatchObject({
+      debt: { outstandingAmount: 500_000 },
+      paidAmount: 500_000,
+      progressPercent: 50,
+    })
+
+    const edited = await debts.editPayment({
+      debtId: debt.id,
+      operationId: payment.operation.id,
+      expectedRevision: payment.operation.revision,
+      accountId: ACCOUNT_A,
+      operationDate: TODAY,
+      amount: 150_000,
+    })
+    expect(await debts.getDebtDetail(debt.id)).toMatchObject({
+      debt: { outstandingAmount: 450_000 },
+      paidAmount: 550_000,
+      progressPercent: 55,
+    })
+
+    await debts.voidPayment(edited.operation.id, edited.operation.revision)
+    expect(await debts.getDebtDetail(debt.id)).toMatchObject({
+      debt: { outstandingAmount: 600_000 },
+      paidAmount: 400_000,
+      progressPercent: 40,
+    })
+  })
+
+  it("preserves pre-Perita and posted paid amounts when adjusting the total", async () => {
+    const debt = await debts.createDebt({
+      name: "Crédito anterior",
+      totalAmount: 1_000_000,
+      currentOutstandingAmount: 600_000,
+      monthlyPaymentAmount: 100_000,
+    })
+    await debts.registerPayment({
+      debtId: debt.id,
+      accountId: ACCOUNT_A,
+      operationDate: TODAY,
+      amount: 100_000,
+    })
+    const current = await repositories.debts.get(debt.id)
+    if (!current) throw new Error("fixture Debt missing")
+    const adjusted = await debts.adjustDebtTotal(
+      debt.id,
+      current.revision,
+      TODAY,
+      1_200_000,
+    )
+    expect(adjusted).toMatchObject({
+      totalAmount: 1_200_000,
+      openingOutstanding: 600_000,
+      outstandingAmount: 700_000,
+    })
+    const detail = await debts.getDebtDetail(debt.id)
+    expect(detail.paidAmount).toBe(500_000)
+    expect(detail.progressPercent).toBeCloseTo(41.67, 2)
   })
 
   it("edits planning fields separately and adjusts total against valid posted payments", async () => {

@@ -9,6 +9,7 @@ import {
   assertDebtInvariant,
   assertNewDebtOpening,
   assertOperationMovementInvariant,
+  deriveDebtProgress,
   deriveDebtSchedule,
   type DebtSchedule,
 } from "@/domain/invariants"
@@ -38,6 +39,7 @@ import type { DebtOperationMutation, PeritaRepositories } from "@/data/repositor
 export interface DebtDraft {
   readonly name: string
   readonly totalAmount: number
+  readonly currentOutstandingAmount?: number | null
   readonly dueDate?: CivilDate | null
   readonly monthlyPaymentAmount: number
   readonly paymentDay?: number | null
@@ -75,6 +77,8 @@ export interface DebtPaymentItem {
 export interface DebtListItem {
   readonly debt: Debt
   readonly schedule: DebtSchedule
+  readonly paidAmount: number
+  readonly progressPercent: number
 }
 
 export interface DebtDetail extends DebtListItem {
@@ -181,6 +185,21 @@ function positiveAmount(value: number) {
   }
 }
 
+function openingOutstandingAmount(
+  value: number | null | undefined,
+  totalAmount: number,
+) {
+  if (value === null || value === undefined) return asClpAmount(totalAmount)
+  const outstanding = positiveAmount(value)
+  if (outstanding > totalAmount) {
+    throw new DebtUseCaseError(
+      "invalid_amount",
+      "El saldo pendiente no puede superar el total de la deuda.",
+    )
+  }
+  return asClpAmount(outstanding)
+}
+
 function optionalPaymentDay(value: number | null | undefined) {
   if (value === null || value === undefined) return null
   if (!Number.isSafeInteger(value) || value < 1 || value > 31) {
@@ -218,7 +237,11 @@ export class DebtUseCases implements DebtUseCasesPort {
     const currentDate = this.today()
     return (await this.repositories.debts.getAll())
       .map(assertDebtInvariant)
-      .map((debt) => ({ debt, schedule: deriveDebtSchedule(debt, currentDate) }))
+      .map((debt) => ({
+        debt,
+        schedule: deriveDebtSchedule(debt, currentDate),
+        ...deriveDebtProgress(debt),
+      }))
       .toSorted((left, right) => {
         if (left.debt.paymentStatus !== right.debt.paymentStatus) {
           return left.debt.paymentStatus === "paid" ? 1 : -1
@@ -260,6 +283,7 @@ export class DebtUseCases implements DebtUseCasesPort {
     return {
       debt,
       schedule: deriveDebtSchedule(debt, this.today()),
+      ...deriveDebtProgress(debt),
       payments: payments.toSorted((a, b) =>
         b.operation.operationDate.localeCompare(a.operation.operationDate),
       ),
@@ -281,18 +305,22 @@ export class DebtUseCases implements DebtUseCasesPort {
     const period = await this.requireOpenPeriod()
     const occurredAt = this.now()
     const totalAmount = positiveAmount(input.totalAmount)
+    const openingOutstanding = openingOutstandingAmount(
+      input.currentOutstandingAmount,
+      totalAmount,
+    )
     const dueDate = optionalDueDate(input.dueDate)
     const debt = assertDebtInvariant({
       id: this.createId(),
       name: requiredName(input.name),
       totalAmount,
-      openingOutstanding: asClpAmount(totalAmount),
-      outstandingAmount: asClpAmount(totalAmount),
+      openingOutstanding,
+      outstandingAmount: openingOutstanding,
       dueDate,
       monthlyPaymentAmount: positiveAmount(input.monthlyPaymentAmount),
       paymentDay: optionalPaymentDay(input.paymentDay),
       lifecycleStatus: "active",
-      paymentStatus: this.status(totalAmount, dueDate),
+      paymentStatus: this.status(openingOutstanding, dueDate),
       revision: asRevision(1),
       createdAt: occurredAt,
       updatedAt: occurredAt,
@@ -302,7 +330,7 @@ export class DebtUseCases implements DebtUseCasesPort {
       periodId: period.id,
       targetType: "debt",
       targetId: debt.id,
-      openingAmount: asClpAmount(totalAmount),
+      openingAmount: openingOutstanding,
     }
     assertNewDebtOpening(debt, opening, period.id)
     const auditEvent = this.audit("created", null, debt, period.id, "debt.create", occurredAt)
@@ -556,15 +584,19 @@ export class DebtUseCases implements DebtUseCasesPort {
           operation.status === "posted" &&
           operation.details.debtId === debtId,
       )
-    const paid = postedPayments.reduce((sum, operation) => sum + operation.amount, 0)
+    const postedPaymentsTotal = postedPayments.reduce(
+      (sum, operation) => sum + operation.amount,
+      0,
+    )
+    const { paidAmount } = deriveDebtProgress(debt)
     const newTotalAmount = positiveAmount(newTotalAmountValue)
-    if (newTotalAmount < paid) {
+    if (newTotalAmount < paidAmount) {
       throw new DebtUseCaseError(
         "invalid_amount",
-        "El total no puede ser menor que los pagos vigentes.",
+        "El total no puede ser menor que el monto ya pagado.",
       )
     }
-    const newOutstandingAmount = asClpAmount(newTotalAmount - paid)
+    const newOutstandingAmount = asClpAmount(newTotalAmount - paidAmount)
     const delta = newOutstandingAmount - debt.outstandingAmount
     if (delta === 0) throw new DebtUseCaseError("no_changes", "El nuevo total no produce cambios.")
     const occurredAt = this.now()
@@ -580,7 +612,7 @@ export class DebtUseCases implements DebtUseCasesPort {
         newTotalAmount,
         previousOutstandingAmount: debt.outstandingAmount,
         newOutstandingAmount,
-        validPostedPaymentsTotal: asClpAmount(paid),
+        validPostedPaymentsTotal: asClpAmount(postedPaymentsTotal),
       },
       status: "posted",
       voidedAt: null,

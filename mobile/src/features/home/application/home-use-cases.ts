@@ -1,5 +1,5 @@
 import type { Account, Debt, SavingsGoal } from "@/domain/entities"
-import { deriveDebtSchedule } from "@/domain/invariants"
+import { deriveDebtProgress, deriveDebtSchedule } from "@/domain/invariants"
 import { deriveMonthlySummary } from "@/domain/monthly-close"
 import type { DebtSchedule, MonthlySummary, Period } from "@/domain"
 import {
@@ -80,15 +80,6 @@ function checkedSum(values: readonly number[], allowNegative = false) {
   return asClpAmount(total, { allowNegative })
 }
 
-export function deriveDebtProgressPercent(
-  totalAmount: number,
-  outstandingAmount: number,
-) {
-  if (!Number.isFinite(totalAmount) || totalAmount <= 0) return 0
-  const paidAmount = totalAmount - outstandingAmount
-  return Math.min(100, Math.max(0, (paidAmount / totalAmount) * 100))
-}
-
 export class HomeUseCases implements HomeUseCasesPort {
   private readonly repositories: PeritaRepositories
   private readonly today: () => CivilDate
@@ -165,10 +156,7 @@ export class HomeUseCases implements HomeUseCasesPort {
       .map((debt) => ({
         debt,
         schedule: deriveDebtSchedule(debt, currentDate),
-        progressPercent: deriveDebtProgressPercent(
-          debt.totalAmount,
-          debt.outstandingAmount,
-        ),
+        progressPercent: deriveDebtProgress(debt).progressPercent,
       }))
       .toSorted((left, right) => {
         if (left.debt.paymentStatus !== right.debt.paymentStatus) {

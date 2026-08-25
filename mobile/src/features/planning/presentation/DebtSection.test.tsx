@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeAll, describe, expect, it, vi } from "vitest"
 
 import type { Account, Debt } from "@/domain/entities"
+import { deriveDebtProgress } from "@/domain/invariants"
 import {
   asCivilDate,
   asClpAmount,
@@ -67,6 +68,7 @@ function debt(overrides: Partial<Debt> = {}): Debt {
 function listItem(current = debt()): DebtListItem {
   return {
     debt: current,
+    ...deriveDebtProgress(current),
     schedule: {
       remainingInstallments: 3,
       nextPaymentDate: null,
@@ -150,6 +152,7 @@ describe("DebtSection C5B", () => {
       expect(createDebt).toHaveBeenCalledWith({
         name: "Crédito personal",
         totalAmount: 100_000,
+        currentOutstandingAmount: null,
         dueDate: null,
         monthlyPaymentAmount: 25_000,
         paymentDay: null,
@@ -187,6 +190,7 @@ describe("DebtSection C5B", () => {
     await waitFor(() =>
       expect(createDebt).toHaveBeenCalledWith(
         expect.objectContaining({
+          currentOutstandingAmount: null,
           dueDate: "2026-12-31",
           monthlyPaymentAmount: 30_000,
           paymentDay: 15,
@@ -211,6 +215,47 @@ describe("DebtSection C5B", () => {
     expect(createDebt).not.toHaveBeenCalled()
   })
 
+  it("creates with an optional current outstanding amount and blocks invalid ranges", async () => {
+    const createDebt = vi.fn().mockResolvedValue(debt())
+    const api = service({ items: [], createDebt })
+    await openNewDebt(api)
+
+    expect(
+      screen.getByText("Úsalo si ya pagaste parte de esta deuda."),
+    ).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Nombre"), {
+      target: { value: "Crédito anterior" },
+    })
+    fireEvent.change(screen.getByLabelText("Total"), {
+      target: { value: "1000000" },
+    })
+    fireEvent.change(
+      screen.getByLabelText("Saldo pendiente actual (opcional)"),
+      { target: { value: "1000001" } },
+    )
+    fireEvent.change(screen.getByLabelText("Cuota mensual"), {
+      target: { value: "100000" },
+    })
+    expect(
+      screen.getByText("El saldo pendiente no puede superar el total de la deuda."),
+    ).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Guardar" })).toBeDisabled()
+
+    fireEvent.change(
+      screen.getByLabelText("Saldo pendiente actual (opcional)"),
+      { target: { value: "600000" } },
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Guardar" }))
+    await waitFor(() =>
+      expect(createDebt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          totalAmount: 1_000_000,
+          currentOutstandingAmount: 600_000,
+        }),
+      ),
+    )
+  })
+
   it("prefills editing values and permits clearing due date and payment day", async () => {
     const current = debt({
       dueDate: asCivilDate("2026-12-31"),
@@ -228,6 +273,9 @@ describe("DebtSection C5B", () => {
       "2026-12-31",
     )
     expect(screen.getByLabelText("Día de pago (opcional)")).toHaveValue(15)
+    expect(
+      screen.queryByLabelText("Saldo pendiente actual (opcional)"),
+    ).toBeNull()
     fireEvent.click(
       screen.getByRole("switch", { name: "Tiene fecha de vencimiento" }),
     )
@@ -277,12 +325,38 @@ describe("DebtSection C5B", () => {
     await openDebtDetail(service({ current, debtDetail }))
     const dialog = screen.getByRole("dialog")
 
-    expect(within(dialog).getByText("$25.000")).toBeInTheDocument()
+    expect(within(dialog).getAllByText("$25.000")).toHaveLength(2)
     expect(within(dialog).getByText("31-12-2026")).toBeInTheDocument()
     expect(within(dialog).getByText("Día 15")).toBeInTheDocument()
     expect(within(dialog).getByText("3")).toBeInTheDocument()
     expect(within(dialog).getByText("15-09-2026")).toBeInTheDocument()
     expect(within(dialog).getByText("15-11-2026")).toBeInTheDocument()
+  })
+
+  it("shows derived paid progress in the debt card and detail", async () => {
+    const current = debt({
+      totalAmount: asPositiveClpAmount(1_000_000),
+      openingOutstanding: asClpAmount(600_000),
+      outstandingAmount: asClpAmount(600_000),
+    })
+    const api = service({ current })
+    render(<DebtSection useCases={api} />)
+
+    expect(await screen.findByText("40% pagado")).toBeInTheDocument()
+    expect(
+      screen.getByRole("progressbar", { name: "Progreso de pago" }),
+    ).toHaveAttribute("aria-valuenow", "40")
+    fireEvent.click(
+      screen.getByRole("button", { name: "Ver detalle de Crédito" }),
+    )
+    const dialog = await screen.findByRole("dialog")
+    expect(within(dialog).getByText("Total")).toBeInTheDocument()
+    expect(within(dialog).getByText("Pagado")).toBeInTheDocument()
+    expect(within(dialog).getByText("Pendiente")).toBeInTheDocument()
+    expect(within(dialog).getByText("$1.000.000")).toBeInTheDocument()
+    expect(within(dialog).getByText("$400.000")).toBeInTheDocument()
+    expect(within(dialog).getByText("$600.000")).toBeInTheDocument()
+    expect(within(dialog).getByText("40% pagado")).toBeInTheDocument()
   })
 
   it("shows unscheduled labels, remaining installments, and em dashes", async () => {

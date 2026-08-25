@@ -14,10 +14,8 @@ import {
 } from "@/domain/primitives"
 import { openPeritaDatabase, type PeritaDatabase } from "@/data/database"
 import { createRepositories, type PeritaRepositories } from "@/data/repositories"
-import {
-  deriveDebtProgressPercent,
-  HomeUseCases,
-} from "@/features/home/application/home-use-cases"
+import { deriveDebtProgress } from "@/domain/invariants"
+import { HomeUseCases } from "@/features/home/application/home-use-cases"
 import { MovementUseCases } from "@/features/movements/application/movement-use-cases"
 import { DebtUseCases } from "@/features/planning/application/debt-use-cases"
 
@@ -223,15 +221,24 @@ describe("HomeUseCases", () => {
   })
 })
 
-describe("deriveDebtProgressPercent", () => {
+describe("deriveDebtProgress", () => {
   it("derives empty, partial and paid debt progress", () => {
-    expect(deriveDebtProgressPercent(100_000, 100_000)).toBe(0)
-    expect(deriveDebtProgressPercent(100_000, 70_000)).toBe(30)
-    expect(deriveDebtProgressPercent(100_000, 0)).toBe(100)
+    expect(deriveDebtProgress({ totalAmount: asPositiveClpAmount(100_000), outstandingAmount: asClpAmount(100_000) }))
+      .toEqual({ paidAmount: 0, progressPercent: 0 })
+    expect(deriveDebtProgress({ totalAmount: asPositiveClpAmount(100_000), outstandingAmount: asClpAmount(70_000) }))
+      .toEqual({ paidAmount: 30_000, progressPercent: 30 })
+    expect(deriveDebtProgress({ totalAmount: asPositiveClpAmount(100_000), outstandingAmount: asClpAmount(0) }))
+      .toEqual({ paidAmount: 100_000, progressPercent: 100 })
   })
 
   it("clamps inconsistent amounts to the visual range", () => {
-    expect(deriveDebtProgressPercent(100_000, 120_000)).toBe(0)
-    expect(deriveDebtProgressPercent(100_000, -20_000)).toBe(100)
+    expect(
+      deriveDebtProgress({ totalAmount: asPositiveClpAmount(100_000), outstandingAmount: asClpAmount(120_000) })
+        .progressPercent,
+    ).toBe(0)
+    expect(
+      deriveDebtProgress({ totalAmount: asPositiveClpAmount(100_000), outstandingAmount: asClpAmount(-20_000, { allowNegative: true }) })
+        .progressPercent,
+    ).toBe(100)
   })
 })
