@@ -13,6 +13,8 @@ import type {
   Movement,
   Operation,
   OperationRevision,
+  SavingsDepositOperation,
+  SavingsWithdrawalOperation,
 } from "@/domain/operations"
 import type {
   Period,
@@ -355,6 +357,14 @@ export interface InternalTransferMutation {
   readonly operationRevision?: OperationRevision
 }
 
+export interface SavingsGoalMovementMutation {
+  readonly period: ExpectedRecordState
+  readonly expectedSavingsGoal: ExpectedRecordState
+  readonly savingsGoal: SavingsGoal
+  readonly operation: SavingsDepositOperation | SavingsWithdrawalOperation
+  readonly movement: Movement
+}
+
 export interface DebtOperationMutation {
   readonly kind: "create" | "change"
   readonly period: ExpectedRecordState
@@ -405,6 +415,7 @@ export interface FinancialOperationRepository
   listByType(periodId: EntityId, type: Operation["type"]): Promise<Operation[]>
   commit(mutation: FinancialOperationMutation): Promise<void>
   commitTransfer(mutation: InternalTransferMutation): Promise<void>
+  commitSavingsGoalMovement(mutation: SavingsGoalMovementMutation): Promise<void>
   commitDebt(mutation: DebtOperationMutation): Promise<void>
 }
 
@@ -770,6 +781,35 @@ class IndexedDbOperationRepository
         await store(STORE_NAMES.operationRevisions).add(
           mutation.operationRevision,
         )
+      },
+    )
+  }
+
+  commitSavingsGoalMovement(mutation: SavingsGoalMovementMutation) {
+    return this.database.transaction(
+      [
+        STORE_NAMES.periods,
+        STORE_NAMES.savingsGoals,
+        STORE_NAMES.operations,
+        STORE_NAMES.movements,
+      ],
+      "readwrite",
+      async ({ store }) => {
+        const period = await store(STORE_NAMES.periods).get(mutation.period.id)
+        assertStoredRevision(period, mutation.period, "Period")
+        if (period?.status !== "open") {
+          throw new PersistenceError("conflict", "The active Period is closed")
+        }
+        assertStoredRevision(
+          await store(STORE_NAMES.savingsGoals).get(
+            mutation.expectedSavingsGoal.id,
+          ),
+          mutation.expectedSavingsGoal,
+          "SavingsGoal",
+        )
+        await store(STORE_NAMES.savingsGoals).put(mutation.savingsGoal)
+        await store(STORE_NAMES.operations).add(mutation.operation)
+        await store(STORE_NAMES.movements).add(mutation.movement)
       },
     )
   }

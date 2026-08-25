@@ -18,6 +18,8 @@ import type {
   Operation,
   OperationRevision,
   SalaryReceiptOperation,
+  SavingsDepositOperation,
+  SavingsWithdrawalOperation,
   TransferEndpointType,
   TransferOperation,
   VariableExpenseOperation,
@@ -140,6 +142,20 @@ export interface TransferDraft {
   readonly observation?: string | null
 }
 
+export interface SavingsMovementDraft {
+  readonly goalId: EntityId
+  readonly operationDate: CivilDate
+  readonly amount: number
+  readonly concept?: string | null
+  readonly observation?: string | null
+}
+
+export interface SavingsMovementResult {
+  readonly goal: SavingsGoal
+  readonly operation: SavingsDepositOperation | SavingsWithdrawalOperation
+  readonly movement: Movement
+}
+
 export interface EditTransferInput extends TransferDraft {
   readonly operationId: EntityId
   readonly expectedRevision: Revision
@@ -162,6 +178,7 @@ export interface TransferFormOptions {
 }
 
 export interface MovementUseCasesPort {
+  getCurrentDate(): CivilDate
   getFormOptions(): Promise<MovementFormOptions>
   getTransferFormOptions(): Promise<TransferFormOptions>
   listMovements(filters?: MovementFilters): Promise<MovementListItem[]>
@@ -172,6 +189,10 @@ export interface MovementUseCasesPort {
     input: FixedExpensePaymentDraft,
   ): Promise<MovementListItem>
   registerTransfer(input: TransferDraft): Promise<MovementListItem>
+  registerSavingsDeposit(input: SavingsMovementDraft): Promise<SavingsMovementResult>
+  registerSavingsWithdrawal(
+    input: SavingsMovementDraft,
+  ): Promise<SavingsMovementResult>
   editMovement(input: EditMovementInput): Promise<MovementListItem>
   editTransfer(input: EditTransferInput): Promise<MovementListItem>
   voidMovement(input: VoidMovementInput): Promise<MovementListItem>
@@ -349,6 +370,10 @@ export class MovementUseCases implements MovementUseCasesPort {
       ),
       currentDate: this.today(),
     }
+  }
+
+  getCurrentDate() {
+    return this.today()
   }
 
   async getTransferFormOptions() {
@@ -690,6 +715,14 @@ export class MovementUseCases implements MovementUseCasesPort {
       movements,
       `${source.name} → ${destination.name}`,
     )
+  }
+
+  registerSavingsDeposit(input: SavingsMovementDraft) {
+    return this.registerSavingsGoalMovement(input, "savings_deposit")
+  }
+
+  registerSavingsWithdrawal(input: SavingsMovementDraft) {
+    return this.registerSavingsGoalMovement(input, "savings_withdrawal")
   }
 
   async editTransfer(input: EditTransferInput) {
@@ -1173,6 +1206,90 @@ export class MovementUseCases implements MovementUseCasesPort {
     ]
     assertOperationMovementInvariant(operation, movements)
     return movements
+  }
+
+  private async registerSavingsGoalMovement(
+    input: SavingsMovementDraft,
+    type: "savings_deposit" | "savings_withdrawal",
+  ): Promise<SavingsMovementResult> {
+    const period = await this.requireOpenPeriod()
+    const goal = await this.requireSavingsGoal(input.goalId)
+    const amount = positiveAmount(input.amount)
+    if (type === "savings_withdrawal" && amount > goal.currentBalance) {
+      throw new MovementUseCaseError(
+        "insufficient_balance",
+        "El retiro no puede superar el saldo disponible de la meta.",
+      )
+    }
+    const occurredAt = this.now()
+    const common = {
+      id: this.createId(),
+      periodId: period.id,
+      operationDate: input.operationDate,
+      amount,
+      details: {
+        goalId: goal.id,
+        concept: optionalText(input.concept),
+        observation: optionalText(input.observation),
+      },
+      status: "posted" as const,
+      voidedAt: null,
+      voidReason: null,
+      revision: asRevision(1),
+      createdAt: occurredAt,
+      updatedAt: occurredAt,
+    }
+    const operation: SavingsDepositOperation | SavingsWithdrawalOperation =
+      type === "savings_deposit"
+        ? { ...common, type: "savings_deposit" }
+        : { ...common, type: "savings_withdrawal" }
+    try {
+      assertOperationDateContext(operation, period, this.today())
+    } catch {
+      throw new MovementUseCaseError(
+        "invalid_date",
+        "La fecha debe pertenecer al período abierto y no puede ser futura.",
+      )
+    }
+    const movement: Movement = {
+      id: this.createId(),
+      operationId: operation.id,
+      periodId: period.id,
+      targetType: "savings_goal",
+      targetId: goal.id,
+      effectType: "asset_balance",
+      delta: asNonZeroClpDelta(
+        type === "savings_deposit" ? amount : -amount,
+      ),
+      status: "posted",
+      createdAt: occurredAt,
+      updatedAt: occurredAt,
+    }
+    assertOperationMovementInvariant(operation, [movement])
+    const updatedGoal = applySavingsGoalMovementChange({
+      goal,
+      previousDelta: null,
+      nextDelta: movement.delta,
+      occurredAt,
+    })
+    try {
+      await this.repositories.operations.commitSavingsGoalMovement({
+        period: { id: period.id, revision: period.revision },
+        expectedSavingsGoal: { id: goal.id, revision: goal.revision },
+        savingsGoal: updatedGoal,
+        operation,
+        movement,
+      })
+    } catch (error) {
+      if (error instanceof PersistenceError && error.code === "conflict") {
+        throw new MovementUseCaseError(
+          "revision_conflict",
+          "La meta cambió antes de guardar. Vuelve a intentarlo.",
+        )
+      }
+      throw error
+    }
+    return { goal: updatedGoal, operation, movement }
   }
 
   private async loadTransferTargets(

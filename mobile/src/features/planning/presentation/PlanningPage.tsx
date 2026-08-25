@@ -1,6 +1,8 @@
 import { lazy, Suspense, useEffect, useState } from "react"
 import {
+  ArrowDownToLine,
   ArrowRightLeft,
+  ArrowUpFromLine,
   CalendarCheck,
   CalendarClock,
   ChevronRight,
@@ -46,7 +48,12 @@ import {
 } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import type { SavingsGoal } from "@/domain/entities"
+import type { Operation } from "@/domain/operations"
 import type { MovementUseCasesPort } from "@/features/movements/application/movement-use-cases"
+import {
+  SavingsMovementForm,
+  type SavingsMovementMode,
+} from "@/features/movements/presentation/SavingsMovementForm"
 import {
   createPlanningModule,
   type PlanningModule,
@@ -105,6 +112,34 @@ function message(error: unknown) {
   return error instanceof Error
     ? error.message
     : "No fue posible completar la acción."
+}
+
+function savingsMovementTitle(operation: Operation) {
+  switch (operation.type) {
+    case "savings_deposit":
+      return "Depósito"
+    case "savings_withdrawal":
+      return "Retiro"
+    case "transfer":
+      return "Mover dinero"
+    case "balance_adjustment":
+      return "Ajuste de saldo"
+    default:
+      return "Movimiento"
+  }
+}
+
+function savingsMovementConcept(operation: Operation) {
+  switch (operation.type) {
+    case "savings_deposit":
+    case "savings_withdrawal":
+    case "transfer":
+      return operation.details.concept
+    case "balance_adjustment":
+      return operation.details.reason
+    default:
+      return null
+  }
 }
 
 function Progress({ goal }: { readonly goal: SavingsGoal }) {
@@ -237,12 +272,16 @@ function GoalDetailSheet({
   detail,
   onClose,
   onEdit,
+  onDeposit,
+  onWithdraw,
   onMoveMoney,
   onRequestClose,
 }: {
   readonly detail: SavingsGoalDetail
   readonly onClose: () => void
   readonly onEdit: () => void
+  readonly onDeposit: () => void
+  readonly onWithdraw: () => void
   readonly onMoveMoney: () => void
   readonly onRequestClose: () => void
 }) {
@@ -290,8 +329,14 @@ function GoalDetailSheet({
 
           {goal.lifecycleStatus === "active" ? (
             <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
-              <Button type="button" size="lg" onClick={onMoveMoney}>
-                <ArrowRightLeft aria-hidden="true" /> Aportar
+              <Button type="button" size="lg" onClick={onDeposit}>
+                <ArrowDownToLine aria-hidden="true" /> Depositar
+              </Button>
+              <Button type="button" variant="outline" size="lg" onClick={onWithdraw}>
+                <ArrowUpFromLine aria-hidden="true" /> Retirar
+              </Button>
+              <Button type="button" variant="outline" size="lg" onClick={onMoveMoney}>
+                <ArrowRightLeft aria-hidden="true" /> Mover dinero
               </Button>
               <Button type="button" variant="outline" size="lg" onClick={onEdit}>
                 <Pencil aria-hidden="true" /> Editar
@@ -312,7 +357,12 @@ function GoalDetailSheet({
                   className="flex items-center justify-between gap-3 border-b py-2 text-sm last:border-b-0"
                 >
                   <div>
-                    <p>{operation.type === "transfer" ? "Mover dinero" : "Ahorro"}</p>
+                    <p>{savingsMovementTitle(operation)}</p>
+                    {savingsMovementConcept(operation) ? (
+                      <p className="text-xs text-muted-foreground">
+                        {savingsMovementConcept(operation)}
+                      </p>
+                    ) : null}
                     <p className="text-xs text-muted-foreground">
                       {formatDate(operation.operationDate)}
                       {operation.status === "voided" ? " · Anulado" : ""}
@@ -468,6 +518,10 @@ export function PlanningPage({
   const [refreshKey, setRefreshKey] = useState(0)
   const [goalEditor, setGoalEditor] = useState<SavingsGoal | "new" | null>(null)
   const [goalDetail, setGoalDetail] = useState<SavingsGoalDetail | null>(null)
+  const [savingsMovementTarget, setSavingsMovementTarget] = useState<{
+    readonly goal: SavingsGoal
+    readonly mode: SavingsMovementMode
+  } | null>(null)
   const [closeTarget, setCloseTarget] = useState<SavingsGoal | null>(null)
   const [fixedEditor, setFixedEditor] = useState<FixedExpenseEditor | null>(null)
   const [fixedDetail, setFixedDetail] = useState<FixedExpenseListItem | null>(null)
@@ -527,6 +581,7 @@ export function PlanningPage({
     setError(null)
     setGoalEditor(null)
     setGoalDetail(null)
+    setSavingsMovementTarget(null)
     setFixedEditor(null)
     setFixedDetail(null)
     setFixedPaymentTarget(null)
@@ -538,6 +593,17 @@ export function PlanningPage({
     setError(null)
     try {
       setGoalDetail(await useCases.getSavingsGoalDetail(goal.id))
+    } catch (cause) {
+      setError(message(cause))
+    }
+  }
+
+  async function refreshGoalAfterSavingsMovement(goalId: SavingsGoal["id"]) {
+    if (!useCases) return
+    setSavingsMovementTarget(null)
+    setRefreshKey((value) => value + 1)
+    try {
+      setGoalDetail(await useCases.getSavingsGoalDetail(goalId))
     } catch (cause) {
       setError(message(cause))
     }
@@ -619,7 +685,7 @@ export function PlanningPage({
           ) : goals.length === 0 ? (
             <EmptyState
               title="Aún no tienes metas"
-              description="Crea una meta y luego usa Mover dinero para aportar."
+              description="Crea una meta para comenzar a registrar tu ahorro."
             />
           ) : (
             <div className="space-y-3">
@@ -698,11 +764,35 @@ export function PlanningPage({
             setGoalEditor(goalDetail.goal)
             setGoalDetail(null)
           }}
+          onDeposit={() => {
+            setSavingsMovementTarget({ goal: goalDetail.goal, mode: "deposit" })
+            setGoalDetail(null)
+          }}
+          onWithdraw={() => {
+            setSavingsMovementTarget({ goal: goalDetail.goal, mode: "withdrawal" })
+            setGoalDetail(null)
+          }}
           onMoveMoney={() => {
             setGoalDetail(null)
             onMoveMoney()
           }}
           onRequestClose={() => setCloseTarget(goalDetail.goal)}
+        />
+      ) : null}
+      {savingsMovementTarget && movementUseCases ? (
+        <SavingsMovementForm
+          key={`${savingsMovementTarget.mode}-${savingsMovementTarget.goal.id}`}
+          goal={savingsMovementTarget.goal}
+          mode={savingsMovementTarget.mode}
+          useCases={movementUseCases}
+          onSaved={() => {
+            void refreshGoalAfterSavingsMovement(savingsMovementTarget.goal.id)
+          }}
+          onClose={() => {
+            const goal = savingsMovementTarget.goal
+            setSavingsMovementTarget(null)
+            void openGoal(goal)
+          }}
         />
       ) : null}
 

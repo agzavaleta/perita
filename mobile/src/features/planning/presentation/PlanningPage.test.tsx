@@ -7,10 +7,12 @@ import type {
   Debt,
   SavingsGoal,
 } from "@/domain/entities"
+import type { Movement, Operation } from "@/domain/operations"
 import {
   asClpAmount,
   asCivilDate,
   asEntityId,
+  asNonZeroClpDelta,
   asPositiveClpAmount,
   asRevision,
   asUtcTimestamp,
@@ -80,6 +82,62 @@ const fixedItem: FixedExpenseListItem = {
   currentInstance: instance,
 }
 const detail: SavingsGoalDetail = { goal, relatedMovements: [] }
+
+function relatedMovement(
+  type: "savings_deposit" | "savings_withdrawal" | "transfer" | "balance_adjustment",
+  index: number,
+  delta: number,
+) {
+  const operationId = asEntityId(
+    `60000000-0000-4000-8000-${String(100 + index).padStart(12, "0")}`,
+  )
+  const details =
+    type === "transfer"
+      ? {
+          sourceType: "account" as const,
+          sourceId: ACCOUNT_ID,
+          destinationType: "savings_goal" as const,
+          destinationId: GOAL_ID,
+          concept: "Desde cuenta",
+          observation: null,
+        }
+      : type === "balance_adjustment"
+        ? { goalId: GOAL_ID, reason: "Saldo informado" }
+        : {
+            goalId: GOAL_ID,
+            concept: type === "savings_deposit" ? "Ahorro extra" : null,
+            observation: null,
+          }
+  const operation = {
+    id: operationId,
+    periodId: PERIOD_ID,
+    type,
+    operationDate: asCivilDate("2026-08-21"),
+    amount: asPositiveClpAmount(Math.abs(delta)),
+    details,
+    status: "posted",
+    voidedAt: null,
+    voidReason: null,
+    revision: asRevision(1),
+    createdAt: NOW,
+    updatedAt: NOW,
+  } as Operation
+  const movement: Movement = {
+    id: asEntityId(
+      `60000000-0000-4000-8000-${String(200 + index).padStart(12, "0")}`,
+    ),
+    operationId,
+    periodId: PERIOD_ID,
+    targetType: "savings_goal",
+    targetId: GOAL_ID,
+    effectType: "asset_balance",
+    delta: asNonZeroClpDelta(delta),
+    status: "posted",
+    createdAt: NOW,
+    updatedAt: NOW,
+  }
+  return { operation, movement }
+}
 
 const debt: Debt = {
   id: DEBT_ID,
@@ -162,6 +220,7 @@ function movementService(
   overrides: Partial<MovementUseCasesPort> = {},
 ): MovementUseCasesPort {
   return {
+    getCurrentDate: vi.fn(() => asCivilDate("2026-08-21")),
     getFormOptions: vi.fn().mockResolvedValue({
       currentDate: asCivilDate("2026-08-21"),
       categories: [],
@@ -184,6 +243,8 @@ function movementService(
     registerExpense: vi.fn(),
     registerFixedExpensePayment: vi.fn(),
     registerTransfer: vi.fn(),
+    registerSavingsDeposit: vi.fn(),
+    registerSavingsWithdrawal: vi.fn(),
     editMovement: vi.fn(),
     editTransfer: vi.fn(),
     voidMovement: vi.fn(),
@@ -192,9 +253,15 @@ function movementService(
 }
 
 describe("PlanningPage", () => {
-  it("shows goal progress and connects its contribution to Mover dinero", async () => {
+  it("shows goal progress and preserves the Mover dinero action", async () => {
     const onMoveMoney = vi.fn()
-    render(<PlanningPage useCases={service()} onMoveMoney={onMoveMoney} />)
+    render(
+      <PlanningPage
+        useCases={service()}
+        movementUseCases={movementService()}
+        onMoveMoney={onMoveMoney}
+      />,
+    )
 
     expect(await screen.findByText("Viaje")).toBeInTheDocument()
     expect(screen.getByRole("img", { name: "Emoji de Viaje" })).toHaveTextContent(
@@ -208,7 +275,9 @@ describe("PlanningPage", () => {
     expect(
       await screen.findAllByRole("img", { name: "Emoji de Viaje" }),
     ).toHaveLength(1)
-    fireEvent.click(await screen.findByRole("button", { name: "Aportar" }))
+    expect(screen.getByRole("button", { name: "Depositar" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Retirar" })).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole("button", { name: "Mover dinero" }))
     expect(onMoveMoney).toHaveBeenCalledOnce()
   })
 
@@ -239,6 +308,76 @@ describe("PlanningPage", () => {
         }),
       ),
     )
+  })
+
+  it("opens deposit and withdrawal forms and refreshes the goal detail", async () => {
+    const getSavingsGoalDetail = vi.fn().mockResolvedValue(detail)
+    const listSavingsGoals = vi.fn().mockResolvedValue([goal])
+    const registerSavingsDeposit = vi.fn().mockResolvedValue({ goal })
+    const registerSavingsWithdrawal = vi.fn().mockResolvedValue({ goal })
+    render(
+      <PlanningPage
+        useCases={service({ getSavingsGoalDetail, listSavingsGoals })}
+        movementUseCases={movementService({
+          registerSavingsDeposit,
+          registerSavingsWithdrawal,
+        })}
+      />,
+    )
+
+    await screen.findByText("Viaje")
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Viaje" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Depositar" }))
+    expect(
+      await screen.findByRole("heading", { name: "Depositar en Viaje" }),
+    ).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Monto"), {
+      target: { value: "100000" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Depositar" }))
+    await waitFor(() => expect(registerSavingsDeposit).toHaveBeenCalledOnce())
+    await waitFor(() => expect(getSavingsGoalDetail).toHaveBeenCalledTimes(2))
+
+    fireEvent.click(await screen.findByRole("button", { name: "Retirar" }))
+    expect(
+      await screen.findByRole("heading", { name: "Retirar de Viaje" }),
+    ).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Monto"), {
+      target: { value: "40000" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Retirar" }))
+    await waitFor(() => expect(registerSavingsWithdrawal).toHaveBeenCalledOnce())
+    await waitFor(() => expect(getSavingsGoalDetail).toHaveBeenCalledTimes(3))
+    expect(listSavingsGoals).toHaveBeenCalledTimes(3)
+  })
+
+  it("labels every related savings movement with its traceable concept", async () => {
+    const historyDetail: SavingsGoalDetail = {
+      goal,
+      relatedMovements: [
+        relatedMovement("savings_deposit", 1, 10_000),
+        relatedMovement("savings_withdrawal", 2, -5_000),
+        relatedMovement("transfer", 3, 20_000),
+        relatedMovement("balance_adjustment", 4, 50_000),
+      ],
+    }
+    render(
+      <PlanningPage
+        useCases={service({
+          getSavingsGoalDetail: vi.fn().mockResolvedValue(historyDetail),
+        })}
+      />,
+    )
+    await screen.findByText("Viaje")
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Viaje" }))
+
+    expect(await screen.findByText("Depósito")).toBeInTheDocument()
+    expect(screen.getByText("Retiro")).toBeInTheDocument()
+    expect(screen.getAllByText("Mover dinero")).not.toHaveLength(0)
+    expect(screen.getByText("Ajuste de saldo")).toBeInTheDocument()
+    expect(screen.getByText("Ahorro extra")).toBeInTheDocument()
+    expect(screen.getByText("Desde cuenta")).toBeInTheDocument()
+    expect(screen.getByText("Saldo informado")).toBeInTheDocument()
   })
 
   it("shows fixed expenses and delegates persistent creation without payment flow", async () => {
