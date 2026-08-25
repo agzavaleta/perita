@@ -5,6 +5,7 @@ import {
   ArrowUpRight,
   ChevronRight,
   Pencil,
+  PiggyBank,
   Plus,
   Scale,
   Search,
@@ -13,6 +14,10 @@ import {
 } from "lucide-react"
 
 import type { EntityId } from "@/domain/primitives"
+import type {
+  SavingsDepositOperation,
+  SavingsWithdrawalOperation,
+} from "@/domain/operations"
 import { EmptyState } from "@/components/states/EmptyState"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { LoadingState } from "@/components/states/LoadingState"
@@ -72,6 +77,10 @@ import {
   type MovementEditor,
 } from "@/features/movements/presentation/MovementForm"
 import {
+  SavingsMovementForm,
+  type SavingsMovementMode,
+} from "@/features/movements/presentation/SavingsMovementForm"
+import {
   TransferForm,
   type TransferEditor,
 } from "@/features/movements/presentation/TransferForm"
@@ -104,6 +113,25 @@ function errorMessage(error: unknown) {
     : "No fue posible completar la acción."
 }
 
+type SavingsOperation = SavingsDepositOperation | SavingsWithdrawalOperation
+
+function isSavingsOperation(
+  operation: MovementListItem["operation"],
+): operation is SavingsOperation {
+  return (
+    operation.type === "savings_deposit" ||
+    operation.type === "savings_withdrawal"
+  )
+}
+
+function targetsGoal(item: MovementListItem) {
+  return (
+    item.kind === "savings" ||
+    (item.operation.type === "balance_adjustment" &&
+      "goalId" in item.operation.details)
+  )
+}
+
 function MovementCard({
   item,
   onOpen,
@@ -114,6 +142,8 @@ function MovementCard({
   const Icon =
     item.kind === "transfer"
       ? ArrowRightLeft
+      : item.kind === "savings"
+        ? PiggyBank
       : item.kind === "adjustment"
         ? Scale
       : item.kind === "income"
@@ -177,11 +207,13 @@ function MovementDetailSheet({
   onClose,
   onEdit,
   onVoid,
+  canChange,
 }: {
   readonly detail: MovementDetail
   readonly onClose: () => void
   readonly onEdit: () => void
   readonly onVoid: () => void
+  readonly canChange: boolean
 }) {
   return (
     <Sheet open onOpenChange={(open) => !open && onClose()}>
@@ -194,6 +226,8 @@ function MovementDetailSheet({
           <SheetDescription>
             {detail.kind === "transfer"
               ? "Movimiento interno"
+              : detail.kind === "savings"
+                ? "Ahorro"
               : detail.kind === "adjustment"
                 ? "Ajuste"
               : detail.kind === "income"
@@ -238,7 +272,11 @@ function MovementDetailSheet({
                 </div>
                 <div className="col-span-2">
                   <dt className="text-muted-foreground">
-                    {detail.kind === "transfer" ? "Recorrido" : "Cuenta"}
+                    {detail.kind === "transfer"
+                      ? "Recorrido"
+                      : targetsGoal(detail)
+                        ? "Meta"
+                        : "Cuenta"}
                   </dt>
                   <dd>{detail.accountName}</dd>
                 </div>
@@ -262,7 +300,7 @@ function MovementDetailSheet({
               ? "Sin cambios anteriores."
               : `${detail.revisions.length} revisiones históricas conservadas.`}
           </p>
-          {detail.operation.status === "posted" && detail.kind !== "adjustment" && (
+          {detail.operation.status === "posted" && canChange && (
             <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
               <Button type="button" variant="outline" size="lg" onClick={onEdit}>
                 <Pencil aria-hidden="true" />
@@ -302,6 +340,11 @@ export function MovementsPage({
   const [accountId, setAccountId] = useState<"all" | EntityId>("all")
   const [editor, setEditor] = useState<MovementEditor | null>(null)
   const [transferEditor, setTransferEditor] = useState<TransferEditor | null>(null)
+  const [savingsEditor, setSavingsEditor] = useState<{
+    readonly goal: TransferFormOptions["savingsGoals"][number]
+    readonly operation: SavingsOperation
+    readonly mode: SavingsMovementMode
+  } | null>(null)
   const [detail, setDetail] = useState<MovementDetail | null>(null)
   const [voidTarget, setVoidTarget] = useState<MovementDetail | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -311,6 +354,13 @@ export function MovementsPage({
       : editor
   const activeTransferEditor =
     initialComposer === "transfer" ? {} : transferEditor
+  const detailSavingsOperation =
+    detail && isSavingsOperation(detail.operation) ? detail.operation : null
+  const detailSavingsGoal = detailSavingsOperation
+    ? transferOptions?.savingsGoals.find(
+        (goal) => goal.id === detailSavingsOperation.details.goalId,
+      ) ?? null
+    : null
 
   useEffect(() => {
     if (injectedUseCases) return
@@ -385,6 +435,7 @@ export function MovementsPage({
   function closeEditor() {
     setEditor(null)
     setTransferEditor(null)
+    setSavingsEditor(null)
     onInitialComposerClose?.()
   }
 
@@ -408,11 +459,19 @@ export function MovementsPage({
     if (!useCases || !voidTarget) return
     setError(null)
     try {
-      await useCases.voidMovement({
-        operationId: voidTarget.operation.id,
-        expectedRevision: voidTarget.operation.revision,
-        reason: "Anulado desde la interfaz",
-      })
+      if (isSavingsOperation(voidTarget.operation)) {
+        await useCases.voidSavingsMovement({
+          operationId: voidTarget.operation.id,
+          expectedRevision: voidTarget.operation.revision,
+          reason: "Anulado desde la interfaz",
+        })
+      } else {
+        await useCases.voidMovement({
+          operationId: voidTarget.operation.id,
+          expectedRevision: voidTarget.operation.revision,
+          reason: "Anulado desde la interfaz",
+        })
+      }
       setDetail(null)
       setRefreshKey((value) => value + 1)
     } catch (cause) {
@@ -431,7 +490,7 @@ export function MovementsPage({
             Movimientos
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Ingresos, gastos, ajustes y movimientos internos del período abierto.
+            Ingresos, gastos, ahorro, ajustes y movimientos internos del período abierto.
           </p>
         </div>
         <Button
@@ -457,7 +516,7 @@ export function MovementsPage({
               aria-label="Buscar movimientos"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Buscar por título, cuenta, motivo o categoría"
+              placeholder="Buscar por título, cuenta, meta, motivo o categoría"
               className="pl-8"
             />
           </div>
@@ -473,6 +532,7 @@ export function MovementsPage({
                   <SelectItem value="all">Todos</SelectItem>
                   <SelectItem value="income">Ingresos</SelectItem>
                   <SelectItem value="expense">Gastos</SelectItem>
+                  <SelectItem value="savings">Ahorro</SelectItem>
                   <SelectItem value="adjustment">Ajustes</SelectItem>
                   <SelectItem value="transfer">Movimientos internos</SelectItem>
                 </SelectContent>
@@ -525,7 +585,7 @@ export function MovementsPage({
           description={
             hasAny
               ? "No se encontraron movimientos que coincidan con los filtros."
-              : "Registra un ingreso, gasto, ajuste o movimiento interno para comenzar."
+              : "Registra un ingreso, gasto, ahorro, ajuste o movimiento interno para comenzar."
           }
         />
       ) : (
@@ -561,14 +621,42 @@ export function MovementsPage({
           onClose={closeEditor}
         />
       )}
-      {detail && !activeEditor && !activeTransferEditor && (
+      {savingsEditor && useCases && (
+        <SavingsMovementForm
+          key={savingsEditor.operation.id}
+          goal={savingsEditor.goal}
+          mode={savingsEditor.mode}
+          operation={savingsEditor.operation}
+          useCases={useCases}
+          onSaved={saved}
+          onClose={closeEditor}
+        />
+      )}
+      {detail && !activeEditor && !activeTransferEditor && !savingsEditor && (
         <MovementDetailSheet
           detail={detail}
+          canChange={
+            detail.kind !== "adjustment" &&
+            (detailSavingsOperation === null || detailSavingsGoal !== null)
+          }
           onClose={() => setDetail(null)}
           onEdit={() => {
             if (detail.kind === "transfer") {
               setTransferEditor({ item: detail })
-            } else if (detail.kind !== "adjustment") {
+            } else if (isSavingsOperation(detail.operation)) {
+              const operation = detail.operation
+              const goal = transferOptions?.savingsGoals.find(
+                (candidate) => candidate.id === operation.details.goalId,
+              )
+              if (goal) {
+                setSavingsEditor({
+                  goal,
+                  operation,
+                  mode:
+                    operation.type === "savings_deposit" ? "deposit" : "withdrawal",
+                })
+              }
+            } else if (detail.kind === "income" || detail.kind === "expense") {
               setEditor({ kind: detail.kind, item: detail })
             }
             setDetail(null)

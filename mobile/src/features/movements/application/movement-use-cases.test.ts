@@ -232,7 +232,63 @@ describe("MovementUseCases", () => {
     expect(withdrawal.movement.delta).toBe(-40_000)
     expect(withdrawal.goal.currentBalance).toBe(110_000)
     expect(await repositories.accounts.getAll()).toEqual(accountsBefore)
-    expect(await useCases.listMovements()).toEqual([])
+    const listed = await useCases.listMovements()
+    expect(listed).toEqual([
+      expect.objectContaining({
+        operation: expect.objectContaining({ type: "savings_deposit" }),
+        kind: "savings",
+        title: "Depósito",
+        accountName: "Casa",
+        signedAmount: 100_000,
+        description: "Ahorro extraordinario · Transferencia externa",
+      }),
+      expect.objectContaining({
+        operation: expect.objectContaining({ type: "savings_withdrawal" }),
+        kind: "savings",
+        title: "Retiro",
+        accountName: "Casa",
+        signedAmount: -40_000,
+      }),
+    ])
+    expect(await useCases.listMovements({ kind: "savings" })).toHaveLength(2)
+    expect(await useCases.listMovements({ kind: "income" })).toEqual([])
+    expect(await useCases.listMovements({ kind: "expense" })).toEqual([])
+    expect(await useCases.listMovements({ query: "casa" })).toHaveLength(2)
+    expect(await useCases.listMovements({ query: "transferencia externa" }))
+      .toHaveLength(1)
+    expect(await useCases.listMovements({ accountId: ACCOUNT_A })).toEqual([])
+    expect(await useCases.getMovementDetail(deposit.operation.id)).toMatchObject({
+      kind: "savings",
+      title: "Depósito",
+      accountName: "Casa",
+      signedAmount: 100_000,
+      revisions: [],
+    })
+
+    const edited = await useCases.editSavingsMovement({
+      operationId: deposit.operation.id,
+      expectedRevision: deposit.operation.revision,
+      operationDate: TODAY,
+      amount: 120_000,
+      concept: "Ahorro editado",
+    })
+    expect(
+      (await useCases.listMovements({ query: "ahorro editado" }))[0],
+    ).toMatchObject({ signedAmount: 120_000 })
+    await useCases.voidSavingsMovement({
+      operationId: withdrawal.operation.id,
+      expectedRevision: withdrawal.operation.revision,
+    })
+    expect(await useCases.listMovements({ status: "voided" })).toEqual([
+      expect.objectContaining({
+        operation: expect.objectContaining({
+          id: withdrawal.operation.id,
+          status: "voided",
+        }),
+        signedAmount: -40_000,
+      }),
+    ])
+    expect(edited.goal.currentBalance).toBe(130_000)
   })
 
   it("moves goal progress between completed and in progress", async () => {
@@ -1045,6 +1101,60 @@ describe("MovementUseCases", () => {
     expect(await useCases.listMovements({ accountId: ACCOUNT_B })).toEqual([])
     expect(await useCases.listMovements({ status: "posted" })).toHaveLength(2)
     expect(await useCases.listMovements({ status: "voided" })).toEqual([])
+  })
+
+  it("lists and resolves a savings-goal balance adjustment without treating it as an account", async () => {
+    const operationId = asEntityId(
+      "30000000-0000-4000-8000-000000000950",
+    )
+    const movementId = asEntityId(
+      "30000000-0000-4000-8000-000000000951",
+    )
+    await repositories.operations.add({
+      id: operationId,
+      periodId: PERIOD_ID,
+      type: "balance_adjustment",
+      operationDate: TODAY,
+      amount: asPositiveClpAmount(25_000),
+      details: { goalId: GOAL_A, reason: "Saldo informado en la meta" },
+      status: "posted",
+      voidedAt: null,
+      voidReason: null,
+      revision: asRevision(1),
+      createdAt: NOW,
+      updatedAt: NOW,
+    })
+    await repositories.movements.add({
+      id: movementId,
+      operationId,
+      periodId: PERIOD_ID,
+      targetType: "savings_goal",
+      targetId: GOAL_A,
+      effectType: "asset_balance",
+      delta: asNonZeroClpDelta(25_000),
+      status: "posted",
+      createdAt: NOW,
+      updatedAt: NOW,
+    })
+
+    expect(await useCases.listMovements({ kind: "adjustment" })).toEqual([
+      expect.objectContaining({
+        kind: "adjustment",
+        title: "Ajuste de saldo",
+        accountName: "Casa",
+        description: "Saldo informado en la meta",
+        signedAmount: 25_000,
+      }),
+    ])
+    expect(await useCases.listMovements({ query: "casa" })).toHaveLength(1)
+    expect(await useCases.listMovements({ accountId: ACCOUNT_A })).toEqual([])
+    expect(await useCases.getMovementDetail(operationId)).toMatchObject({
+      kind: "adjustment",
+      accountName: "Casa",
+      description: "Saldo informado en la meta",
+      signedAmount: 25_000,
+      revisions: [],
+    })
   })
 
   it("moves money through all four approved endpoint combinations without changing assets", async () => {

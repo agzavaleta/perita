@@ -47,14 +47,17 @@ import type {
 
 export type SupportedMovementOperation =
   | AccountBalanceAdjustmentOperation
+  | GoalBalanceAdjustmentOperation
   | SalaryReceiptOperation
   | AdditionalIncomeOperation
   | VariableExpenseOperation
   | FixedExpensePaymentOperation
+  | SavingsDepositOperation
+  | SavingsWithdrawalOperation
   | TransferOperation
 
 export type MovementKind = "income" | "expense" | "transfer"
-export type MovementListKind = MovementKind | "adjustment"
+export type MovementListKind = MovementKind | "adjustment" | "savings"
 
 type AccountBalanceAdjustmentOperation = BalanceAdjustmentOperation & {
   readonly details: {
@@ -64,9 +67,20 @@ type AccountBalanceAdjustmentOperation = BalanceAdjustmentOperation & {
   }
 }
 
+type GoalBalanceAdjustmentOperation = BalanceAdjustmentOperation & {
+  readonly details: {
+    readonly accountId?: never
+    readonly goalId: EntityId
+    readonly reason: string
+  }
+}
+
 type EditableMovementOperation = Exclude<
   SupportedMovementOperation,
-  AccountBalanceAdjustmentOperation
+  | AccountBalanceAdjustmentOperation
+  | GoalBalanceAdjustmentOperation
+  | SavingsDepositOperation
+  | SavingsWithdrawalOperation
 >
 
 export interface MovementListItem {
@@ -299,12 +313,13 @@ function positiveAmount(value: number): PositiveClpAmount {
 
 function isSupported(operation: Operation): operation is SupportedMovementOperation {
   return (
-    (operation.type === "balance_adjustment" &&
-      "accountId" in operation.details) ||
+    operation.type === "balance_adjustment" ||
     operation.type === "salary_receipt" ||
     operation.type === "additional_income" ||
     operation.type === "variable_expense" ||
     operation.type === "fixed_expense_payment" ||
+    operation.type === "savings_deposit" ||
+    operation.type === "savings_withdrawal" ||
     operation.type === "transfer"
   )
 }
@@ -312,17 +327,50 @@ function isSupported(operation: Operation): operation is SupportedMovementOperat
 function isEditable(
   operation: SupportedMovementOperation,
 ): operation is EditableMovementOperation {
-  return operation.type !== "balance_adjustment"
+  return (
+    operation.type !== "balance_adjustment" &&
+    operation.type !== "savings_deposit" &&
+    operation.type !== "savings_withdrawal"
+  )
 }
 
 function operationAccountId(
-  operation: Exclude<SupportedMovementOperation, TransferOperation>,
+  operation:
+    | AccountBalanceAdjustmentOperation
+    | SalaryReceiptOperation
+    | AdditionalIncomeOperation
+    | VariableExpenseOperation
+    | FixedExpensePaymentOperation,
 ) {
   return operation.details.accountId
 }
 
+function operationGoalId(
+  operation:
+    | GoalBalanceAdjustmentOperation
+    | SavingsDepositOperation
+    | SavingsWithdrawalOperation,
+) {
+  return operation.details.goalId
+}
+
+function isGoalOperation(
+  operation: SupportedMovementOperation,
+): operation is
+  | GoalBalanceAdjustmentOperation
+  | SavingsDepositOperation
+  | SavingsWithdrawalOperation {
+  return (
+    operation.type === "savings_deposit" ||
+    operation.type === "savings_withdrawal" ||
+    (operation.type === "balance_adjustment" && "goalId" in operation.details)
+  )
+}
+
 function operationTitle(operation: SupportedMovementOperation) {
   if (operation.type === "balance_adjustment") return "Ajuste de saldo"
+  if (operation.type === "savings_deposit") return "Depósito"
+  if (operation.type === "savings_withdrawal") return "Retiro"
   if (operation.type === "transfer") {
     return operation.details.concept ?? "Movimiento interno"
   }
@@ -336,6 +384,14 @@ function operationTitle(operation: SupportedMovementOperation) {
 
 function operationDescription(operation: SupportedMovementOperation) {
   if (operation.type === "balance_adjustment") return operation.details.reason
+  if (
+    operation.type === "savings_deposit" ||
+    operation.type === "savings_withdrawal"
+  ) {
+    return [operation.details.concept, operation.details.observation]
+      .filter(Boolean)
+      .join(" · ") || null
+  }
   if (operation.type === "transfer") return operation.details.observation
   if (operation.type === "salary_receipt") return null
   if (operation.type === "variable_expense") {
@@ -456,6 +512,10 @@ export class MovementUseCases implements MovementUseCasesPort {
             related,
             `${sourceName} → ${destinationName}`,
           )
+        } else if (isGoalOperation(operation)) {
+          const goal = goalMap.get(operationGoalId(operation))
+          if (!goal || related.length !== 1) return []
+          item = this.toListItem(operation, related, goal.name)
         } else {
           const account = accountMap.get(operationAccountId(operation))
           if (!account || related.length !== 1) return []
@@ -477,6 +537,11 @@ export class MovementUseCases implements MovementUseCasesPort {
             ? operation.details.observation
             : operation.type === "additional_income"
               ? operation.details.observation
+              : operation.type === "savings_deposit" ||
+                  operation.type === "savings_withdrawal"
+                ? [operation.details.concept, operation.details.observation]
+                    .filter(Boolean)
+                    .join(" ")
               : null,
         ]
           .filter(Boolean)
@@ -503,6 +568,8 @@ export class MovementUseCases implements MovementUseCasesPort {
                 (operation.details.destinationType === "account" &&
                   operation.details.destinationId === filters.accountId)
               )
+            : isGoalOperation(operation)
+              ? true
             : operationAccountId(operation) !== filters.accountId)
         ) {
           return []
@@ -536,6 +603,10 @@ export class MovementUseCases implements MovementUseCasesPort {
         ),
       ])
       targetNames = `${source.name} → ${destination.name}`
+    } else if (isGoalOperation(operation)) {
+      targetNames = (
+        await this.requireSavingsGoal(operationGoalId(operation), true)
+      ).name
     } else {
       targetNames = (
         await this.requireAccount(operationAccountId(operation), true)
@@ -2089,6 +2160,9 @@ export class MovementUseCases implements MovementUseCasesPort {
           ? "transfer"
           : operation.type === "balance_adjustment"
             ? "adjustment"
+          : operation.type === "savings_deposit" ||
+              operation.type === "savings_withdrawal"
+            ? "savings"
           : operation.type === "variable_expense" ||
               operation.type === "fixed_expense_payment"
             ? "expense"

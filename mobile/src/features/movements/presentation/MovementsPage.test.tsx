@@ -149,6 +149,43 @@ const adjustmentItem: MovementListItem = {
   accountName: account.name,
   signedAmount: -12_000,
 }
+const savingsOperation: MovementListItem["operation"] = {
+  id: asEntityId("40000000-0000-4000-8000-000000000020"),
+  periodId: PERIOD_ID,
+  type: "savings_deposit",
+  operationDate: asCivilDate("2026-08-19"),
+  amount: asPositiveClpAmount(25_000),
+  details: {
+    goalId: GOAL_ID,
+    concept: "Ahorro extra",
+    observation: "Desde efectivo",
+  },
+  status: "posted",
+  voidedAt: null,
+  voidReason: null,
+  revision: asRevision(2),
+  createdAt: NOW,
+  updatedAt: NOW,
+}
+const savingsMovement: Movement = {
+  ...movement,
+  id: asEntityId("40000000-0000-4000-8000-000000000021"),
+  operationId: savingsOperation.id,
+  targetType: "savings_goal",
+  targetId: GOAL_ID,
+  delta: asNonZeroClpDelta(25_000),
+}
+const savingsItem: MovementListItem = {
+  operation: savingsOperation,
+  movement: savingsMovement,
+  movements: [savingsMovement],
+  kind: "savings",
+  title: "Depósito",
+  description: "Ahorro extra · Desde efectivo",
+  accountName: goal.name,
+  signedAmount: 25_000,
+}
+const savingsDetail: MovementDetail = { ...savingsItem, revisions: [] }
 const options: MovementFormOptions = {
   accounts: [account],
   categories: [category],
@@ -202,6 +239,132 @@ describe("MovementsPage", () => {
         expect.objectContaining({ kind: "adjustment" }),
       ),
     )
+  })
+
+  it("labels a savings-goal adjustment as Meta and keeps it read-only", async () => {
+    const goalAdjustmentOperation = {
+      ...adjustmentOperation,
+      id: asEntityId("40000000-0000-4000-8000-000000000030"),
+      details: { goalId: GOAL_ID, reason: "Saldo informado" },
+    } as MovementListItem["operation"]
+    const goalAdjustmentMovement = {
+      ...adjustmentMovement,
+      id: asEntityId("40000000-0000-4000-8000-000000000031"),
+      operationId: goalAdjustmentOperation.id,
+      targetType: "savings_goal" as const,
+      targetId: GOAL_ID,
+      delta: asNonZeroClpDelta(12_000),
+    }
+    const goalAdjustmentItem: MovementListItem = {
+      operation: goalAdjustmentOperation,
+      movement: goalAdjustmentMovement,
+      movements: [goalAdjustmentMovement],
+      kind: "adjustment",
+      title: "Ajuste de saldo",
+      description: "Saldo informado",
+      accountName: goal.name,
+      signedAmount: 12_000,
+    }
+    render(
+      <MovementsPage
+        useCases={service({
+          listMovements: vi.fn().mockResolvedValue([goalAdjustmentItem]),
+          getMovementDetail: vi.fn().mockResolvedValue({
+            ...goalAdjustmentItem,
+            revisions: [],
+          }),
+        })}
+      />,
+    )
+
+    await screen.findByText("Ajuste de saldo")
+    fireEvent.click(
+      screen.getByRole("button", { name: "Ver detalle de Ajuste de saldo" }),
+    )
+    const dialog = await screen.findByRole("dialog")
+    expect(within(dialog).getByText("Meta")).toBeInTheDocument()
+    expect(within(dialog).getByText("Viaje")).toBeInTheDocument()
+    expect(within(dialog).queryByRole("button", { name: "Editar" })).toBeNull()
+    expect(within(dialog).queryByRole("button", { name: "Anular" })).toBeNull()
+  })
+
+  it("shows the savings filter and edits or voids deposits through the B2 use cases", async () => {
+    const listMovements = vi.fn().mockResolvedValue([savingsItem])
+    const getMovementDetail = vi.fn().mockResolvedValue(savingsDetail)
+    const editSavingsMovement = vi.fn().mockResolvedValue({
+      goal,
+      operation: savingsOperation,
+      movement: savingsMovement,
+    })
+    const voidSavingsMovement = vi.fn().mockResolvedValue({
+      goal,
+      operation: { ...savingsOperation, status: "voided" },
+      movement: { ...savingsMovement, status: "voided" },
+    })
+    const voidMovement = vi.fn()
+    render(
+      <MovementsPage
+        useCases={service({
+          listMovements,
+          getMovementDetail,
+          editSavingsMovement,
+          voidSavingsMovement,
+          voidMovement,
+        })}
+      />,
+    )
+
+    expect(await screen.findByText("Depósito")).toBeInTheDocument()
+    expect(screen.getByText("Viaje · 19-08-2026")).toBeInTheDocument()
+    expect(screen.getByText("Ahorro extra · Desde efectivo")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("combobox", { name: "Tipo de movimiento" }))
+    fireEvent.click(screen.getByRole("option", { name: "Ahorro" }))
+    await waitFor(() =>
+      expect(listMovements).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "savings" }),
+      ),
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Depósito" }))
+    const detailDialog = await screen.findByRole("dialog")
+    expect(within(detailDialog).getByText(/Ahorro · Viaje/)).toBeInTheDocument()
+    expect(within(detailDialog).getByText("Meta")).toBeInTheDocument()
+    fireEvent.click(within(detailDialog).getByRole("button", { name: "Editar" }))
+    expect(
+      await screen.findByRole("heading", { name: "Editar depósito" }),
+    ).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText("Monto"), {
+      target: { value: "30000" },
+    })
+    fireEvent.click(screen.getByRole("button", { name: "Guardar cambios" }))
+    await waitFor(() =>
+      expect(editSavingsMovement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operationId: savingsOperation.id,
+          expectedRevision: savingsOperation.revision,
+          amount: 30_000,
+        }),
+      ),
+    )
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Depósito" }))
+    fireEvent.click(
+      within(await screen.findByRole("dialog")).getByRole("button", {
+        name: "Anular",
+      }),
+    )
+    const confirmation = await screen.findByRole("alertdialog")
+    fireEvent.click(
+      within(confirmation).getByRole("button", { name: "Anular movimiento" }),
+    )
+    await waitFor(() =>
+      expect(voidSavingsMovement).toHaveBeenCalledWith({
+        operationId: savingsOperation.id,
+        expectedRevision: savingsOperation.revision,
+        reason: "Anulado desde la interfaz",
+      }),
+    )
+    expect(voidMovement).not.toHaveBeenCalled()
   })
 
   it("propagates category administration from a new expense without active categories", async () => {

@@ -57,7 +57,13 @@ export function MovementForm({
   readonly onManageCategories?: () => void
 }) {
   const candidate = editor.item?.operation
-  const operation = candidate?.type === "transfer" ? undefined : candidate
+  const operation =
+    candidate?.type === "transfer" ||
+    candidate?.type === "balance_adjustment" ||
+    candidate?.type === "savings_deposit" ||
+    candidate?.type === "savings_withdrawal"
+      ? undefined
+      : candidate
   const variableDetails = operation?.type === "variable_expense" ? operation.details : null
   const fixedDetails = operation?.type === "fixed_expense_payment" ? operation.details : null
   const incomeDetails = operation?.type === "additional_income" ? operation.details : null
