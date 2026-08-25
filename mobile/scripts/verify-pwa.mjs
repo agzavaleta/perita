@@ -16,9 +16,10 @@ assert(manifest.icons.some((icon) => icon.sizes === "512x512" && icon.purpose ==
 assert(manifest.icons.some((icon) => icon.purpose === "maskable"), "maskable icon")
 assert(serviceWorker.includes("index.html"), "offline navigation shell")
 assert(serviceWorker.includes("perita-192.png"), "static icon precache")
+assert(serviceWorker.includes("apple-touch-icon.png"), "Apple touch icon precache")
 assert(serviceWorker.includes("SKIP_WAITING"), "controlled update message")
 assert(!/indexedDB|deleteDatabase|perita_mobile/.test(serviceWorker), "service worker must not access application data")
-assert(html.includes("apple-touch-icon-180.png"), "Apple touch icon")
+assert(html.includes('href="/apple-touch-icon.png"'), "Apple touch icon")
 assert(html.includes("viewport-fit=cover"), "safe-area viewport")
 
 console.log("PWA verification passed: manifest, offline shell, controlled update, icons, and data isolation.")

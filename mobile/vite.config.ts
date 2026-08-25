@@ -14,6 +14,7 @@ export default defineConfig({
       includeAssets: [
         'icons/perita.svg',
         'icons/apple-touch-icon-180.png',
+        'apple-touch-icon.png',
       ],
       manifest: {
         id: '/',
