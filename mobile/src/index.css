@@ -82,6 +82,13 @@
     @apply border-border outline-ring/50;
   }
 
+  html,
+  body,
+  #root {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
   body {
     @apply min-w-80 bg-muted text-foreground antialiased;
     margin: 0;
@@ -95,6 +102,36 @@
   #root {
     min-height: 100svh;
     min-height: 100dvh;
+  }
+
+  input[type="date"],
+  input[type="month"] {
+    box-sizing: border-box;
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    width: 100%;
+  }
+
+  input[type="date"]::-webkit-date-and-time-value,
+  input[type="month"]::-webkit-date-and-time-value {
+    min-width: 0;
+    text-align: left;
+  }
+
+  form,
+  fieldset,
+  textarea {
+    min-width: 0;
+    max-width: 100%;
+  }
+}
+
+@supports (overflow: clip) {
+  html,
+  body,
+  #root {
+    overflow-x: clip;
   }
 }
 

@@ -288,8 +288,8 @@ describe("DebtSection C6B form infrastructure", () => {
     expect(dialog).toHaveAttribute("data-side", "bottom")
     expect(dialog).toHaveClass(
       "max-h-[92dvh]",
-      "overflow-y-auto",
-      "pb-[calc(1rem+env(safe-area-inset-bottom))]",
+      "data-[side=bottom]:overflow-y-auto",
+      "data-[side=bottom]:pb-[calc(1rem+env(safe-area-inset-bottom))]",
     )
     expect(form?.querySelector(".grid-cols-2")).not.toBeInTheDocument()
 
@@ -313,7 +313,9 @@ describe("DebtSection C6B form infrastructure", () => {
 
     const dialog = screen.getByRole("dialog")
     const form = dialog.querySelector("form")
-    expect(dialog).toHaveClass("pb-[calc(1rem+env(safe-area-inset-bottom))]")
+    expect(dialog).toHaveClass(
+      "data-[side=bottom]:pb-[calc(1rem+env(safe-area-inset-bottom))]",
+    )
     expect(form?.querySelector(".grid-cols-2")).not.toBeInTheDocument()
     const amount = screen.getByRole("textbox", { name: "Monto" })
     fireEvent.change(amount, { target: { value: "25000" } })
@@ -346,7 +348,9 @@ describe("DebtSection C6B form infrastructure", () => {
 
     const dialog = screen.getByRole("dialog")
     const form = dialog.querySelector("form")
-    expect(dialog).toHaveClass("pb-[calc(1rem+env(safe-area-inset-bottom))]")
+    expect(dialog).toHaveClass(
+      "data-[side=bottom]:pb-[calc(1rem+env(safe-area-inset-bottom))]",
+    )
     expect(form?.querySelector(".grid-cols-2")).not.toBeInTheDocument()
     const total = screen.getByRole("textbox", { name: "Nuevo total" })
     fireEvent.change(total, { target: { value: "120000" } })

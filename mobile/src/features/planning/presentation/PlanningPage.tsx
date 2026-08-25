@@ -251,14 +251,14 @@ function GoalDetailSheet({
     <Sheet open onOpenChange={(open) => !open && onClose()}>
       <SheetContent
         side="bottom"
-        className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
+        className="mx-auto max-h-[92dvh] w-full max-w-[430px] rounded-t-xl"
       >
         <SheetHeader>
-          <SheetTitle className="flex items-center gap-2">
+          <SheetTitle className="flex min-w-0 items-center gap-2">
             <span role="img" aria-label={`Emoji de ${goal.name}`}>
               {goal.emoji}
             </span>
-            <span>{goal.name}</span>
+            <span className="min-w-0 break-words">{goal.name}</span>
           </SheetTitle>
           <SheetDescription>
             {goal.lifecycleStatus === "active" ? "Meta activa" : "Meta cerrada"}
@@ -269,7 +269,7 @@ function GoalDetailSheet({
             <CardContent className="space-y-4 pt-1">
               <Progress goal={goal} />
               <Separator />
-              <dl className="grid grid-cols-2 gap-3 text-sm">
+              <dl className="grid grid-cols-1 gap-3 text-sm min-[360px]:grid-cols-2">
                 <div>
                   <dt className="text-muted-foreground">Saldo</dt>
                   <dd className="money-figure font-semibold">
@@ -280,7 +280,7 @@ function GoalDetailSheet({
                   <dt className="text-muted-foreground">Aporte mensual</dt>
                   <dd>{formatClp(goal.plannedMonthlyAmount)}</dd>
                 </div>
-                <div className="col-span-2">
+                <div className="min-[360px]:col-span-2">
                   <dt className="text-muted-foreground">Banco o institución</dt>
                   <dd>{goal.bank ?? "Sin institución"}</dd>
                 </div>
@@ -289,7 +289,7 @@ function GoalDetailSheet({
           </Card>
 
           {goal.lifecycleStatus === "active" ? (
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
               <Button type="button" size="lg" onClick={onMoveMoney}>
                 <ArrowRightLeft aria-hidden="true" /> Aportar
               </Button>
@@ -374,7 +374,7 @@ function FixedExpenseDetailSheet({
     <Sheet open onOpenChange={(open) => !open && onClose()}>
       <SheetContent
         side="bottom"
-        className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
+        className="mx-auto max-h-[92dvh] w-full max-w-[430px] rounded-t-xl"
       >
         <SheetHeader>
           <SheetTitle>{template.name}</SheetTitle>
@@ -385,7 +385,7 @@ function FixedExpenseDetailSheet({
         <div className="space-y-4 px-4">
           <Card>
             <CardContent className="space-y-3 pt-1">
-              <dl className="grid grid-cols-2 gap-3 text-sm">
+              <dl className="grid grid-cols-1 gap-3 text-sm min-[360px]:grid-cols-2">
                 <div>
                   <dt className="text-muted-foreground">Referencia</dt>
                   <dd className="money-figure font-semibold">
@@ -414,7 +414,7 @@ function FixedExpenseDetailSheet({
           <p className="text-xs text-muted-foreground">
             Esta información no programa pagos ni genera movimientos automáticamente.
           </p>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
             {template.status === "active" ? (
               <Button type="button" variant="outline" size="lg" onClick={onEditTemplate}>
                 <Pencil aria-hidden="true" /> Editar referencia

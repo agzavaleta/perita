@@ -47,6 +47,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import {
+  type AccountMovementHistoryItem,
   type AccountUseCasesPort,
 } from "@/features/accounts/application/account-use-cases"
 import {
@@ -55,6 +56,7 @@ import {
 } from "@/features/accounts/application/bootstrap"
 import type { BalanceAdjustmentUseCasesPort } from "@/features/accounts/application/balance-adjustment-use-cases"
 import { BalanceAdjustmentForm } from "@/features/accounts/presentation/BalanceAdjustmentForm"
+import { cn } from "@/lib/utils"
 
 type EditorState =
   | { readonly mode: "create" }
@@ -66,12 +68,18 @@ interface AccountsPageProps {
   readonly balanceAdjustmentUseCases?: BalanceAdjustmentUseCasesPort
 }
 
-function formatClp(value: number) {
+function formatClp(value: number, signed = false) {
   return new Intl.NumberFormat("es-CL", {
     style: "currency",
     currency: "CLP",
     maximumFractionDigits: 0,
+    signDisplay: signed ? "always" : "auto",
   }).format(value)
+}
+
+function formatDate(value: string) {
+  const [year, month, day] = value.split("-")
+  return `${day}-${month}-${year}`
 }
 
 function accountErrorMessage(error: unknown) {
@@ -259,17 +267,19 @@ function AccountDetail({
   readonly onRequestStatusChange: () => void
   readonly onAdjust?: () => void
 }) {
-  const [movementCount, setMovementCount] = useState<number | "error" | null>(null)
+  const [movements, setMovements] = useState<
+    AccountMovementHistoryItem[] | "error" | null
+  >(null)
 
   useEffect(() => {
     let active = true
     void useCases
       .listRelatedMovements(account.id)
-      .then((movements) => {
-        if (active) setMovementCount(movements.length)
+      .then((records) => {
+        if (active) setMovements(records)
       })
       .catch(() => {
-        if (active) setMovementCount("error")
+        if (active) setMovements("error")
       })
     return () => {
       active = false
@@ -280,14 +290,14 @@ function AccountDetail({
     <Sheet open onOpenChange={(open) => !open && onClose()}>
       <SheetContent
         side="bottom"
-        className="mx-auto max-h-[90dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
+        className="mx-auto max-h-[90dvh] w-full max-w-[430px] rounded-t-xl"
       >
         <SheetHeader>
-          <SheetTitle className="flex items-center gap-2">
+          <SheetTitle className="flex min-w-0 items-center gap-2">
             <span role="img" aria-label={`Emoji de ${account.name}`}>
               {account.emoji}
             </span>
-            <span>{account.name}</span>
+            <span className="min-w-0 break-words">{account.name}</span>
           </SheetTitle>
           <SheetDescription>{account.bank ?? "Sin institución"}</SheetDescription>
         </SheetHeader>
@@ -301,7 +311,7 @@ function AccountDetail({
               <AccountStatusBadge status={account.status} />
             </CardContent>
           </Card>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
             <Button type="button" variant="outline" size="lg" onClick={onEdit}>
               <Pencil aria-hidden="true" />
               Editar
@@ -327,23 +337,60 @@ function AccountDetail({
             <h3 id="account-movements-title" className="type-section-title mb-2">
               Movimientos relacionados
             </h3>
-            <Card className="border-dashed">
-              <CardContent className="flex flex-col items-center py-6 text-center">
-                <History
-                  aria-hidden="true"
-                  className="size-6 text-muted-foreground"
-                />
-                <p className="mt-2 font-medium">
-                  {movementCount === null
-                    ? "Cargando movimientos…"
-                    : movementCount === "error"
-                      ? "No fue posible cargar los movimientos"
-                      : movementCount === 0
-                      ? "Aún no hay movimientos relacionados"
-                      : `${movementCount} movimientos relacionados`}
-                </p>
-              </CardContent>
-            </Card>
+            {movements === null || movements === "error" || movements.length === 0 ? (
+              <Card className="border-dashed">
+                <CardContent className="flex flex-col items-center py-6 text-center">
+                  <History
+                    aria-hidden="true"
+                    className="size-6 text-muted-foreground"
+                  />
+                  <p className="mt-2 font-medium">
+                    {movements === null
+                      ? "Cargando movimientos…"
+                      : movements === "error"
+                        ? "No fue posible cargar los movimientos"
+                        : "Aún no hay movimientos relacionados"}
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="space-y-2">
+                {movements.map((item) => (
+                  <Card
+                    key={item.movement.id}
+                    size="sm"
+                    className={item.operation.status === "voided" ? "opacity-60" : undefined}
+                  >
+                    <CardContent className="space-y-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate font-medium">{item.title}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {formatDate(item.operation.operationDate)}
+                          </p>
+                        </div>
+                        <p
+                          className={cn(
+                            "money-figure shrink-0 font-semibold",
+                            item.operation.status === "voided" && "line-through",
+                          )}
+                        >
+                          {formatClp(item.signedAmount, true)}
+                        </p>
+                      </div>
+                      {item.description ? (
+                        <p className="text-sm text-muted-foreground">
+                          {item.description}
+                        </p>
+                      ) : null}
+                      {item.operation.status === "voided" ? (
+                        <Badge variant="outline">Anulado</Badge>
+                      ) : null}
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
           </section>
         </div>
       </SheetContent>

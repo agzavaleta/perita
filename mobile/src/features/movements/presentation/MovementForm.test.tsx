@@ -156,8 +156,13 @@ describe("MovementForm C2 infrastructure", () => {
 
     const dialog = screen.getByRole("dialog")
     expect(dialog).toHaveAttribute("data-side", "bottom")
-    expect(dialog).toHaveClass("max-h-[92dvh]", "overflow-y-auto")
-    expect(dialog).toHaveClass("pb-[calc(1rem+env(safe-area-inset-bottom))]")
+    expect(dialog).toHaveClass(
+      "max-h-[92dvh]",
+      "data-[side=bottom]:overflow-y-auto",
+    )
+    expect(dialog).toHaveClass(
+      "data-[side=bottom]:pb-[calc(1rem+env(safe-area-inset-bottom))]",
+    )
     expect(dialog.querySelector(".grid-cols-2")).not.toBeInTheDocument()
   })
 

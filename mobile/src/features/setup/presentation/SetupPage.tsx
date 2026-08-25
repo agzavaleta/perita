@@ -36,24 +36,7 @@ interface EditableSetupDraft {
 function message(error: unknown) {
   return error instanceof Error
     ? error.message
-    : "No fue posible guardar el borrador de configuración."
-}
-
-function periodLabel(periodKey: string) {
-  const [year, month] = periodKey.split("-").map(Number)
-  return new Intl.DateTimeFormat("es-CL", {
-    month: "long",
-    year: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(Date.UTC(year, month - 1, 1)))
-}
-
-function formatClp(value: number) {
-  return new Intl.NumberFormat("es-CL", {
-    style: "currency",
-    currency: "CLP",
-    maximumFractionDigits: 0,
-  }).format(value)
+    : "No fue posible completar la configuración."
 }
 
 function newAccount(): EditableAccount {
@@ -121,21 +104,16 @@ export function SetupPage({
   readonly onCompleted: (result: SetupResult) => void
 }) {
   const [draft, setDraft] = useState(() => initialDraft(state))
-  const [savingDraft, setSavingDraft] = useState(false)
-  const [step, setStep] = useState<"form" | "review">("form")
   const [confirming, setConfirming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const saveQueue = useRef<Promise<void>>(Promise.resolve())
-  const pendingSaveCount = useRef(0)
   const confirmingRef = useRef(false)
   const validAccounts = draft.accounts.length > 0 && draft.accounts.every(
     ({ name }) => name.trim().length > 0,
   )
-  const canReview = draft.periodKey.length > 0 && validAccounts
+  const canSubmit = draft.periodKey.length > 0 && validAccounts
 
   function queueDraftSave(nextDraft: EditableSetupDraft) {
-    pendingSaveCount.current += 1
-    setSavingDraft(true)
     const save = saveQueue.current.then(async () => {
       await useCases.saveDraft(persistedDraft(nextDraft))
     })
@@ -148,16 +126,12 @@ export function SetupPage({
       (cause) => {
         setError(message(cause))
       },
-    ).finally(() => {
-      pendingSaveCount.current -= 1
-      if (pendingSaveCount.current === 0) setSavingDraft(false)
-    })
+    )
     return save
   }
 
   function updateDraft(nextDraft: EditableSetupDraft) {
     setDraft(nextDraft)
-    setStep("form")
     setError(null)
     void queueDraftSave(nextDraft)
   }
@@ -176,27 +150,18 @@ export function SetupPage({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!canReview) return
-    setError(null)
-    try {
-      await queueDraftSave(draft)
-      setStep("review")
-    } catch {
-      // queueDraftSave already exposes the persistence error in the form.
-    }
-  }
-
-  async function confirmSetup() {
-    if (confirmingRef.current) return
+    if (!canSubmit || confirmingRef.current) return
     confirmingRef.current = true
     setConfirming(true)
     setError(null)
     try {
+      await queueDraftSave(draft)
       const result = await useCases.completeSetup(confirmationInput(draft))
+      confirmingRef.current = false
+      setConfirming(false)
       onCompleted(result)
     } catch (cause) {
       setError(message(cause))
-    } finally {
       confirmingRef.current = false
       setConfirming(false)
     }
@@ -210,106 +175,6 @@ export function SetupPage({
           title="Configuración incompleta"
           description="Perita bloqueó la operación normal porque encontró una instalación parcial. Restaura un respaldo válido o elimina los datos desde una herramienta de recuperación."
         />
-      </section>
-    )
-  }
-
-  if (step === "review") {
-    return (
-      <section className="space-y-6 py-section" aria-labelledby="setup-review-title">
-        <div>
-          <h1 id="setup-review-title" className="type-page-title">
-            Revisa tu configuración
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Confirma que estos datos representan tu punto de partida.
-          </p>
-        </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Plan inicial</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <dl className="space-y-4 text-sm">
-              <div>
-                <dt className="text-muted-foreground">Período inicial</dt>
-                <dd className="mt-1 font-medium capitalize">
-                  {periodLabel(draft.periodKey)}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Sueldo de referencia</dt>
-                <dd className="money-figure mt-1 font-semibold">
-                  {formatClp(draft.salaryReferenceAmount ?? 0)}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">
-                  Presupuesto para gastos variables
-                </dt>
-                <dd className="money-figure mt-1 font-semibold">
-                  {formatClp(draft.variableExpenseBudgetAmount ?? 0)}
-                </dd>
-              </div>
-            </dl>
-          </CardContent>
-        </Card>
-
-        <div className="space-y-3" aria-labelledby="setup-review-accounts">
-          <h2 id="setup-review-accounts" className="type-section-title">
-            Cuentas
-          </h2>
-          {draft.accounts.map((account) => (
-            <Card key={account.id}>
-              <CardContent className="space-y-3 pt-1">
-                <div className="flex items-start gap-3">
-                  <span className="text-2xl" aria-hidden="true">{account.emoji}</span>
-                  <div className="min-w-0">
-                    <p className="break-words font-semibold">{account.name.trim()}</p>
-                    <p className="break-words text-sm text-muted-foreground">
-                      {account.bank ?? "Sin institución"}
-                    </p>
-                  </div>
-                </div>
-                <div className="border-t pt-3">
-                  <p className="text-xs text-muted-foreground">Saldo inicial</p>
-                  <p className="money-figure mt-1 font-semibold">
-                    {formatClp(account.openingBalance ?? 0)}
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-
-        {error ? (
-          <ErrorMessage title="No se pudo completar la configuración" description={error} />
-        ) : null}
-
-        <div className="space-y-3 pb-[calc(1rem+env(safe-area-inset-bottom))]">
-          <Button
-            type="button"
-            variant="outline"
-            className="w-full"
-            disabled={confirming}
-            onClick={() => {
-              setError(null)
-              setStep("form")
-            }}
-          >
-            Volver
-          </Button>
-          <Button
-            type="button"
-            size="lg"
-            className="w-full"
-            disabled={confirming}
-            onClick={() => void confirmSetup()}
-          >
-            {confirming ? "Confirmando…" : "Confirmar y comenzar"}
-          </Button>
-        </div>
       </section>
     )
   }
@@ -476,15 +341,15 @@ export function SetupPage({
             </div>
 
             {error ? (
-              <ErrorMessage title="No se pudo guardar el borrador" description={error} />
+              <ErrorMessage title="No se pudo completar la configuración" description={error} />
             ) : null}
             <Button
               type="submit"
               size="lg"
               className="w-full"
-              disabled={!canReview || savingDraft}
+              disabled={!canSubmit || confirming}
             >
-              {savingDraft ? "Guardando…" : "Comenzar a usar Perita"}
+              {confirming ? "Completando…" : "Comenzar a usar Perita"}
             </Button>
           </form>
         </CardContent>

@@ -12,6 +12,7 @@ import {
 import { assertOperationMovementInvariant } from "@/domain/invariants"
 import type {
   AdditionalIncomeOperation,
+  BalanceAdjustmentOperation,
   FixedExpensePaymentOperation,
   Movement,
   Operation,
@@ -43,6 +44,7 @@ import type {
 } from "@/data/repositories"
 
 export type SupportedMovementOperation =
+  | AccountBalanceAdjustmentOperation
   | SalaryReceiptOperation
   | AdditionalIncomeOperation
   | VariableExpenseOperation
@@ -50,12 +52,26 @@ export type SupportedMovementOperation =
   | TransferOperation
 
 export type MovementKind = "income" | "expense" | "transfer"
+export type MovementListKind = MovementKind | "adjustment"
+
+type AccountBalanceAdjustmentOperation = BalanceAdjustmentOperation & {
+  readonly details: {
+    readonly accountId: EntityId
+    readonly goalId?: never
+    readonly reason: string
+  }
+}
+
+type EditableMovementOperation = Exclude<
+  SupportedMovementOperation,
+  AccountBalanceAdjustmentOperation
+>
 
 export interface MovementListItem {
   readonly operation: SupportedMovementOperation
   readonly movement: Movement
   readonly movements: readonly Movement[]
-  readonly kind: MovementKind
+  readonly kind: MovementListKind
   readonly title: string
   readonly description: string | null
   readonly accountName: string
@@ -64,7 +80,7 @@ export interface MovementListItem {
 
 export interface MovementFilters {
   readonly query?: string
-  readonly kind?: "all" | MovementKind
+  readonly kind?: "all" | MovementListKind
   readonly status?: "all" | Operation["status"]
   readonly accountId?: "all" | EntityId
   readonly dateFrom?: CivilDate | null
@@ -244,12 +260,20 @@ function positiveAmount(value: number): PositiveClpAmount {
 
 function isSupported(operation: Operation): operation is SupportedMovementOperation {
   return (
+    (operation.type === "balance_adjustment" &&
+      "accountId" in operation.details) ||
     operation.type === "salary_receipt" ||
     operation.type === "additional_income" ||
     operation.type === "variable_expense" ||
     operation.type === "fixed_expense_payment" ||
     operation.type === "transfer"
   )
+}
+
+function isEditable(
+  operation: SupportedMovementOperation,
+): operation is EditableMovementOperation {
+  return operation.type !== "balance_adjustment"
 }
 
 function operationAccountId(
@@ -259,6 +283,7 @@ function operationAccountId(
 }
 
 function operationTitle(operation: SupportedMovementOperation) {
+  if (operation.type === "balance_adjustment") return "Ajuste de saldo"
   if (operation.type === "transfer") {
     return operation.details.concept ?? "Movimiento interno"
   }
@@ -271,6 +296,7 @@ function operationTitle(operation: SupportedMovementOperation) {
 }
 
 function operationDescription(operation: SupportedMovementOperation) {
+  if (operation.type === "balance_adjustment") return operation.details.reason
   if (operation.type === "transfer") return operation.details.observation
   if (operation.type === "salary_receipt") return null
   if (operation.type === "variable_expense") {
@@ -289,7 +315,7 @@ type TransferTargetRecord =
   | { readonly type: "savings_goal"; readonly entity: SavingsGoal }
 
 type AccountMovementOperation = Exclude<
-  SupportedMovementOperation,
+  EditableMovementOperation,
   TransferOperation
 >
 
@@ -447,7 +473,7 @@ export class MovementUseCases implements MovementUseCasesPort {
   }
 
   async getMovementDetail(operationId: EntityId) {
-    const operation = await this.requireOperation(operationId)
+    const operation = await this.requireListedOperation(operationId)
     const [movements, revisions] = await Promise.all([
       this.requireMovements(operation),
       this.repositories.operationRevisions.listByOperation(operationId),
@@ -1543,6 +1569,17 @@ export class MovementUseCases implements MovementUseCasesPort {
   }
 
   private async requireOperation(operationId: EntityId) {
+    const operation = await this.requireListedOperation(operationId)
+    if (!isEditable(operation)) {
+      throw new MovementUseCaseError(
+        "unsupported_operation",
+        "Este movimiento es solo de consulta en esta sección.",
+      )
+    }
+    return operation
+  }
+
+  private async requireListedOperation(operationId: EntityId) {
     const operation = await this.repositories.operations.get(operationId)
     if (!operation) {
       throw new MovementUseCaseError(
@@ -1553,7 +1590,7 @@ export class MovementUseCases implements MovementUseCasesPort {
     if (!isSupported(operation)) {
       throw new MovementUseCaseError(
         "unsupported_operation",
-        "Este tipo de movimiento se habilitará en otra fase.",
+        "Este tipo de movimiento no está disponible en esta sección.",
       )
     }
     return operation
@@ -1641,6 +1678,8 @@ export class MovementUseCases implements MovementUseCasesPort {
       kind:
         operation.type === "transfer"
           ? "transfer"
+          : operation.type === "balance_adjustment"
+            ? "adjustment"
           : operation.type === "variable_expense" ||
               operation.type === "fixed_expense_payment"
             ? "expense"

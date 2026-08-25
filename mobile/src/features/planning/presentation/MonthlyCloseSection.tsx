@@ -84,7 +84,7 @@ function HistoryDetail({
     <Sheet open onOpenChange={(open) => !open && onClose()}>
       <SheetContent
         side="bottom"
-        className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
+        className="mx-auto max-h-[92dvh] w-full max-w-[430px] rounded-t-xl"
       >
         <SheetHeader>
           <SheetTitle>{formatMonth(snapshot.periodKey)}</SheetTitle>
@@ -109,7 +109,7 @@ function HistoryDetail({
                 </p>
               </div>
               <Separator />
-              <div className="grid grid-cols-2 gap-4 text-sm">
+              <div className="grid grid-cols-1 gap-4 text-sm min-[360px]:grid-cols-2">
                 <div><p className="text-xs text-muted-foreground">Ingresos</p><p className="money-figure font-semibold">{formatClp(totals.totalIncomeAmount)}</p></div>
                 <div><p className="text-xs text-muted-foreground">Gastos variables</p><p className="money-figure font-semibold">{formatClp(totals.variableExpenseAmount)}</p></div>
                 <div><p className="text-xs text-muted-foreground">Gastos fijos pagados</p><p className="money-figure font-semibold">{formatClp(totals.fixedExpensePaidAmount)}</p></div>
@@ -121,7 +121,7 @@ function HistoryDetail({
           </Card>
           <Card>
             <CardHeader><CardTitle className="text-base">Contenido archivado</CardTitle></CardHeader>
-            <CardContent className="grid grid-cols-2 gap-3 text-sm">
+            <CardContent className="grid grid-cols-1 gap-3 text-sm min-[360px]:grid-cols-2">
               <p>{snapshot.data.operations.length} operaciones</p>
               <p>{snapshot.data.movements.length} movimientos</p>
               <p>{snapshot.data.fixedExpenses.length} gastos fijos</p>
@@ -214,7 +214,7 @@ export function MonthlyCloseSection({
               <Badge variant={preview.blockers.length === 0 ? "secondary" : "destructive"}>{preview.blockers.length === 0 ? "Listo" : "Bloqueado"}</Badge>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-3 text-sm"><div><p className="text-xs text-muted-foreground">Ingresos</p><p className="money-figure font-semibold">{formatClp(preview.summary.totalIncomeAmount)}</p></div><div><p className="text-xs text-muted-foreground">Disponible</p><p className="money-figure font-semibold">{formatClp(preview.summary.availableAmount)}</p></div></div>
+              <div className="grid grid-cols-1 gap-3 text-sm min-[360px]:grid-cols-2"><div><p className="text-xs text-muted-foreground">Ingresos</p><p className="money-figure font-semibold">{formatClp(preview.summary.totalIncomeAmount)}</p></div><div><p className="text-xs text-muted-foreground">Disponible</p><p className="money-figure font-semibold">{formatClp(preview.summary.availableAmount)}</p></div></div>
               {preview.pendingFixedExpenses > 0 ? <p className="text-sm text-muted-foreground">{preview.pendingFixedExpenses} gasto(s) fijo(s) pendiente(s) quedarán como impagos en el archivo.</p> : null}
               {preview.blockers.length > 0 ? <div className="space-y-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3">{preview.blockers.map((blocker) => <p key={blocker} className="flex gap-2 text-sm"><TriangleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-destructive" />{blocker}</p>)}</div> : null}
               <Button type="button" size="lg" className="w-full" disabled={preview.blockers.length > 0 || closing} onClick={() => setConfirming(true)}><CalendarCheck aria-hidden="true" /> Cerrar {formatMonth(preview.period.periodKey)}</Button>

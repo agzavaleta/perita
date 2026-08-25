@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { Account } from "@/domain/entities"
 import type { Period } from "@/domain/periods"
 import {
+  asCivilDate,
   asClpAmount,
   asEntityId,
   asPeriodKey,
@@ -16,6 +17,7 @@ import {
   type PeritaRepositories,
 } from "@/data/repositories"
 import { AccountUseCases } from "@/features/accounts/application/account-use-cases"
+import { BalanceAdjustmentUseCases } from "@/features/accounts/application/balance-adjustment-use-cases"
 
 const NOW = asUtcTimestamp("2026-08-21T12:00:00.000Z")
 const PERIOD_ID = asEntityId("10000000-0000-4000-8000-000000000001")
@@ -141,6 +143,46 @@ describe("AccountUseCases", () => {
       useCases.createAccount({ name: "Sin período", bank: null }),
     ).rejects.toMatchObject({ code: "no_open_period" })
     expect(await repositories.accounts.count()).toBe(0)
+  })
+
+  it("returns enriched related history ordered by operation date", async () => {
+    const created = await useCases.createAccount({ name: "Cuenta", bank: null })
+    let id = 800
+    const adjustments = new BalanceAdjustmentUseCases(repositories, {
+      now: () => NOW,
+      today: () => asCivilDate("2026-08-21"),
+      createId: () => asEntityId(
+        `10000000-0000-4000-8000-${String(id++).padStart(12, "0")}`,
+      ),
+    })
+    const first = await adjustments.createAdjustment({
+      accountId: created.id,
+      expectedAccountRevision: created.revision,
+      operationDate: asCivilDate("2026-08-19"),
+      targetBalance: 20_000,
+      reason: "Saldo inicial conciliado",
+    })
+    const second = await adjustments.createAdjustment({
+      accountId: created.id,
+      expectedAccountRevision: first.account.revision,
+      operationDate: asCivilDate("2026-08-21"),
+      targetBalance: 15_000,
+      reason: "Comisión bancaria",
+    })
+
+    expect(await useCases.listRelatedMovements(created.id)).toEqual([
+      expect.objectContaining({
+        operation: expect.objectContaining({ id: second.operation.id }),
+        movement: expect.objectContaining({ delta: -5_000 }),
+        title: "Ajuste de saldo",
+        description: "Comisión bancaria",
+        signedAmount: -5_000,
+      }),
+      expect.objectContaining({
+        operation: expect.objectContaining({ id: first.operation.id }),
+        signedAmount: 20_000,
+      }),
+    ])
   })
 
   it("requires zero balance to deactivate and supports explicit reactivation", async () => {

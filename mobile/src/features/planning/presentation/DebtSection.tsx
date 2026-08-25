@@ -398,7 +398,7 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
       {editor && useCases ? <DebtEditor key={editor === "new" ? "new" : editor.id} debt={editor === "new" ? undefined : editor} useCases={useCases} onSaved={saved} onClose={() => setEditor(null)} /> : null}
       {detail && !editor && !paymentEditor && !totalEditor ? (
         <Sheet open onOpenChange={(openState) => !openState && setDetail(null)}>
-          <SheetContent side="bottom" className="mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]">
+          <SheetContent side="bottom" className="mx-auto max-h-[92dvh] w-full max-w-[430px] rounded-t-xl">
             <SheetHeader><SheetTitle>{detail.debt.name}</SheetTitle><SheetDescription>{statusLabel(detail.debt)} · total {formatClp(detail.debt.totalAmount)}</SheetDescription></SheetHeader>
             <div className="space-y-4 px-4">
               <Card>
@@ -408,7 +408,7 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
                     <p className="money-figure text-3xl font-semibold">{formatClp(detail.debt.outstandingAmount)}</p>
                   </div>
                   <Separator />
-                  <dl className="grid grid-cols-2 gap-3 text-sm">
+                  <dl className="grid grid-cols-1 gap-3 text-sm min-[360px]:grid-cols-2">
                     <div>
                       <dt className="text-xs text-muted-foreground">Cuota mensual</dt>
                       <dd className="font-medium">{formatClp(detail.debt.monthlyPaymentAmount)}</dd>
@@ -444,7 +444,7 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
                   </dl>
                 </CardContent>
               </Card>
-              {detail.debt.paymentStatus !== "paid" ? <div className="grid grid-cols-2 gap-2"><Button type="button" onClick={() => setPaymentEditor("new")}><HandCoins aria-hidden="true" /> Registrar pago</Button><Button type="button" variant="outline" onClick={() => setEditor(detail.debt)}><Pencil aria-hidden="true" /> Editar</Button><Button type="button" variant="outline" className="col-span-2" onClick={() => setTotalEditor(true)}><ReceiptText aria-hidden="true" /> Ajustar total</Button></div> : null}
+              {detail.debt.paymentStatus !== "paid" ? <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2"><Button type="button" onClick={() => setPaymentEditor("new")}><HandCoins aria-hidden="true" /> Registrar pago</Button><Button type="button" variant="outline" onClick={() => setEditor(detail.debt)}><Pencil aria-hidden="true" /> Editar</Button><Button type="button" variant="outline" className="min-[360px]:col-span-2" onClick={() => setTotalEditor(true)}><ReceiptText aria-hidden="true" /> Ajustar total</Button></div> : null}
               <div className="space-y-2"><div className="flex items-center gap-2"><History aria-hidden="true" className="size-4" /><h3 className="font-semibold">Pagos e historial</h3></div>{detail.payments.length === 0 ? <EmptyState title="Sin pagos registrados" description="Los pagos aparecerán aquí con sus revisiones." /> : detail.payments.map((item) => <Card key={item.operation.id} className={item.operation.status === "voided" ? "opacity-60" : undefined}><CardContent className="space-y-2 pt-1"><div className="flex items-start justify-between gap-3"><div><p className="font-medium">{item.operation.details.concept ?? "Pago de deuda"}</p><p className="text-xs text-muted-foreground">{formatDate(item.operation.operationDate)} · {item.accountName}</p></div><p className="money-figure font-semibold">{formatClp(item.operation.amount)}</p></div><div className="flex items-center justify-between"><Badge variant="outline">{item.operation.status === "posted" ? "Vigente" : "Anulado"}</Badge><span className="text-xs text-muted-foreground">Rev. {item.operation.revision} · {item.revisions.length} cambio(s)</span></div>{item.operation.status === "posted" ? <div className="flex gap-2"><Button type="button" size="sm" variant="outline" onClick={() => setPaymentEditor(item)}><Pencil aria-hidden="true" /> Editar</Button><Button type="button" size="sm" variant="destructive" onClick={() => setVoidTarget(item)}><CircleOff aria-hidden="true" /> Anular</Button></div> : null}</CardContent></Card>)}</div>
               {detail.adjustments.length > 0 || detail.auditEvents.length > 0 ? <p className="flex items-center gap-2 text-xs text-muted-foreground"><CalendarDays aria-hidden="true" className="size-4" /> {detail.adjustments.length} ajuste(s) de total · {detail.auditEvents.length} revisión(es) de ficha</p> : null}
             </div>

@@ -24,6 +24,7 @@ import {
   createRepositories,
   type PeritaRepositories,
 } from "@/data/repositories"
+import { BalanceAdjustmentUseCases } from "@/features/accounts/application/balance-adjustment-use-cases"
 import { MovementUseCases } from "@/features/movements/application/movement-use-cases"
 
 const NOW = asUtcTimestamp("2026-08-21T12:00:00.000Z")
@@ -416,6 +417,59 @@ describe("MovementUseCases", () => {
     expect(await useCases.listMovements({ status: "voided" })).toEqual([
       expect.objectContaining({ operation: expect.objectContaining({ id: expense.operation.id }) }),
     ])
+  })
+
+  it("lists account balance adjustments with their real sign, reason and filters", async () => {
+    const adjustmentIds = (() => {
+      let value = 900
+      return () => asEntityId(
+        `30000000-0000-4000-8000-${String(value++).padStart(12, "0")}`,
+      )
+    })()
+    const adjustments = new BalanceAdjustmentUseCases(repositories, {
+      now: () => NOW,
+      today: () => TODAY,
+      createId: adjustmentIds,
+    })
+    const initial = await repositories.accounts.get(ACCOUNT_A)
+    if (!initial) throw new Error("fixture account missing")
+    const positive = await adjustments.createAdjustment({
+      accountId: ACCOUNT_A,
+      expectedAccountRevision: initial.revision,
+      operationDate: asCivilDate("2026-08-20"),
+      targetBalance: 125_000,
+      reason: "Conciliación bancaria",
+    })
+    const negative = await adjustments.createAdjustment({
+      accountId: ACCOUNT_A,
+      expectedAccountRevision: positive.account.revision,
+      operationDate: TODAY,
+      targetBalance: 115_000,
+      reason: "Comisión no registrada",
+    })
+
+    const listed = await useCases.listMovements()
+    expect(listed).toEqual([
+      expect.objectContaining({
+        operation: expect.objectContaining({ id: negative.operation.id }),
+        kind: "adjustment",
+        title: "Ajuste de saldo",
+        description: "Comisión no registrada",
+        accountName: "Cuenta A",
+        signedAmount: -10_000,
+      }),
+      expect.objectContaining({
+        operation: expect.objectContaining({ id: positive.operation.id }),
+        signedAmount: 25_000,
+      }),
+    ])
+    expect(await useCases.listMovements({ kind: "adjustment" })).toHaveLength(2)
+    expect(await useCases.listMovements({ query: "conciliación" })).toHaveLength(1)
+    expect(await useCases.listMovements({ query: "cuenta a" })).toHaveLength(2)
+    expect(await useCases.listMovements({ query: "ajuste de saldo" })).toHaveLength(2)
+    expect(await useCases.listMovements({ accountId: ACCOUNT_B })).toEqual([])
+    expect(await useCases.listMovements({ status: "posted" })).toHaveLength(2)
+    expect(await useCases.listMovements({ status: "voided" })).toEqual([])
   })
 
   it("moves money through all four approved endpoint combinations without changing assets", async () => {

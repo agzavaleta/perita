@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Pencil,
   Plus,
+  Scale,
   Search,
   SlidersHorizontal,
   Undo2,
@@ -61,6 +62,7 @@ import type {
   MovementDetail,
   MovementFormOptions,
   MovementKind,
+  MovementListKind,
   MovementListItem,
   MovementUseCasesPort,
   TransferFormOptions,
@@ -112,6 +114,8 @@ function MovementCard({
   const Icon =
     item.kind === "transfer"
       ? ArrowRightLeft
+      : item.kind === "adjustment"
+        ? Scale
       : item.kind === "income"
         ? ArrowDownLeft
         : ArrowUpRight
@@ -137,27 +141,32 @@ function MovementCard({
           )}
         </CardAction>
       </CardHeader>
-      <CardContent className="flex items-center justify-between gap-3">
-        <p
-          className={cn(
-            "money-figure text-lg font-semibold",
-            item.operation.status === "voided" && "line-through",
-          )}
-        >
-          {formatClp(
-            item.kind === "transfer" ? item.operation.amount : item.signedAmount,
-            item.kind !== "transfer",
-          )}
-        </p>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-lg"
-          aria-label={`Ver detalle de ${item.title}`}
-          onClick={onOpen}
-        >
-          <ChevronRight aria-hidden="true" className="size-5" />
-        </Button>
+      <CardContent className="space-y-2">
+        {item.description ? (
+          <p className="text-sm text-muted-foreground">{item.description}</p>
+        ) : null}
+        <div className="flex items-center justify-between gap-3">
+          <p
+            className={cn(
+              "money-figure text-lg font-semibold",
+              item.operation.status === "voided" && "line-through",
+            )}
+          >
+            {formatClp(
+              item.kind === "transfer" ? item.operation.amount : item.signedAmount,
+              item.kind !== "transfer",
+            )}
+          </p>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-lg"
+            aria-label={`Ver detalle de ${item.title}`}
+            onClick={onOpen}
+          >
+            <ChevronRight aria-hidden="true" className="size-5" />
+          </Button>
+        </div>
       </CardContent>
     </Card>
   )
@@ -178,13 +187,15 @@ function MovementDetailSheet({
     <Sheet open onOpenChange={(open) => !open && onClose()}>
       <SheetContent
         side="bottom"
-        className="mx-auto max-h-[90dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[env(safe-area-inset-bottom)]"
+        className="mx-auto max-h-[90dvh] w-full max-w-[430px] rounded-t-xl"
       >
         <SheetHeader>
           <SheetTitle>{detail.title}</SheetTitle>
           <SheetDescription>
             {detail.kind === "transfer"
               ? "Movimiento interno"
+              : detail.kind === "adjustment"
+                ? "Ajuste"
               : detail.kind === "income"
                 ? "Ingreso"
                 : "Gasto"} · {detail.accountName}
@@ -251,8 +262,8 @@ function MovementDetailSheet({
               ? "Sin cambios anteriores."
               : `${detail.revisions.length} revisiones históricas conservadas.`}
           </p>
-          {detail.operation.status === "posted" && (
-            <div className="grid grid-cols-2 gap-2">
+          {detail.operation.status === "posted" && detail.kind !== "adjustment" && (
+            <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
               <Button type="button" variant="outline" size="lg" onClick={onEdit}>
                 <Pencil aria-hidden="true" />
                 Editar
@@ -286,7 +297,7 @@ export function MovementsPage({
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
   const deferredQuery = useDeferredValue(query)
-  const [kind, setKind] = useState<"all" | MovementKind>("all")
+  const [kind, setKind] = useState<"all" | MovementListKind>("all")
   const [status, setStatus] = useState<"all" | "posted" | "voided">("all")
   const [accountId, setAccountId] = useState<"all" | EntityId>("all")
   const [editor, setEditor] = useState<MovementEditor | null>(null)
@@ -420,7 +431,7 @@ export function MovementsPage({
             Movimientos
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Ingresos, gastos y movimientos internos del período abierto.
+            Ingresos, gastos, ajustes y movimientos internos del período abierto.
           </p>
         </div>
         <Button
@@ -446,11 +457,11 @@ export function MovementsPage({
               aria-label="Buscar movimientos"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Buscar por concepto, cuenta o categoría"
+              placeholder="Buscar por título, cuenta, motivo o categoría"
               className="pl-8"
             />
           </div>
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
             <div>
               <Label className="sr-only">Tipo</Label>
               <Select value={kind} onValueChange={(value) => setKind(value as typeof kind)}>
@@ -462,6 +473,7 @@ export function MovementsPage({
                   <SelectItem value="all">Todos</SelectItem>
                   <SelectItem value="income">Ingresos</SelectItem>
                   <SelectItem value="expense">Gastos</SelectItem>
+                  <SelectItem value="adjustment">Ajustes</SelectItem>
                   <SelectItem value="transfer">Movimientos internos</SelectItem>
                 </SelectContent>
               </Select>
@@ -513,7 +525,7 @@ export function MovementsPage({
           description={
             hasAny
               ? "No se encontraron movimientos que coincidan con los filtros."
-              : "Registra un ingreso, gasto o movimiento interno para comenzar."
+              : "Registra un ingreso, gasto, ajuste o movimiento interno para comenzar."
           }
         />
       ) : (
@@ -556,7 +568,7 @@ export function MovementsPage({
           onEdit={() => {
             if (detail.kind === "transfer") {
               setTransferEditor({ item: detail })
-            } else {
+            } else if (detail.kind !== "adjustment") {
               setEditor({ kind: detail.kind, item: detail })
             }
             setDetail(null)

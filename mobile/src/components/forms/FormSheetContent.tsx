@@ -19,7 +19,7 @@ export function FormSheetContent({
       {...props}
       side="bottom"
       className={cn(
-        "mx-auto max-h-[92dvh] w-full max-w-[430px] overflow-y-auto rounded-t-xl pb-[calc(1rem+env(safe-area-inset-bottom))]",
+        "mx-auto max-h-[92dvh] w-full max-w-[430px] rounded-t-xl",
         className,
       )}
       onOpenAutoFocus={(event) => {

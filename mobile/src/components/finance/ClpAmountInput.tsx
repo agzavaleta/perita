@@ -20,32 +20,43 @@ export function ClpAmountInput({
   onValueChange,
   allowNegative = false,
   onBlur,
+  onFocus,
   ...props
 }: ClpAmountInputProps) {
-  const [negativeDraft, setNegativeDraft] = React.useState(false)
+  const [focused, setFocused] = React.useState(false)
+  const [draft, setDraft] = React.useState("")
 
-  const visibleValue = negativeDraft && value === null && allowNegative
-    ? "-"
+  const visibleValue = focused
+    ? draft
     : formatClpInputValue(value, { allowNegative })
 
   return (
     <Input
       {...props}
       type="text"
-      inputMode={allowNegative ? "text" : "numeric"}
+      inputMode={allowNegative ? "decimal" : "numeric"}
       pattern={allowNegative ? "-?[0-9.]*" : "[0-9.]*"}
       value={visibleValue}
+      onFocus={(event) => {
+        setDraft(value === null ? "" : String(value))
+        setFocused(true)
+        onFocus?.(event)
+      }}
       onChange={(event) => {
         const result = parseClpInputText(event.currentTarget.value, {
           allowNegative,
         })
         if (!result.valid) return
-        const isNegativeDraft = result.text === "-"
-        setNegativeDraft(isNegativeDraft)
-        if (!isNegativeDraft) onValueChange(result.value)
+        if (result.text === "-") {
+          setDraft("-")
+          return
+        }
+        setDraft(result.value === null ? "" : String(result.value))
+        onValueChange(result.value)
       }}
       onBlur={(event) => {
-        setNegativeDraft(false)
+        setFocused(false)
+        setDraft("")
         onBlur?.(event)
       }}
     />

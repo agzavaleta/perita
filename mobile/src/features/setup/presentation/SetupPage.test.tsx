@@ -211,8 +211,11 @@ describe("SetupPage reanudable", () => {
     )
   })
 
-  it("does not autofocus or confirm financial data before the review step", async () => {
-    const { saveDraft, completeSetup } = renderSetup()
+  it("does not autofocus and completes setup directly without a review screen", async () => {
+    const result = { warnings: [] } as unknown as SetupResult
+    const completeSetup = vi.fn().mockResolvedValue(result)
+    const onCompleted = vi.fn()
+    const { saveDraft } = renderSetup(NEW_STATE, completeSetup, onCompleted)
     expect(document.activeElement).not.toBe(screen.getByLabelText("Período inicial"))
     expect(document.querySelector("[autofocus]")).toBeNull()
 
@@ -225,69 +228,35 @@ describe("SetupPage reanudable", () => {
     )
     fireEvent.click(screen.getByRole("button", { name: "Comenzar a usar Perita" }))
 
-    expect(
-      await screen.findByRole("heading", { name: "Revisa tu configuración" }),
-    ).toBeInTheDocument()
-    expect(completeSetup).not.toHaveBeenCalled()
+    await waitFor(() => expect(completeSetup).toHaveBeenCalledOnce())
+    expect(Math.max(...saveDraft.mock.invocationCallOrder)).toBeLessThan(
+      completeSetup.mock.invocationCallOrder[0]!,
+    )
+    expect(screen.queryByText("Revisa tu configuración")).not.toBeInTheDocument()
+    expect(completeSetup).toHaveBeenCalledWith({
+      periodKey: "2026-08",
+      salaryReferenceAmount: 0,
+      variableExpenseBudgetAmount: 0,
+      accounts: [{
+        emoji: "💳",
+        name: "Principal",
+        bank: null,
+        openingBalance: 0,
+      }],
+    })
+    expect(onCompleted).toHaveBeenCalledWith(result)
   })
 
-  it("shows the complete plan and every account in the mandatory review", async () => {
-    const state: SetupState = {
-      ...RESUMABLE_STATE,
-      draft: {
-        ...RESUMABLE_STATE.draft!,
-        accounts: [
-          ...RESUMABLE_STATE.draft!.accounts,
-          {
-            id: "cash-account-id",
-            emoji: "💳",
-            name: "Billetera",
-            bank: null,
-            openingBalance: -10_000,
-          },
-        ],
-      },
-    }
-    renderSetup(state)
-
-    fireEvent.click(screen.getByRole("button", { name: "Comenzar a usar Perita" }))
-
-    expect(await screen.findByText("marzo de 2025")).toBeInTheDocument()
-    expect(screen.getByText("$1.200.000")).toBeInTheDocument()
-    expect(screen.getByText("$350.000")).toBeInTheDocument()
-    expect(screen.getByText("Cuenta histórica")).toBeInTheDocument()
-    expect(screen.getByText("BancoEstado")).toBeInTheDocument()
-    expect(screen.getByText("Billetera")).toBeInTheDocument()
-    expect(screen.getByText("Sin institución")).toBeInTheDocument()
-    expect(screen.getAllByText("💳")).toHaveLength(2)
-    expect(screen.getByText("$-10.000")).toBeInTheDocument()
-  })
-
-  it("returns to editing without losing the reviewed draft", async () => {
-    renderSetup(RESUMABLE_STATE)
-    fireEvent.click(screen.getByRole("button", { name: "Comenzar a usar Perita" }))
-    await screen.findByRole("heading", { name: "Revisa tu configuración" })
-
-    fireEvent.click(screen.getByRole("button", { name: "Volver" }))
-
-    expect(screen.getByLabelText("Nombre")).toHaveValue("Cuenta histórica")
-    expect(screen.getByLabelText("Sueldo de referencia")).toHaveValue("1.200.000")
-    expect(screen.getByRole("combobox")).toHaveTextContent("BancoEstado")
-  })
-
-  it("confirms exactly once with the normalized payload and reports success", async () => {
+  it("protects direct completion against a double submit", async () => {
     const result = { warnings: [] } as unknown as SetupResult
     const completeSetup = vi.fn().mockResolvedValue(result)
     const onCompleted = vi.fn()
     renderSetup(RESUMABLE_STATE, completeSetup, onCompleted)
-    fireEvent.click(screen.getByRole("button", { name: "Comenzar a usar Perita" }))
-    await screen.findByRole("heading", { name: "Revisa tu configuración" })
-
-    const confirmButton = screen.getByRole("button", {
-      name: "Confirmar y comenzar",
+    const submitButton = screen.getByRole("button", {
+      name: "Comenzar a usar Perita",
     })
-    fireEvent.click(confirmButton)
-    fireEvent.click(confirmButton)
+    fireEvent.click(submitButton)
+    fireEvent.click(submitButton)
 
     await waitFor(() => expect(completeSetup).toHaveBeenCalledOnce())
     expect(completeSetup).toHaveBeenCalledWith({
@@ -304,21 +273,15 @@ describe("SetupPage reanudable", () => {
     expect(onCompleted).toHaveBeenCalledWith(result)
   })
 
-  it("keeps the review and draft available when financial confirmation fails", async () => {
+  it("keeps the form and draft available when direct completion fails", async () => {
     const completeSetup = vi.fn().mockRejectedValue(new Error("Falló la confirmación"))
     const { saveDraft } = renderSetup(RESUMABLE_STATE, completeSetup)
     fireEvent.click(screen.getByRole("button", { name: "Comenzar a usar Perita" }))
-    await screen.findByRole("heading", { name: "Revisa tu configuración" })
-    const savesBeforeConfirmation = saveDraft.mock.calls.length
-
-    fireEvent.click(screen.getByRole("button", { name: "Confirmar y comenzar" }))
 
     expect(await screen.findByText("Falló la confirmación")).toBeInTheDocument()
-    expect(screen.getByRole("heading", { name: "Revisa tu configuración" })).toBeInTheDocument()
-    expect(screen.getByText("Cuenta histórica")).toBeInTheDocument()
-    expect(saveDraft).toHaveBeenCalledTimes(savesBeforeConfirmation)
-    fireEvent.click(screen.getByRole("button", { name: "Volver" }))
+    expect(screen.queryByText("Revisa tu configuración")).not.toBeInTheDocument()
     expect(screen.getByLabelText("Nombre")).toHaveValue("Cuenta histórica")
+    expect(saveDraft).toHaveBeenCalled()
   })
 
   it("does not advance or confirm while an account name is empty", () => {

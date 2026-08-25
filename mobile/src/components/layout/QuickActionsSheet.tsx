@@ -36,7 +36,7 @@ export function QuickActionsSheet({ children, onSelect }: QuickActionsSheetProps
         <SheetTrigger asChild>{children}</SheetTrigger>
         <SheetContent
           side="bottom"
-          className="mx-auto w-full max-w-[430px] rounded-t-2xl pb-[calc(1rem+env(safe-area-inset-bottom))]"
+          className="mx-auto w-full max-w-[430px] rounded-t-2xl"
         >
           <SheetHeader className="pb-2">
             <SheetTitle>¿Qué quieres hacer?</SheetTitle>

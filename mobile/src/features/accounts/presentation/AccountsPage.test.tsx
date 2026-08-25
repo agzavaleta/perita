@@ -2,13 +2,20 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 
 import type { Account } from "@/domain/entities"
+import type { BalanceAdjustmentOperation, Movement } from "@/domain/operations"
 import {
+  asCivilDate,
   asClpAmount,
   asEntityId,
+  asNonZeroClpDelta,
+  asPositiveClpAmount,
   asRevision,
   asUtcTimestamp,
 } from "@/domain/primitives"
-import type { AccountUseCasesPort } from "@/features/accounts/application/account-use-cases"
+import type {
+  AccountMovementHistoryItem,
+  AccountUseCasesPort,
+} from "@/features/accounts/application/account-use-cases"
 import type { BalanceAdjustmentUseCasesPort } from "@/features/accounts/application/balance-adjustment-use-cases"
 import { AccountsPage } from "@/features/accounts/presentation/AccountsPage"
 
@@ -27,6 +34,42 @@ const account: Account = {
   revision: asRevision(1),
   createdAt: asUtcTimestamp("2026-08-21T12:00:00.000Z"),
   updatedAt: asUtcTimestamp("2026-08-21T12:00:00.000Z"),
+}
+
+const adjustmentOperation: BalanceAdjustmentOperation = {
+  id: asEntityId("20000000-0000-4000-8000-000000000010"),
+  periodId: asEntityId("20000000-0000-4000-8000-000000000011"),
+  type: "balance_adjustment",
+  operationDate: asCivilDate("2026-08-20"),
+  amount: asPositiveClpAmount(25_000),
+  details: { accountId: account.id, reason: "Conciliar con banco" },
+  status: "posted",
+  voidedAt: null,
+  voidReason: null,
+  revision: asRevision(1),
+  createdAt: asUtcTimestamp("2026-08-20T12:00:00.000Z"),
+  updatedAt: asUtcTimestamp("2026-08-20T12:00:00.000Z"),
+}
+
+const adjustmentMovement: Movement = {
+  id: asEntityId("20000000-0000-4000-8000-000000000012"),
+  operationId: adjustmentOperation.id,
+  periodId: adjustmentOperation.periodId,
+  targetType: "account",
+  targetId: account.id,
+  effectType: "asset_balance",
+  delta: asNonZeroClpDelta(25_000),
+  status: "posted",
+  createdAt: adjustmentOperation.createdAt,
+  updatedAt: adjustmentOperation.updatedAt,
+}
+
+const adjustmentHistory: AccountMovementHistoryItem = {
+  operation: adjustmentOperation,
+  movement: adjustmentMovement,
+  title: "Ajuste de saldo",
+  description: "Conciliar con banco",
+  signedAmount: 25_000,
 }
 
 function service(overrides: Partial<AccountUseCasesPort> = {}): AccountUseCasesPort {
@@ -63,8 +106,8 @@ describe("AccountsPage", () => {
     const dialog = screen.getByRole("dialog")
     expect(dialog).toHaveClass(
       "max-h-[92dvh]",
-      "overflow-y-auto",
-      "pb-[calc(1rem+env(safe-area-inset-bottom))]",
+      "data-[side=bottom]:overflow-y-auto",
+      "data-[side=bottom]:pb-[calc(1rem+env(safe-area-inset-bottom))]",
     )
     expect(document.querySelector("[autofocus]")).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText("Nombre"), {
@@ -172,6 +215,26 @@ describe("AccountsPage", () => {
     expect(screen.getByRole("button", { name: "Desactivar" })).toBeInTheDocument()
   })
 
+  it("shows the real related adjustment history instead of only a counter", async () => {
+    const useCases = service({
+      listAccounts: vi.fn().mockResolvedValue([account]),
+      listRelatedMovements: vi.fn().mockResolvedValue([adjustmentHistory]),
+    })
+    render(<AccountsPage useCases={useCases} />)
+
+    await screen.findByText("Cuenta principal")
+    fireEvent.click(
+      screen.getByRole("button", { name: "Ver detalle de Cuenta principal" }),
+    )
+
+    expect(await screen.findByText("Ajuste de saldo")).toBeInTheDocument()
+    expect(screen.getByText("Conciliar con banco")).toBeInTheDocument()
+    expect(screen.getByText("20-08-2026")).toBeInTheDocument()
+    expect(screen.getByText(/\+.*25\.000/)).toBeInTheDocument()
+    expect(screen.queryByText(/1 movimiento relacionado/)).not.toBeInTheDocument()
+    expect(screen.queryByText("Aún no hay movimientos relacionados")).not.toBeInTheDocument()
+  })
+
   it("routes a post-setup balance correction through a traceable adjustment", async () => {
     const createAdjustment = vi.fn().mockResolvedValue({ account })
     const balanceAdjustmentUseCases: BalanceAdjustmentUseCasesPort = {
@@ -192,8 +255,8 @@ describe("AccountsPage", () => {
     const dialog = screen.getByRole("dialog")
     expect(dialog).toHaveClass(
       "max-h-[92dvh]",
-      "overflow-y-auto",
-      "pb-[calc(1rem+env(safe-area-inset-bottom))]",
+      "data-[side=bottom]:overflow-y-auto",
+      "data-[side=bottom]:pb-[calc(1rem+env(safe-area-inset-bottom))]",
     )
     expect(screen.getByLabelText("Motivo")).toBeRequired()
     const balance = screen.getByRole("textbox", { name: "Saldo real" })

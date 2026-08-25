@@ -203,8 +203,8 @@ describe("TransferForm C6F", () => {
     const form = dialog.querySelector("form")
     expect(dialog).toHaveClass(
       "max-h-[92dvh]",
-      "overflow-y-auto",
-      "pb-[calc(1rem+env(safe-area-inset-bottom))]",
+      "data-[side=bottom]:overflow-y-auto",
+      "data-[side=bottom]:pb-[calc(1rem+env(safe-area-inset-bottom))]",
     )
     expect(form?.querySelector(".grid-cols-2")).not.toBeInTheDocument()
     expect(

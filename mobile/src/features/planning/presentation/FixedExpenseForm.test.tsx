@@ -68,8 +68,8 @@ describe("FixedExpenseForm C6D", () => {
     const dialog = screen.getByRole("dialog")
     expect(dialog).toHaveClass(
       "max-h-[92dvh]",
-      "overflow-y-auto",
-      "pb-[calc(1rem+env(safe-area-inset-bottom))]",
+      "data-[side=bottom]:overflow-y-auto",
+      "data-[side=bottom]:pb-[calc(1rem+env(safe-area-inset-bottom))]",
     )
     expect(dialog.querySelector("form")?.querySelector(".grid-cols-2")).not.toBeInTheDocument()
     expect(document.querySelector("[autofocus]")).not.toBeInTheDocument()

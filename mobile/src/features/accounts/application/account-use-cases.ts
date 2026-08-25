@@ -5,7 +5,7 @@ import {
   assertAuditEventInvariant,
   assertInitialBalancePolicy,
 } from "@/domain/invariants"
-import type { Movement } from "@/domain/operations"
+import type { Movement, Operation } from "@/domain/operations"
 import type { PeriodOpening } from "@/domain/periods"
 import {
   asClpAmount,
@@ -54,10 +54,18 @@ export interface ChangeAccountStatusInput {
   readonly expectedRevision: Revision
 }
 
+export interface AccountMovementHistoryItem {
+  readonly operation: Operation
+  readonly movement: Movement
+  readonly title: string
+  readonly description: string | null
+  readonly signedAmount: number
+}
+
 export interface AccountUseCasesPort {
   listAccounts(): Promise<Account[]>
   getAccount(accountId: EntityId): Promise<Account>
-  listRelatedMovements(accountId: EntityId): Promise<Movement[]>
+  listRelatedMovements(accountId: EntityId): Promise<AccountMovementHistoryItem[]>
   createAccount(input: AccountDraft): Promise<Account>
   editAccount(input: EditAccountInput): Promise<Account>
   deactivateAccount(input: ChangeAccountStatusInput): Promise<Account>
@@ -95,6 +103,47 @@ function normalizeDraft(input: AccountDraft, fallbackEmoji: string): Required<Ac
   return { name, bank, emoji }
 }
 
+function historyTitle(operation: Operation) {
+  switch (operation.type) {
+    case "balance_adjustment":
+      return "Ajuste de saldo"
+    case "salary_receipt":
+      return "Sueldo recibido"
+    case "additional_income":
+      return operation.details.concept ?? "Ingreso adicional"
+    case "variable_expense":
+      return operation.details.concept
+    case "fixed_expense_payment":
+      return "Pago de gasto fijo"
+    case "debt_payment":
+      return operation.details.concept ?? "Pago de deuda"
+    case "transfer":
+      return operation.details.concept ?? "Movimiento interno"
+    case "savings_deposit":
+      return operation.details.concept ?? "Aporte a meta"
+    case "savings_withdrawal":
+      return operation.details.concept ?? "Retiro de meta"
+    case "debt_total_adjustment":
+      return "Ajuste de deuda"
+  }
+}
+
+function historyDescription(operation: Operation) {
+  switch (operation.type) {
+    case "balance_adjustment":
+      return operation.details.reason
+    case "additional_income":
+    case "variable_expense":
+    case "debt_payment":
+    case "savings_deposit":
+    case "savings_withdrawal":
+    case "transfer":
+      return operation.details.observation
+    default:
+      return null
+  }
+}
+
 export class AccountUseCases implements AccountUseCasesPort {
   private readonly repositories: PeritaRepositories
   private readonly now: () => UtcTimestamp
@@ -127,9 +176,30 @@ export class AccountUseCases implements AccountUseCasesPort {
       "account",
       accountId,
     )
-    return movements.toSorted((left, right) =>
-      right.createdAt.localeCompare(left.createdAt),
+    const records = await Promise.all(
+      movements.map(async (movement) => ({
+        movement,
+        operation: await this.repositories.operations.get(movement.operationId),
+      })),
     )
+    return records
+      .flatMap(({ movement, operation }) =>
+        operation
+          ? [{
+              operation,
+              movement,
+              title: historyTitle(operation),
+              description: historyDescription(operation),
+              signedAmount: movement.delta,
+            } satisfies AccountMovementHistoryItem]
+          : [],
+      )
+      .toSorted(
+        (left, right) =>
+          right.operation.operationDate.localeCompare(
+            left.operation.operationDate,
+          ) || right.operation.createdAt.localeCompare(left.operation.createdAt),
+      )
   }
 
   async createAccount(input: AccountDraft) {

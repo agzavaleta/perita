@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeAll, describe, expect, it, vi } from "vitest"
 
 import type { Account, Category, SavingsGoal } from "@/domain/entities"
 import type { Movement, Operation } from "@/domain/operations"
@@ -20,6 +20,10 @@ import type {
   TransferFormOptions,
 } from "@/features/movements/application/movement-use-cases"
 import { MovementsPage } from "@/features/movements/presentation/MovementsPage"
+
+beforeAll(() => {
+  Element.prototype.scrollIntoView = vi.fn()
+})
 
 const ACCOUNT_ID = asEntityId("40000000-0000-4000-8000-000000000001")
 const CATEGORY_ID = asEntityId("40000000-0000-4000-8000-000000000002")
@@ -112,6 +116,39 @@ const item: MovementListItem = {
 }
 
 const detail: MovementDetail = { ...item, revisions: [] }
+const adjustmentOperation: MovementListItem["operation"] = {
+  id: asEntityId("40000000-0000-4000-8000-000000000010"),
+  periodId: PERIOD_ID,
+  type: "balance_adjustment",
+  operationDate: asCivilDate("2026-08-20"),
+  amount: asPositiveClpAmount(12_000),
+  details: {
+    accountId: ACCOUNT_ID,
+    reason: "Conciliación bancaria",
+  },
+  status: "posted",
+  voidedAt: null,
+  voidReason: null,
+  revision: asRevision(1),
+  createdAt: NOW,
+  updatedAt: NOW,
+}
+const adjustmentMovement: Movement = {
+  ...movement,
+  id: asEntityId("40000000-0000-4000-8000-000000000011"),
+  operationId: adjustmentOperation.id,
+  delta: asNonZeroClpDelta(-12_000),
+}
+const adjustmentItem: MovementListItem = {
+  operation: adjustmentOperation,
+  movement: adjustmentMovement,
+  movements: [adjustmentMovement],
+  kind: "adjustment",
+  title: "Ajuste de saldo",
+  description: "Conciliación bancaria",
+  accountName: account.name,
+  signedAmount: -12_000,
+}
 const options: MovementFormOptions = {
   accounts: [account],
   categories: [category],
@@ -141,6 +178,26 @@ function service(overrides: Partial<MovementUseCasesPort> = {}): MovementUseCase
 }
 
 describe("MovementsPage", () => {
+  it("shows balance adjustments and exposes their explicit filter", async () => {
+    const listMovements = vi.fn().mockResolvedValue([adjustmentItem])
+    render(<MovementsPage useCases={service({ listMovements })} />)
+
+    expect(await screen.findByText("Ajuste de saldo")).toBeInTheDocument()
+    expect(screen.getByText("Conciliación bancaria")).toBeInTheDocument()
+    expect(screen.getByText(/-.*12\.000/)).toBeInTheDocument()
+    expect(
+      screen.queryByText("Aún no has registrado movimientos"),
+    ).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole("combobox", { name: "Tipo de movimiento" }))
+    fireEvent.click(screen.getByRole("option", { name: "Ajustes" }))
+    await waitFor(() =>
+      expect(listMovements).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "adjustment" }),
+      ),
+    )
+  })
+
   it("propagates category administration from a new expense without active categories", async () => {
     const onManageCategories = vi.fn()
     const inactiveCategory: Category = { ...category, status: "inactive" }
