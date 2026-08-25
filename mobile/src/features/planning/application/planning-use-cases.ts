@@ -5,23 +5,37 @@ import type {
   SavingsGoal,
 } from "@/domain/entities"
 import {
+  applySavingsGoalMovementChange,
+  assertOperationDateContext,
+} from "@/domain/financial"
+import {
   assertAuditEventInvariant,
   assertCurrentPeriodFixedExpenseInstance,
   assertFixedExpenseInstanceInvariant,
   assertFixedExpenseTemplateInvariant,
   assertInitialBalancePolicy,
+  assertOperationMovementInvariant,
   assertSavingsGoalInvariant,
   deriveSavingsGoalProgress,
 } from "@/domain/invariants"
-import type { Movement, Operation } from "@/domain/operations"
-import type { PeriodOpening } from "@/domain/periods"
+import type {
+  BalanceAdjustmentOperation,
+  Movement,
+  Operation,
+} from "@/domain/operations"
+import type { Period, PeriodOpening } from "@/domain/periods"
 import {
+  daysInMonth,
+  asCivilDate,
   asClpAmount,
   asEntityId,
+  asNonZeroClpDelta,
   asPositiveClpAmount,
   asRevision,
   asUtcTimestamp,
+  type CivilDate,
   type EntityId,
+  type PeriodKey,
   type Revision,
   type UtcTimestamp,
 } from "@/domain/primitives"
@@ -33,12 +47,14 @@ export interface SavingsGoalDraft {
   readonly bank?: string | null
   readonly emoji?: string
   readonly targetAmount: number
+  readonly currentBalance?: number
   readonly plannedMonthlyAmount: number
 }
 
 export interface EditSavingsGoalInput extends SavingsGoalDraft {
   readonly goalId: EntityId
   readonly expectedRevision: Revision
+  readonly balanceAdjustmentReason?: string | null
 }
 
 export interface GoalMovementItem {
@@ -95,6 +111,7 @@ export type PlanningErrorCode =
   | "invalid_name"
   | "invalid_emoji"
   | "invalid_amount"
+  | "invalid_reason"
   | "invalid_state"
   | "nonzero_balance"
   | "no_changes"
@@ -115,6 +132,7 @@ export class PlanningUseCaseError extends Error {
 
 interface PlanningUseCasesOptions {
   readonly now?: () => UtcTimestamp
+  readonly today?: () => CivilDate
   readonly createId?: () => EntityId
 }
 
@@ -124,6 +142,28 @@ function defaultNow() {
 
 function defaultCreateId() {
   return asEntityId(globalThis.crypto.randomUUID())
+}
+
+function defaultToday() {
+  const values = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/Santiago",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .formatToParts(new Date())
+      .map(({ type, value }) => [type, value]),
+  )
+  return asCivilDate(`${values.year}-${values.month}-${values.day}`)
+}
+
+function operationDateForPeriod(periodKey: PeriodKey, today: CivilDate) {
+  if (today.startsWith(`${periodKey}-`)) return today
+  const [year, month] = periodKey.split("-").map(Number)
+  return asCivilDate(
+    `${periodKey}-${String(daysInMonth(year, month)).padStart(2, "0")}`,
+  )
 }
 
 function requiredName(value: string) {
@@ -167,6 +207,17 @@ function nonnegativeAmount(value: number) {
   }
 }
 
+function savingsBalance(value: number) {
+  try {
+    return asClpAmount(value)
+  } catch {
+    throw new PlanningUseCaseError(
+      "invalid_amount",
+      "El saldo actual debe ser un entero CLP igual o mayor que cero.",
+    )
+  }
+}
+
 export function savingsGoalProgressPercent(goal: SavingsGoal) {
   return Math.min(100, Math.floor((goal.currentBalance / goal.targetAmount) * 100))
 }
@@ -178,6 +229,7 @@ type PlanningAuditSnapshot =
 
 export class PlanningUseCases implements PlanningUseCasesPort {
   private readonly now: () => UtcTimestamp
+  private readonly today: () => CivilDate
   private readonly createId: () => EntityId
   private readonly repositories: PeritaRepositories
 
@@ -187,6 +239,7 @@ export class PlanningUseCases implements PlanningUseCasesPort {
   ) {
     this.repositories = repositories
     this.now = options.now ?? defaultNow
+    this.today = options.today ?? defaultToday
     this.createId = options.createId ?? defaultCreateId
   }
 
@@ -230,7 +283,7 @@ export class PlanningUseCases implements PlanningUseCasesPort {
   async createSavingsGoal(input: SavingsGoalDraft) {
     const period = await this.requireOpenPeriod()
     const occurredAt = this.now()
-    const goal = assertSavingsGoalInvariant({
+    const baseGoal = assertSavingsGoalInvariant({
       id: this.createId(),
       emoji: requiredEmoji(input.emoji, "💰"),
       name: requiredName(input.name),
@@ -249,9 +302,28 @@ export class PlanningUseCases implements PlanningUseCasesPort {
     assertInitialBalancePolicy({
       targetType: "savings_goal",
       duringSetup: false,
-      openingBalance: goal.openingBalance,
-      currentBalance: goal.currentBalance,
+      openingBalance: baseGoal.openingBalance,
+      currentBalance: baseGoal.currentBalance,
     })
+    const currentBalance = savingsBalance(input.currentBalance ?? 0)
+    const adjustment =
+      currentBalance > 0
+        ? this.savingsGoalAdjustment(
+            period,
+            baseGoal.id,
+            currentBalance,
+            "Saldo inicial informado al crear meta",
+            occurredAt,
+          )
+        : undefined
+    const goal = adjustment
+      ? applySavingsGoalMovementChange({
+          goal: baseGoal,
+          previousDelta: null,
+          nextDelta: adjustment.movement.delta,
+          occurredAt,
+        })
+      : baseGoal
     const opening: PeriodOpening = {
       id: this.createId(),
       periodId: period.id,
@@ -259,19 +331,34 @@ export class PlanningUseCases implements PlanningUseCasesPort {
       targetId: goal.id,
       openingAmount: asClpAmount(0),
     }
-    const auditEvent = this.createdAudit(
+    const createdAuditEvent = this.createdAudit(
       "savings_goal",
-      goal,
+      baseGoal,
       period.id,
       "savings-goal.create",
       occurredAt,
     )
+    const auditEvents = adjustment
+      ? [
+          createdAuditEvent,
+          this.changedAudit(
+            "updated",
+            "savings_goal",
+            baseGoal,
+            goal,
+            period.id,
+            "savings-goal.initial-balance-adjustment",
+            occurredAt,
+          ),
+        ]
+      : [createdAuditEvent]
     await this.persist(() =>
       this.repositories.planning.createSavingsGoal({
         period: this.expected(period),
         goal,
         opening,
-        auditEvent,
+        auditEvents,
+        adjustment,
       }),
     )
     return goal
@@ -292,17 +379,29 @@ export class PlanningUseCases implements PlanningUseCasesPort {
     const bank = input.bank?.trim() || null
     const targetAmount = positiveAmount(input.targetAmount)
     const plannedMonthlyAmount = nonnegativeAmount(input.plannedMonthlyAmount)
+    const currentBalance = savingsBalance(
+      input.currentBalance ?? previous.currentBalance,
+    )
+    const balanceDelta = currentBalance - previous.currentBalance
+    const balanceAdjustmentReason = input.balanceAdjustmentReason?.trim() ?? ""
+    if (balanceDelta !== 0 && !balanceAdjustmentReason) {
+      throw new PlanningUseCaseError(
+        "invalid_reason",
+        "El motivo del ajuste es obligatorio cuando cambia el saldo.",
+      )
+    }
     if (
       previous.name === name &&
       previous.emoji === emoji &&
       previous.bank === bank &&
       previous.targetAmount === targetAmount &&
-      previous.plannedMonthlyAmount === plannedMonthlyAmount
+      previous.plannedMonthlyAmount === plannedMonthlyAmount &&
+      balanceDelta === 0
     ) {
       throw new PlanningUseCaseError("no_changes", "No hay cambios para guardar.")
     }
     const occurredAt = this.now()
-    const goal = assertSavingsGoalInvariant({
+    const metadataGoal = assertSavingsGoalInvariant({
       ...previous,
       emoji,
       name,
@@ -313,9 +412,29 @@ export class PlanningUseCases implements PlanningUseCasesPort {
         previous.currentBalance,
         targetAmount,
       ),
-      revision: this.nextRevision(previous.revision),
       updatedAt: occurredAt,
     })
+    const adjustment =
+      balanceDelta === 0
+        ? undefined
+        : this.savingsGoalAdjustment(
+            period,
+            previous.id,
+            asNonZeroClpDelta(balanceDelta),
+            balanceAdjustmentReason,
+            occurredAt,
+          )
+    const goal = adjustment
+      ? applySavingsGoalMovementChange({
+          goal: metadataGoal,
+          previousDelta: null,
+          nextDelta: adjustment.movement.delta,
+          occurredAt,
+        })
+      : assertSavingsGoalInvariant({
+          ...metadataGoal,
+          revision: this.nextRevision(previous.revision),
+        })
     const auditEvent = this.changedAudit(
       "updated",
       "savings_goal",
@@ -331,6 +450,7 @@ export class PlanningUseCases implements PlanningUseCasesPort {
         expectedGoal: this.expected(previous),
         goal,
         auditEvent,
+        adjustment,
       }),
     )
     return goal
@@ -667,6 +787,46 @@ export class PlanningUseCases implements PlanningUseCasesPort {
 
   private expected(record: { readonly id: EntityId; readonly revision: Revision }) {
     return { id: record.id, revision: record.revision }
+  }
+
+  private savingsGoalAdjustment(
+    period: Period,
+    goalId: EntityId,
+    delta: number,
+    reason: string,
+    occurredAt: UtcTimestamp,
+  ) {
+    const movementDelta = asNonZeroClpDelta(delta)
+    const today = this.today()
+    const operation: BalanceAdjustmentOperation = {
+      id: this.createId(),
+      periodId: period.id,
+      type: "balance_adjustment",
+      operationDate: operationDateForPeriod(period.periodKey, today),
+      amount: asPositiveClpAmount(Math.abs(movementDelta)),
+      details: { goalId, reason },
+      status: "posted",
+      voidedAt: null,
+      voidReason: null,
+      revision: asRevision(1),
+      createdAt: occurredAt,
+      updatedAt: occurredAt,
+    }
+    assertOperationDateContext(operation, period, today)
+    const movement: Movement = {
+      id: this.createId(),
+      operationId: operation.id,
+      periodId: period.id,
+      targetType: "savings_goal",
+      targetId: goalId,
+      effectType: "asset_balance",
+      delta: movementDelta,
+      status: "posted",
+      createdAt: occurredAt,
+      updatedAt: occurredAt,
+    }
+    assertOperationMovementInvariant(operation, [movement])
+    return { operation, movement }
   }
 
   private createdAudit(

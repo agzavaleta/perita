@@ -8,6 +8,7 @@ import {
   asClpAmount,
   asEntityId,
   asPeriodKey,
+  asPositiveClpAmount,
   asRevision,
   asUtcTimestamp,
 } from "@/domain/primitives"
@@ -81,6 +82,7 @@ describe("PlanningUseCases", () => {
     const createId = idSequence()
     planning = new PlanningUseCases(repositories, {
       now: () => NOW,
+      today: () => TODAY,
       createId,
     })
     movements = new MovementUseCases(repositories, {
@@ -98,6 +100,7 @@ describe("PlanningUseCases", () => {
       name: "Viaje",
       bank: "BancoEstado",
       targetAmount: 100_000,
+      currentBalance: 0,
       plannedMonthlyAmount: 20_000,
     })
     expect(goal).toMatchObject({
@@ -115,6 +118,8 @@ describe("PlanningUseCases", () => {
         openingAmount: 0,
       }),
     ])
+    expect(await repositories.operations.count()).toBe(0)
+    expect(await repositories.movements.count()).toBe(0)
 
     await movements.registerTransfer({
       sourceType: "account",
@@ -146,6 +151,189 @@ describe("PlanningUseCases", () => {
       progressStatus: "in_progress",
     })
     expect(savingsGoalProgressPercent(edited)).toBe(50)
+  })
+
+  it("creates a goal with prior savings as an atomic adjustment and zero opening", async () => {
+    const accountBefore = await repositories.accounts.get(ACCOUNT_ID)
+    const goal = await planning.createSavingsGoal({
+      name: "Pie vivienda",
+      targetAmount: 1_000_000,
+      currentBalance: 400_000,
+      plannedMonthlyAmount: 50_000,
+    })
+
+    expect(goal).toMatchObject({
+      openingBalance: 0,
+      currentBalance: 400_000,
+      plannedMonthlyAmount: 50_000,
+      progressStatus: "in_progress",
+    })
+    expect(await repositories.periodOpenings.listByPeriod(PERIOD_ID)).toEqual([
+      expect.objectContaining({
+        targetType: "savings_goal",
+        targetId: goal.id,
+        openingAmount: 0,
+      }),
+    ])
+    expect(await repositories.operations.getAll()).toEqual([
+      expect.objectContaining({
+        type: "balance_adjustment",
+        amount: 400_000,
+        details: {
+          goalId: goal.id,
+          reason: "Saldo inicial informado al crear meta",
+        },
+      }),
+    ])
+    expect(await repositories.movements.getAll()).toEqual([
+      expect.objectContaining({
+        targetType: "savings_goal",
+        targetId: goal.id,
+        delta: 400_000,
+      }),
+    ])
+    expect(await repositories.operations.listByType(PERIOD_ID, "savings_deposit"))
+      .toHaveLength(0)
+    expect(await repositories.accounts.get(ACCOUNT_ID)).toEqual(accountBefore)
+  })
+
+  it("marks a newly informed balance above its target as completed", async () => {
+    const goal = await planning.createSavingsGoal({
+      name: "Notebook",
+      targetAmount: 300_000,
+      currentBalance: 400_000,
+      plannedMonthlyAmount: 0,
+    })
+
+    expect(goal).toMatchObject({
+      currentBalance: 400_000,
+      progressStatus: "completed",
+    })
+  })
+
+  it("records signed adjustments when editing a goal balance", async () => {
+    const increaseGoal = await planning.createSavingsGoal({
+      name: "Aumento",
+      targetAmount: 1_000_000,
+      currentBalance: 400_000,
+      plannedMonthlyAmount: 0,
+    })
+    const increased = await planning.editSavingsGoal({
+      goalId: increaseGoal.id,
+      expectedRevision: increaseGoal.revision,
+      name: increaseGoal.name,
+      bank: increaseGoal.bank,
+      emoji: increaseGoal.emoji,
+      targetAmount: increaseGoal.targetAmount,
+      currentBalance: 500_000,
+      plannedMonthlyAmount: increaseGoal.plannedMonthlyAmount,
+      balanceAdjustmentReason: "Conciliación al alza",
+    })
+    expect(increased.currentBalance).toBe(500_000)
+
+    const decreaseGoal = await planning.createSavingsGoal({
+      name: "Disminución",
+      targetAmount: 1_000_000,
+      currentBalance: 400_000,
+      plannedMonthlyAmount: 0,
+    })
+    const decreased = await planning.editSavingsGoal({
+      goalId: decreaseGoal.id,
+      expectedRevision: decreaseGoal.revision,
+      name: decreaseGoal.name,
+      bank: decreaseGoal.bank,
+      emoji: decreaseGoal.emoji,
+      targetAmount: decreaseGoal.targetAmount,
+      currentBalance: 300_000,
+      plannedMonthlyAmount: decreaseGoal.plannedMonthlyAmount,
+      balanceAdjustmentReason: "Conciliación a la baja",
+    })
+    expect(decreased.currentBalance).toBe(300_000)
+
+    const movements = await repositories.movements.getAll()
+    expect(movements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ targetId: increaseGoal.id, delta: 100_000 }),
+        expect.objectContaining({ targetId: decreaseGoal.id, delta: -100_000 }),
+      ]),
+    )
+  })
+
+  it("does not create an adjustment for metadata-only edits and requires a reason for balance changes", async () => {
+    const goal = await planning.createSavingsGoal({
+      name: "Reserva",
+      targetAmount: 1_000_000,
+      currentBalance: 400_000,
+      plannedMonthlyAmount: 25_000,
+    })
+    const operationCount = await repositories.operations.count()
+    const edited = await planning.editSavingsGoal({
+      goalId: goal.id,
+      expectedRevision: goal.revision,
+      name: "Reserva familiar",
+      bank: goal.bank,
+      emoji: goal.emoji,
+      targetAmount: goal.targetAmount,
+      currentBalance: goal.currentBalance,
+      plannedMonthlyAmount: goal.plannedMonthlyAmount,
+    })
+    expect(edited.name).toBe("Reserva familiar")
+    expect(await repositories.operations.count()).toBe(operationCount)
+
+    await expect(
+      planning.editSavingsGoal({
+        goalId: edited.id,
+        expectedRevision: edited.revision,
+        name: edited.name,
+        bank: edited.bank,
+        emoji: edited.emoji,
+        targetAmount: edited.targetAmount,
+        currentBalance: 500_000,
+        plannedMonthlyAmount: edited.plannedMonthlyAmount,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_reason" })
+    expect((await repositories.savingsGoals.get(goal.id))?.currentBalance).toBe(
+      400_000,
+    )
+    expect(await repositories.operations.count()).toBe(operationCount)
+  })
+
+  it("rolls back the entire goal creation when its adjustment cannot be persisted", async () => {
+    const collidingOperationId = asEntityId(
+      "50000000-0000-4000-8000-000000000101",
+    )
+    await repositories.operations.add({
+      id: collidingOperationId,
+      periodId: PERIOD_ID,
+      type: "balance_adjustment",
+      operationDate: TODAY,
+      amount: asPositiveClpAmount(1),
+      details: { accountId: ACCOUNT_ID, reason: "Colisión controlada" },
+      status: "posted",
+      voidedAt: null,
+      voidReason: null,
+      revision: asRevision(1),
+      createdAt: NOW,
+      updatedAt: NOW,
+    })
+
+    await expect(
+      planning.createSavingsGoal({
+        name: "No debe persistir",
+        targetAmount: 1_000_000,
+        currentBalance: 400_000,
+        plannedMonthlyAmount: 0,
+      }),
+    ).rejects.toThrow()
+
+    expect(await repositories.savingsGoals.count()).toBe(0)
+    expect(await repositories.periodOpenings.count()).toBe(0)
+    expect(await repositories.movements.count()).toBe(0)
+    expect(await repositories.auditEvents.count()).toBe(0)
+    expect(await repositories.operations.count()).toBe(1)
+    expect((await repositories.accounts.get(ACCOUNT_ID))?.currentBalance).toBe(
+      200_000,
+    )
   })
 
   it("closes only active goals with zero balance and never reopens them", async () => {

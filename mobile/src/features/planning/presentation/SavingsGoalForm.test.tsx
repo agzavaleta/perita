@@ -89,6 +89,10 @@ describe("SavingsGoalForm C6E", () => {
     fireEvent.change(target, { target: { value: "1500000" } })
     expect(target).toHaveValue("1.500.000")
     expect(screen.getByLabelText("Aporte mensual planificado")).toHaveValue("0")
+    expect(screen.getByLabelText("Saldo actual (opcional)")).toHaveValue("0")
+    expect(
+      screen.queryByText(/Las metas nuevas comienzan con saldo/),
+    ).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Crear meta" }))
 
     await waitFor(() =>
@@ -97,6 +101,7 @@ describe("SavingsGoalForm C6E", () => {
         name: "Casa",
         bank: null,
         targetAmount: 1_500_000,
+        currentBalance: 0,
         plannedMonthlyAmount: 0,
       }),
     )
@@ -127,6 +132,7 @@ describe("SavingsGoalForm C6E", () => {
         name: "Emergencias",
         bank: "BancoEstado",
         targetAmount: 500_000,
+        currentBalance: 0,
         plannedMonthlyAmount: 50_000,
       }),
     )
@@ -143,6 +149,7 @@ describe("SavingsGoalForm C6E", () => {
       "Cooperativa histórica",
     )
     expect(screen.getByLabelText("Objetivo")).toHaveValue("1.500.000")
+    expect(screen.getByLabelText("Saldo actual (opcional)")).toHaveValue("250.000")
     expect(screen.getByLabelText("Aporte mensual planificado")).toHaveValue("50.000")
     expect(screen.getByRole("textbox", { name: "Emoji" })).toHaveValue("💰")
     fireEvent.change(screen.getByRole("textbox", { name: "Emoji" }), {
@@ -161,8 +168,57 @@ describe("SavingsGoalForm C6E", () => {
         name: "Viaje familiar",
         bank: "Cooperativa histórica",
         targetAmount: 1_500_000,
+        currentBalance: 250_000,
         plannedMonthlyAmount: 50_000,
+        balanceAdjustmentReason: "",
       }),
+    )
+  })
+
+  it("creates a goal with a formatted current balance", async () => {
+    const createSavingsGoal = vi.fn().mockResolvedValue(goal)
+    renderForm({ useCases: service({ createSavingsGoal }) })
+
+    fireEvent.change(screen.getByLabelText("Nombre"), {
+      target: { value: "Pie vivienda" },
+    })
+    fireEvent.change(screen.getByLabelText("Objetivo"), {
+      target: { value: "1000000" },
+    })
+    const balance = screen.getByLabelText("Saldo actual (opcional)")
+    fireEvent.change(balance, { target: { value: "400000" } })
+    expect(balance).toHaveValue("400.000")
+    fireEvent.click(screen.getByRole("button", { name: "Crear meta" }))
+
+    await waitFor(() =>
+      expect(createSavingsGoal).toHaveBeenCalledWith(
+        expect.objectContaining({ currentBalance: 400_000 }),
+      ),
+    )
+  })
+
+  it("requires and sends a reason when an existing balance changes", async () => {
+    const editSavingsGoal = vi.fn().mockResolvedValue({
+      ...goal,
+      currentBalance: asClpAmount(300_000),
+    })
+    renderForm({ currentGoal: goal, useCases: service({ editSavingsGoal }) })
+
+    fireEvent.change(screen.getByLabelText("Saldo actual (opcional)"), {
+      target: { value: "300000" },
+    })
+    const reason = screen.getByLabelText("Motivo del ajuste")
+    expect(reason).toBeRequired()
+    fireEvent.change(reason, { target: { value: "Conciliar ahorro" } })
+    fireEvent.click(screen.getByRole("button", { name: "Guardar cambios" }))
+
+    await waitFor(() =>
+      expect(editSavingsGoal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          currentBalance: 300_000,
+          balanceAdjustmentReason: "Conciliar ahorro",
+        }),
+      ),
     )
   })
 })

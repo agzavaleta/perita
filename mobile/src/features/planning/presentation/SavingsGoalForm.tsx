@@ -39,6 +39,10 @@ export function SavingsGoalForm({
   const [targetAmount, setTargetAmount] = useState<number | null>(
     goal?.targetAmount ?? null,
   )
+  const [currentBalance, setCurrentBalance] = useState<number | null>(
+    goal?.currentBalance ?? 0,
+  )
+  const [balanceAdjustmentReason, setBalanceAdjustmentReason] = useState("")
   const [plannedMonthlyAmount, setPlannedMonthlyAmount] = useState<number | null>(
     goal?.plannedMonthlyAmount ?? 0,
   )
@@ -55,6 +59,7 @@ export function SavingsGoalForm({
         name,
         bank,
         targetAmount: targetAmount ?? 0,
+        currentBalance: currentBalance ?? 0,
         plannedMonthlyAmount: plannedMonthlyAmount ?? 0,
       }
       const saved = goal
@@ -62,6 +67,7 @@ export function SavingsGoalForm({
             ...draft,
             goalId: goal.id,
             expectedRevision: goal.revision,
+            balanceAdjustmentReason,
           })
         : await useCases.createSavingsGoal(draft)
       onSaved(saved)
@@ -78,8 +84,7 @@ export function SavingsGoalForm({
         <SheetHeader>
           <SheetTitle>{goal ? "Editar meta" : "Nueva meta"}</SheetTitle>
           <SheetDescription>
-            Las metas nuevas comienzan con saldo $0. Los aportes se hacen con
-            Mover dinero.
+            Define el objetivo y la planificación de esta meta.
           </SheetDescription>
         </SheetHeader>
         <form className="space-y-4 px-4" onSubmit={submit}>
@@ -124,6 +129,28 @@ export function SavingsGoalForm({
               disabled={saving}
             />
           </div>
+          <div className="space-y-2">
+            <Label htmlFor="goal-balance">Saldo actual (opcional)</Label>
+            <ClpAmountInput
+              id="goal-balance"
+              value={currentBalance}
+              onValueChange={setCurrentBalance}
+              placeholder="0"
+              disabled={saving}
+            />
+          </div>
+          {goal && (currentBalance ?? 0) !== goal.currentBalance ? (
+            <div className="space-y-2">
+              <Label htmlFor="goal-balance-reason">Motivo del ajuste</Label>
+              <Input
+                id="goal-balance-reason"
+                required
+                value={balanceAdjustmentReason}
+                onChange={(event) => setBalanceAdjustmentReason(event.target.value)}
+                disabled={saving}
+              />
+            </div>
+          ) : null}
           <div className="space-y-2">
             <Label htmlFor="goal-monthly">Aporte mensual planificado</Label>
             <ClpAmountInput

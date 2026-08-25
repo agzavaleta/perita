@@ -9,6 +9,7 @@ import type {
   SavingsGoal,
 } from "@/domain/entities"
 import type {
+  BalanceAdjustmentOperation,
   Movement,
   Operation,
   OperationRevision,
@@ -292,13 +293,15 @@ export interface PlanningRepository {
     readonly period: ExpectedRecordState
     readonly goal: SavingsGoal
     readonly opening: PeriodOpening
-    readonly auditEvent: AuditEvent
+    readonly auditEvents: readonly AuditEvent[]
+    readonly adjustment?: SavingsGoalBalanceAdjustment
   }): Promise<void>
   changeSavingsGoal(input: {
     readonly period: ExpectedRecordState
     readonly expectedGoal: ExpectedRecordState
     readonly goal: SavingsGoal
     readonly auditEvent: AuditEvent
+    readonly adjustment?: SavingsGoalBalanceAdjustment
   }): Promise<void>
   createFixedExpense(input: {
     readonly period: ExpectedRecordState
@@ -318,6 +321,11 @@ export interface PlanningRepository {
     readonly instance: FixedExpenseInstance
     readonly auditEvent: AuditEvent
   }): Promise<void>
+}
+
+export interface SavingsGoalBalanceAdjustment {
+  readonly operation: BalanceAdjustmentOperation
+  readonly movement: Movement
 }
 
 export interface FinancialOperationMutation {
@@ -473,20 +481,34 @@ class IndexedDbPlanningRepository implements PlanningRepository {
         STORE_NAMES.savingsGoals,
         STORE_NAMES.periodOpenings,
         STORE_NAMES.auditEvents,
+        STORE_NAMES.operations,
+        STORE_NAMES.movements,
       ],
       "readwrite",
       async ({ store }) => {
         await this.assertOpenPeriod(store, input.period)
         await store(STORE_NAMES.savingsGoals).add(input.goal)
         await store(STORE_NAMES.periodOpenings).add(input.opening)
-        await store(STORE_NAMES.auditEvents).add(input.auditEvent)
+        for (const auditEvent of input.auditEvents) {
+          await store(STORE_NAMES.auditEvents).add(auditEvent)
+        }
+        if (input.adjustment) {
+          await store(STORE_NAMES.operations).add(input.adjustment.operation)
+          await store(STORE_NAMES.movements).add(input.adjustment.movement)
+        }
       },
     )
   }
 
   changeSavingsGoal(input: Parameters<PlanningRepository["changeSavingsGoal"]>[0]) {
     return this.database.transaction(
-      [STORE_NAMES.periods, STORE_NAMES.savingsGoals, STORE_NAMES.auditEvents],
+      [
+        STORE_NAMES.periods,
+        STORE_NAMES.savingsGoals,
+        STORE_NAMES.auditEvents,
+        STORE_NAMES.operations,
+        STORE_NAMES.movements,
+      ],
       "readwrite",
       async ({ store }) => {
         await this.assertOpenPeriod(store, input.period)
@@ -497,6 +519,10 @@ class IndexedDbPlanningRepository implements PlanningRepository {
         )
         await store(STORE_NAMES.savingsGoals).put(input.goal)
         await store(STORE_NAMES.auditEvents).add(input.auditEvent)
+        if (input.adjustment) {
+          await store(STORE_NAMES.operations).add(input.adjustment.operation)
+          await store(STORE_NAMES.movements).add(input.adjustment.movement)
+        }
       },
     )
   }
