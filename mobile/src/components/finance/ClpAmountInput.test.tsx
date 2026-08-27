@@ -40,7 +40,10 @@ describe("ClpAmountInput", () => {
     )
 
     const input = screen.getByLabelText("Monto")
+    expect(screen.getByText("$")).toBeVisible()
+    expect(screen.getByText("$")).toHaveAttribute("aria-hidden", "true")
     expect(input).toHaveValue("1.500.000")
+    expect(input).not.toHaveValue("$ 1.500.000")
     expect(input).toHaveAttribute("inputmode", "numeric")
     expect(input).toBeDisabled()
     expect(input).toHaveAttribute("aria-invalid", "true")
@@ -50,6 +53,8 @@ describe("ClpAmountInput", () => {
     render(<ControlledAmount />)
     const input = screen.getByLabelText("Monto controlado")
 
+    expect(screen.getByText("$")).toBeVisible()
+    expect(input).toHaveValue("")
     fireEvent.focus(input)
     for (const [digit, formatted, emitted] of [
       ["7", "7", "7"],

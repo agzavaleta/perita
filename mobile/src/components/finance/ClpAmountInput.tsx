@@ -22,6 +22,7 @@ export function ClpAmountInput({
   onBlur,
   onFocus,
   ref: forwardedRef,
+  className,
   ...props
 }: ClpAmountInputProps) {
   const [focused, setFocused] = React.useState(false)
@@ -64,48 +65,57 @@ export function ClpAmountInput({
   }
 
   return (
-    <Input
-      {...props}
-      ref={setInputRef}
-      type="text"
-      inputMode={allowNegative ? "decimal" : "numeric"}
-      pattern={allowNegative ? "-?[0-9.]*" : "[0-9.]*"}
-      value={visibleValue}
-      onFocus={(event) => {
-        setDraft(formatClpInputValue(value, { allowNegative }))
-        setFocused(true)
-        onFocus?.(event)
-      }}
-      onChange={(event) => {
-        const rawText = event.currentTarget.value
-        const rawCaret = event.currentTarget.selectionStart ?? rawText.length
-        const result = normalizeEditableClpText(rawText, {
-          allowNegative,
-        })
-        if (!result.valid) return
-        const digitsBeforeCaret = rawText
-          .slice(0, rawCaret)
-          .replace(/\D/g, "").length
-        if (result.text === "-") {
-          pendingCaret.current = 1
-          setDraft("-")
+    <div className="relative w-full">
+      <span
+        aria-hidden="true"
+        className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-base md:text-sm"
+      >
+        $
+      </span>
+      <Input
+        {...props}
+        ref={setInputRef}
+        className={`pl-7${className ? ` ${className}` : ""}`}
+        type="text"
+        inputMode={allowNegative ? "decimal" : "numeric"}
+        pattern={allowNegative ? "-?[0-9.]*" : "[0-9.]*"}
+        value={visibleValue}
+        onFocus={(event) => {
+          setDraft(formatClpInputValue(value, { allowNegative }))
+          setFocused(true)
+          onFocus?.(event)
+        }}
+        onChange={(event) => {
+          const rawText = event.currentTarget.value
+          const rawCaret = event.currentTarget.selectionStart ?? rawText.length
+          const result = normalizeEditableClpText(rawText, {
+            allowNegative,
+          })
+          if (!result.valid) return
+          const digitsBeforeCaret = rawText
+            .slice(0, rawCaret)
+            .replace(/\D/g, "").length
+          if (result.text === "-") {
+            pendingCaret.current = 1
+            setDraft("-")
+            setCaretVersion((current) => current + 1)
+            return
+          }
+          pendingCaret.current = caretAfterDigits(
+            result.text,
+            digitsBeforeCaret,
+            rawCaret,
+          )
+          setDraft(result.text)
           setCaretVersion((current) => current + 1)
-          return
-        }
-        pendingCaret.current = caretAfterDigits(
-          result.text,
-          digitsBeforeCaret,
-          rawCaret,
-        )
-        setDraft(result.text)
-        setCaretVersion((current) => current + 1)
-        onValueChange(result.value)
-      }}
-      onBlur={(event) => {
-        setFocused(false)
-        setDraft("")
-        onBlur?.(event)
-      }}
-    />
+          onValueChange(result.value)
+        }}
+        onBlur={(event) => {
+          setFocused(false)
+          setDraft("")
+          onBlur?.(event)
+        }}
+      />
+    </div>
   )
 }
