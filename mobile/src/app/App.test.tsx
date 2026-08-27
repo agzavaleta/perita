@@ -32,16 +32,23 @@ describe("App", () => {
     expect(movementsButton.querySelector("span")).toHaveClass("whitespace-nowrap")
     expect(movementsButton.querySelector("span")).not.toHaveClass("truncate")
     expect(screen.getAllByRole("heading", { name: "Inicio" })).toHaveLength(1)
+    expect(screen.queryByRole("button", { name: "Buscar" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Filtros" })).toBeNull()
     expect(document.querySelector("main h1")).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Movimientos" }))
     await screen.findByRole("heading", { name: "Movimientos" })
     expect(screen.getAllByRole("heading", { name: "Movimientos" })).toHaveLength(1)
+    expect(screen.getByRole("button", { name: "Buscar" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Filtros" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Configuración" })).toBeInTheDocument()
     expect(document.querySelector("main h1")).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Cuentas" }))
     await screen.findByRole("heading", { name: "Cuentas" })
     expect(screen.getAllByRole("heading", { name: "Cuentas" })).toHaveLength(1)
+    expect(screen.queryByRole("button", { name: "Buscar" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Filtros" })).toBeNull()
     expect(document.querySelector("main h1")).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Planificar" }))

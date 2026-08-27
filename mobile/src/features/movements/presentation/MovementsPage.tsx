@@ -7,11 +7,10 @@ import {
   Pencil,
   PiggyBank,
   Scale,
-  Search,
-  SlidersHorizontal,
   Undo2,
 } from "lucide-react"
 
+import type { MovementHeaderControls } from "@/components/layout/AppHeader"
 import type { EntityId } from "@/domain/primitives"
 import type {
   SavingsDepositOperation,
@@ -41,7 +40,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import {
   Select,
@@ -88,6 +86,7 @@ import { toast } from "sonner"
 
 interface MovementsPageProps {
   readonly useCases?: MovementUseCasesPort
+  readonly headerControls?: MovementHeaderControls
   readonly initialComposer?: MovementKind | null
   readonly onInitialComposerClose?: () => void
   readonly onManageCategories?: () => void
@@ -332,6 +331,7 @@ function MovementDetailSheet({
 
 export function MovementsPage({
   useCases: injectedUseCases,
+  headerControls,
   initialComposer = null,
   onInitialComposerClose,
   onManageCategories,
@@ -345,7 +345,7 @@ export function MovementsPage({
   const [hasAny, setHasAny] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [query, setQuery] = useState("")
+  const query = headerControls?.query ?? ""
   const deferredQuery = useDeferredValue(query)
   const [kind, setKind] = useState<"all" | MovementListKind>("all")
   const [status, setStatus] = useState<"all" | "posted" | "voided">("all")
@@ -501,27 +501,25 @@ export function MovementsPage({
         Ingresos, gastos, ahorro, ajustes y movimientos internos del período abierto.
       </p>
 
-      <Card size="sm">
-        <CardContent className="space-y-3">
-          <div className="relative">
-            <Search
-              aria-hidden="true"
-              className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-            />
-            <Input
-              aria-label="Buscar movimientos"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Buscar por título, cuenta, meta, motivo o categoría"
-              className="pl-8"
-            />
-          </div>
-          <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
-            <div>
-              <Label className="sr-only">Tipo</Label>
+      <Sheet
+        open={headerControls?.filtersOpen ?? false}
+        onOpenChange={(open) => headerControls?.onFiltersOpenChange(open)}
+      >
+        <SheetContent
+          side="bottom"
+          className="mx-auto w-full max-w-[430px] rounded-t-xl"
+        >
+          <SheetHeader>
+            <SheetTitle>Filtros</SheetTitle>
+            <SheetDescription>
+              Filtra los movimientos del período abierto.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="space-y-4 px-4">
+            <div className="space-y-2">
+              <Label>Tipo</Label>
               <Select value={kind} onValueChange={(value) => setKind(value as typeof kind)}>
-                <SelectTrigger className="w-full" aria-label="Tipo de movimiento">
-                  <SlidersHorizontal aria-hidden="true" />
+                <SelectTrigger className="h-11 w-full" aria-label="Tipo de movimiento">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -534,13 +532,13 @@ export function MovementsPage({
                 </SelectContent>
               </Select>
             </div>
-            <div>
-              <Label className="sr-only">Estado</Label>
+            <div className="space-y-2">
+              <Label>Estado</Label>
               <Select
                 value={status}
                 onValueChange={(value) => setStatus(value as typeof status)}
               >
-                <SelectTrigger className="w-full" aria-label="Estado del movimiento">
+                <SelectTrigger className="h-11 w-full" aria-label="Estado del movimiento">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -550,27 +548,28 @@ export function MovementsPage({
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-2">
+              <Label>Cuenta</Label>
+              <Select
+                value={accountId}
+                onValueChange={(value) => setAccountId(value as typeof accountId)}
+              >
+                <SelectTrigger className="h-11 w-full" aria-label="Filtrar por cuenta">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todas las cuentas</SelectItem>
+                  {options?.accounts.map((account) => (
+                    <SelectItem key={account.id} value={account.id}>
+                      {account.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-          {options && options.accounts.length > 1 && (
-            <Select
-              value={accountId}
-              onValueChange={(value) => setAccountId(value as typeof accountId)}
-            >
-              <SelectTrigger className="w-full" aria-label="Filtrar por cuenta">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Todas las cuentas</SelectItem>
-                {options.accounts.map((account) => (
-                  <SelectItem key={account.id} value={account.id}>
-                    {account.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </CardContent>
-      </Card>
+        </SheetContent>
+      </Sheet>
 
       {error && <ErrorMessage title="No se pudo completar la acción" description={error} />}
       {loading ? (

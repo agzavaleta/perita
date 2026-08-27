@@ -1,7 +1,12 @@
+import { useState } from "react"
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 
 import type { Account, Category, SavingsGoal } from "@/domain/entities"
+import {
+  AppHeader,
+  type MovementHeaderControls,
+} from "@/components/layout/AppHeader"
 import type { Movement, Operation } from "@/domain/operations"
 import {
   asCivilDate,
@@ -256,6 +261,35 @@ function service(overrides: Partial<MovementUseCasesPort> = {}): MovementUseCase
   }
 }
 
+function MovementsHeaderHarness({
+  useCases,
+}: {
+  readonly useCases: MovementUseCasesPort
+}) {
+  const [query, setQuery] = useState("")
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const controls: MovementHeaderControls = {
+    query,
+    searchOpen,
+    filtersOpen,
+    onQueryChange: setQuery,
+    onSearchOpenChange: setSearchOpen,
+    onFiltersOpenChange: setFiltersOpen,
+  }
+
+  return (
+    <div data-testid="iphone-se-viewport" className="w-[320px] overflow-x-hidden">
+      <AppHeader
+        activeSection="movements"
+        movementControls={controls}
+        onOpenSettings={() => undefined}
+      />
+      <MovementsPage useCases={useCases} headerControls={controls} />
+    </div>
+  )
+}
+
 describe("MovementsPage", () => {
   it("uses sign-first amounts and semantic colors for income and expense cards", async () => {
     render(
@@ -279,7 +313,7 @@ describe("MovementsPage", () => {
 
   it("shows balance adjustments and exposes their explicit filter", async () => {
     const listMovements = vi.fn().mockResolvedValue([adjustmentItem])
-    render(<MovementsPage useCases={service({ listMovements })} />)
+    render(<MovementsHeaderHarness useCases={service({ listMovements })} />)
 
     expect(await screen.findByText("Ajuste de saldo")).toBeInTheDocument()
     expect(screen.getByText("Conciliación bancaria")).toBeInTheDocument()
@@ -288,11 +322,26 @@ describe("MovementsPage", () => {
       screen.queryByText("Aún no has registrado movimientos"),
     ).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("combobox", { name: "Tipo de movimiento" }))
+    fireEvent.click(screen.getByRole("button", { name: "Filtros" }))
+    const filters = await screen.findByRole("dialog", { name: "Filtros" })
+    expect(within(filters).getByText("Tipo")).toBeInTheDocument()
+    expect(within(filters).getByText("Estado")).toBeInTheDocument()
+    expect(within(filters).getByText("Cuenta")).toBeInTheDocument()
+    expect(within(filters).getByRole("combobox", { name: "Filtrar por cuenta" }))
+      .toBeInTheDocument()
+    fireEvent.click(within(filters).getByRole("combobox", { name: "Tipo de movimiento" }))
     fireEvent.click(screen.getByRole("option", { name: "Ajustes" }))
+    fireEvent.click(within(filters).getByRole("combobox", { name: "Estado del movimiento" }))
+    fireEvent.click(screen.getByRole("option", { name: "Vigentes" }))
+    fireEvent.click(within(filters).getByRole("combobox", { name: "Filtrar por cuenta" }))
+    fireEvent.click(screen.getByRole("option", { name: "Cuenta principal" }))
     await waitFor(() =>
       expect(listMovements).toHaveBeenCalledWith(
-        expect.objectContaining({ kind: "adjustment" }),
+        expect.objectContaining({
+          accountId: ACCOUNT_ID,
+          kind: "adjustment",
+          status: "posted",
+        }),
       ),
     )
   })
@@ -359,7 +408,7 @@ describe("MovementsPage", () => {
     })
     const voidMovement = vi.fn()
     render(
-      <MovementsPage
+      <MovementsHeaderHarness
         useCases={service({
           listMovements,
           getMovementDetail,
@@ -373,13 +422,16 @@ describe("MovementsPage", () => {
     expect(await screen.findByText("Depósito")).toBeInTheDocument()
     expect(screen.getByText("Viaje · 19-08-2026")).toBeInTheDocument()
     expect(screen.getByText("Ahorro extra · Desde efectivo")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("combobox", { name: "Tipo de movimiento" }))
+    fireEvent.click(screen.getByRole("button", { name: "Filtros" }))
+    const filters = await screen.findByRole("dialog", { name: "Filtros" })
+    fireEvent.click(within(filters).getByRole("combobox", { name: "Tipo de movimiento" }))
     fireEvent.click(screen.getByRole("option", { name: "Ahorro" }))
     await waitFor(() =>
       expect(listMovements).toHaveBeenCalledWith(
         expect.objectContaining({ kind: "savings" }),
       ),
     )
+    fireEvent.click(within(filters).getByRole("button", { name: "Cerrar" }))
 
     fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Depósito" }))
     const detailDialog = await screen.findByRole("dialog")
@@ -532,15 +584,37 @@ describe("MovementsPage", () => {
       },
     })
     const useCases = service({ listMovements, voidMovement })
-    render(<MovementsPage useCases={useCases} />)
+    render(<MovementsHeaderHarness useCases={useCases} />)
 
     await screen.findByText("Venta")
-    fireEvent.change(screen.getByLabelText("Buscar movimientos"), {
+    expect(screen.queryByPlaceholderText(
+      "Buscar por título, cuenta, meta, motivo o categoría",
+    )).toBeNull()
+    expect(screen.getByRole("button", { name: "Buscar" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Filtros" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Configuración" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Buscar" }))
+    const search = screen.getByLabelText("Buscar movimientos")
+    expect(search).toHaveFocus()
+    expect(search).toHaveAttribute("placeholder", "Buscar movimientos")
+    expect(search).toHaveClass("min-w-0")
+    expect(search.closest('[data-slot="card"]')).toBeNull()
+    expect(screen.getByTestId("iphone-se-viewport")).toHaveClass("overflow-x-hidden")
+    fireEvent.change(search, {
       target: { value: "venta" },
     })
     await waitFor(() =>
       expect(listMovements).toHaveBeenCalledWith(
         expect.objectContaining({ query: "venta" }),
+      ),
+    )
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar búsqueda" }))
+    expect(screen.queryByLabelText("Buscar movimientos")).toBeNull()
+    expect(screen.getByRole("button", { name: "Buscar" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Filtros" })).toBeInTheDocument()
+    await waitFor(() =>
+      expect(listMovements).toHaveBeenLastCalledWith(
+        expect.objectContaining({ query: "" }),
       ),
     )
 

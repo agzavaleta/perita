@@ -2,7 +2,10 @@ import { useEffect, type ReactNode } from "react"
 
 import type { AppSection } from "@/app/navigation"
 import type { QuickAction } from "@/app/quick-actions"
-import { AppHeader } from "@/components/layout/AppHeader"
+import {
+  AppHeader,
+  type MovementHeaderControls,
+} from "@/components/layout/AppHeader"
 import { BottomNavigation } from "@/components/layout/BottomNavigation"
 import { installIosViewportRecovery } from "@/lib/ios-viewport-recovery"
 import { PwaStatus } from "@/pwa/PwaStatus"
@@ -10,6 +13,7 @@ import { PwaStatus } from "@/pwa/PwaStatus"
 type AppShellProps = {
   activeSection: AppSection
   children: ReactNode
+  movementControls: MovementHeaderControls
   onNavigate: (section: AppSection) => void
   onOpenSettings: () => void
   onQuickAction: (action: QuickAction) => void
@@ -18,6 +22,7 @@ type AppShellProps = {
 export function AppShell({
   activeSection,
   children,
+  movementControls,
   onNavigate,
   onOpenSettings,
   onQuickAction,
@@ -26,7 +31,11 @@ export function AppShell({
 
   return (
     <div className="app-shell mx-auto flex min-h-0 w-full max-w-[430px] flex-col overflow-hidden border-x bg-background shadow-sm">
-      <AppHeader activeSection={activeSection} onOpenSettings={onOpenSettings} />
+      <AppHeader
+        activeSection={activeSection}
+        movementControls={movementControls}
+        onOpenSettings={onOpenSettings}
+      />
       <PwaStatus />
       <main
         id="main-content"

@@ -3,6 +3,7 @@ import { lazy, Suspense, useEffect, useState } from "react"
 import { AppShell } from "@/app/AppShell"
 import type { AppSection } from "@/app/navigation"
 import type { QuickAction } from "@/app/quick-actions"
+import type { MovementHeaderControls } from "@/components/layout/AppHeader"
 import { HomePage } from "@/features/home/presentation/HomePage"
 import { LoadingState } from "@/components/states/LoadingState"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
@@ -44,12 +45,14 @@ function AppContent({
   onQuickActionClose,
   onMoveMoney,
   onNavigate,
+  movementControls,
 }: {
   section: AppSection
   quickAction: QuickAction | null
   onQuickActionClose: () => void
   onMoveMoney: () => void
   onNavigate: (section: AppSection) => void
+  movementControls: MovementHeaderControls
 }) {
   let content
 
@@ -63,6 +66,7 @@ function AppContent({
     content = (
       <MovementsPage
         initialComposer={quickAction}
+        headerControls={movementControls}
         onInitialComposerClose={onQuickActionClose}
         onManageCategories={() => onNavigate("settings")}
       />
@@ -83,6 +87,9 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
   const [quickAction, setQuickAction] = useState<
     QuickAction | null
   >(null)
+  const [movementQuery, setMovementQuery] = useState("")
+  const [movementSearchOpen, setMovementSearchOpen] = useState(false)
+  const [movementFiltersOpen, setMovementFiltersOpen] = useState(false)
   const [setupModule, setSetupModule] = useState<SetupModule | null>(null)
   const setupUseCases = injectedSetupUseCases ?? setupModule?.useCases ?? null
   const [setupState, setSetupState] = useState<SetupState | null>(null)
@@ -166,8 +173,17 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
       </div>
     )
   } else {
+    const movementControls: MovementHeaderControls = {
+      query: movementQuery,
+      searchOpen: movementSearchOpen,
+      filtersOpen: movementFiltersOpen,
+      onQueryChange: setMovementQuery,
+      onSearchOpenChange: setMovementSearchOpen,
+      onFiltersOpenChange: setMovementFiltersOpen,
+    }
     appContent = <AppShell
       activeSection={activeSection}
+      movementControls={movementControls}
       onNavigate={navigate}
       onOpenSettings={() => navigate("settings")}
       onQuickAction={openQuickAction}
@@ -178,6 +194,7 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
         onQuickActionClose={() => setQuickAction(null)}
         onMoveMoney={() => openQuickAction("transfer")}
         onNavigate={navigate}
+        movementControls={movementControls}
       />
     </AppShell>
   }
