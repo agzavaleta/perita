@@ -50,6 +50,8 @@ const dashboard: HomeDashboard = {
   totalAccountBalance: asClpAmount(140_000),
   totalSavingsBalance: asClpAmount(10_000),
   periodExpenseAmount: asClpAmount(50_000),
+  expenseToIncomePercent: 50,
+  savingsToIncomePercent: 10,
   accounts: [{
     id: ACCOUNT_ID,
     emoji: "💳",
@@ -145,9 +147,37 @@ describe("HomePage", () => {
     expect(within(availableCard).getByText("$100.000")).toBeInTheDocument()
     expect(within(availableCard).getByText("Gastos del período")).toBeInTheDocument()
     expect(within(availableCard).getByText("$50.000")).toBeInTheDocument()
+
+    const monthCard = screen
+      .getByText("Así va tu mes")
+      .closest<HTMLElement>('[data-slot="card"]')
+    const goalsCard = screen
+      .getByText("Metas de ahorro")
+      .closest<HTMLElement>('[data-slot="card"]')
+    const accountsCard = screen
+      .getByText("Cuentas")
+      .closest<HTMLElement>('[data-slot="card"]')
+    const debtsCard = screen
+      .getByText("Deudas relevantes")
+      .closest<HTMLElement>('[data-slot="card"]')
+    if (!monthCard || !goalsCard || !accountsCard || !debtsCard) {
+      throw new Error("Missing Home cards")
+    }
+    expect(within(monthCard).getByText("$50.000 de $100.000")).toBeInTheDocument()
+    expect(within(monthCard).getByText("50%")).toBeInTheDocument()
+    expect(within(monthCard).getByText("Ahorro del período")).toBeInTheDocument()
+    expect(within(monthCard).getByText("10% de los ingresos")).toBeInTheDocument()
+    expect(within(goalsCard).getByText("10%")).toBeInTheDocument()
+    expect(within(goalsCard).getByText("Ahorrado este período")).toBeInTheDocument()
+    expect(within(goalsCard).getByText("Total ahorrado").nextElementSibling).toHaveClass("text-2xl")
+    expect(monthCard.compareDocumentPosition(goalsCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(goalsCard.compareDocumentPosition(accountsCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(accountsCard.compareDocumentPosition(debtsCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.queryByRole("button", { name: "Ver movimientos" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Planificar" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Ver todas" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Registrar ingreso" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Crear una meta o deuda" })).toBeNull()
   })
 
   it("renders every active goal supplied for Home", async () => {
@@ -169,7 +199,60 @@ describe("HomePage", () => {
     expect(await screen.findByText("Viaje")).toBeInTheDocument()
     expect(screen.getByText("Emergencias")).toBeInTheDocument()
     expect(screen.getByText("Vivienda")).toBeInTheDocument()
-    expect(screen.getByText("Metas relevantes")).toBeInTheDocument()
+    expect(screen.getByText("Metas de ahorro")).toBeInTheDocument()
+  })
+
+  it("shows the real expense percentage while limiting the visual bar to 100%", async () => {
+    render(<HomePage useCases={service({
+      ...dashboard,
+      periodExpenseAmount: asClpAmount(150_000),
+      expenseToIncomePercent: 150,
+    })} />)
+
+    expect(await screen.findByText("150%")).toBeInTheDocument()
+    const progress = screen.getByRole("progressbar", { name: "Gasto respecto de ingresos" })
+    expect(progress).toHaveAttribute("aria-valuenow", "100")
+    expect(progress.firstElementChild).toHaveStyle({ width: "100%" })
+  })
+
+  it("omits percentages when income is zero and keeps redundant actions hidden", async () => {
+    render(<HomePage useCases={service({
+      ...dashboard,
+      summary: {
+        ...dashboard.summary,
+        additionalIncomeAmount: asClpAmount(0),
+        totalIncomeAmount: asClpAmount(0),
+        netSavingsAmount: asClpAmount(0),
+      },
+      expenseToIncomePercent: null,
+      savingsToIncomePercent: null,
+      relevantGoals: [],
+      relevantDebts: [],
+    })} />)
+
+    const monthCard = (await screen.findByText("Así va tu mes"))
+      .closest<HTMLElement>('[data-slot="card"]')
+    if (!monthCard) throw new Error("Missing month card")
+    expect(within(monthCard).getByText("$50.000 de $0")).toBeInTheDocument()
+    expect(within(monthCard).queryByText(/%/)).toBeNull()
+    expect(screen.queryByRole("button", { name: "Registrar ingreso" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Crear una meta o deuda" })).toBeNull()
+  })
+
+  it("presents negative net savings as a withdrawal without a negative percentage", async () => {
+    render(<HomePage useCases={service({
+      ...dashboard,
+      summary: {
+        ...dashboard.summary,
+        netSavingsAmount: asClpAmount(-25_000, { allowNegative: true }),
+      },
+      savingsToIncomePercent: null,
+    })} />)
+
+    const withdrawal = await screen.findByRole("region", { name: "Retirado de metas" })
+    expect(within(withdrawal).getByText("$25.000")).toBeInTheDocument()
+    expect(within(withdrawal).queryByText(/de los ingresos/)).toBeNull()
+    expect(screen.queryByText("Ahorrado este período")).toBeNull()
   })
 
   it("shows the planned salary as pending until a salary receipt exists", async () => {
@@ -227,6 +310,8 @@ describe("HomePage", () => {
           totalAccountBalance: asClpAmount(0),
           totalSavingsBalance: asClpAmount(0),
           periodExpenseAmount: asClpAmount(0),
+          expenseToIncomePercent: null,
+          savingsToIncomePercent: null,
           accounts: [],
           relevantGoals: [],
           relevantDebts: [],

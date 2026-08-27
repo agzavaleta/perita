@@ -138,6 +138,8 @@ describe("HomeUseCases", () => {
       totalAccountBalance: 0,
       totalSavingsBalance: 0,
       periodExpenseAmount: 0,
+      expenseToIncomePercent: null,
+      savingsToIncomePercent: null,
       isEmpty: true,
       accounts: [],
       relevantGoals: [],
@@ -224,6 +226,8 @@ describe("HomeUseCases", () => {
       totalSavingsBalance: 10_000,
       totalBalance: 150_000,
       periodExpenseAmount: 50_000,
+      expenseToIncomePercent: 50,
+      savingsToIncomePercent: 10,
       isEmpty: false,
       summary: {
         totalIncomeAmount: 100_000,
@@ -243,6 +247,41 @@ describe("HomeUseCases", () => {
       schedule: { remainingInstallments: 3 },
       progressPercent: 30,
     })
+  })
+
+  it("does not derive a negative savings percentage for withdrawals", async () => {
+    await repositories.accounts.add(account())
+    await repositories.savingsGoals.add(goal({
+      openingBalance: asClpAmount(50_000),
+      currentBalance: asClpAmount(50_000),
+    }))
+    const movements = new MovementUseCases(repositories, {
+      now: () => NOW,
+      today: () => TODAY,
+      createId: idSequence(),
+    })
+    await movements.registerIncome({
+      incomeType: "additional",
+      accountId: ACCOUNT_ID,
+      operationDate: TODAY,
+      amount: 100_000,
+      concept: "Extra",
+    })
+    await movements.registerTransfer({
+      sourceType: "savings_goal",
+      sourceId: GOAL_ID,
+      destinationType: "account",
+      destinationId: ACCOUNT_ID,
+      operationDate: TODAY,
+      amount: 10_000,
+    })
+
+    const dashboard = await new HomeUseCases(repositories, {
+      today: () => TODAY,
+    }).getDashboard()
+
+    expect(dashboard.summary.netSavingsAmount).toBe(-10_000)
+    expect(dashboard.savingsToIncomePercent).toBeNull()
   })
 
   it("returns every active savings goal without truncating the Home list", async () => {

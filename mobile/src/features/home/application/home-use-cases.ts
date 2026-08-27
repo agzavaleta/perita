@@ -28,6 +28,8 @@ export interface HomeDashboard {
   readonly totalAccountBalance: ClpAmount
   readonly totalSavingsBalance: ClpAmount
   readonly periodExpenseAmount: ClpAmount
+  readonly expenseToIncomePercent: number | null
+  readonly savingsToIncomePercent: number | null
   readonly accounts: readonly Account[]
   readonly relevantGoals: readonly HomeGoalItem[]
   readonly relevantDebts: readonly HomeDebtItem[]
@@ -195,6 +197,16 @@ export class HomeUseCases implements HomeUseCasesPort {
       totalAccountBalance,
       totalSavingsBalance,
       periodExpenseAmount,
+      expenseToIncomePercent:
+        currentSummary.totalIncomeAmount > 0
+          ? Math.floor((periodExpenseAmount / currentSummary.totalIncomeAmount) * 100)
+          : null,
+      savingsToIncomePercent:
+        currentSummary.totalIncomeAmount > 0 && currentSummary.netSavingsAmount >= 0
+          ? Math.floor(
+              (currentSummary.netSavingsAmount / currentSummary.totalIncomeAmount) * 100,
+            )
+          : null,
       accounts: activeAccounts,
       relevantGoals,
       relevantDebts,

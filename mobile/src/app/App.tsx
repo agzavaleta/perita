@@ -44,23 +44,18 @@ function AppContent({
   onQuickActionClose,
   onMoveMoney,
   onNavigate,
-  onRegisterIncome,
 }: {
   section: AppSection
   quickAction: QuickAction | null
   onQuickActionClose: () => void
   onMoveMoney: () => void
   onNavigate: (section: AppSection) => void
-  onRegisterIncome: () => void
 }) {
   let content
 
   if (section === "home") {
     content = (
-      <HomePage
-        onNavigate={onNavigate}
-        onRegisterIncome={onRegisterIncome}
-      />
+      <HomePage onNavigate={onNavigate} />
     )
   } else if (section === "accounts") {
     content = <AccountsPage />
@@ -183,7 +178,6 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
         onQuickActionClose={() => setQuickAction(null)}
         onMoveMoney={() => openQuickAction("transfer")}
         onNavigate={navigate}
-        onRegisterIncome={() => openQuickAction("income")}
       />
     </AppShell>
   }

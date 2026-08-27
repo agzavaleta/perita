@@ -5,7 +5,6 @@ import {
   HandCoins,
   PiggyBank,
   Plus,
-  Target,
   WalletCards,
   Clock3,
 } from "lucide-react"
@@ -32,7 +31,6 @@ import type {
 interface HomePageProps {
   readonly useCases?: HomeUseCasesPort
   readonly onNavigate?: (section: AppSection) => void
-  readonly onRegisterIncome?: () => void
 }
 
 const noop = () => undefined
@@ -83,7 +81,6 @@ function HomeHeading({ periodKey }: { readonly periodKey: string }) {
 export function HomePage({
   useCases: injectedUseCases,
   onNavigate = noop,
-  onRegisterIncome = noop,
 }: HomePageProps) {
   const [module, setModule] = useState<HomeModule | null>(null)
   const useCases = injectedUseCases ?? module?.useCases ?? null
@@ -141,7 +138,6 @@ export function HomePage({
   }
 
   const { summary } = dashboard
-  const activeAccountCount = dashboard.accounts.length
   if (dashboard.isEmpty) {
     return (
       <section className="space-y-6 py-section" aria-labelledby="home-title">
@@ -200,10 +196,87 @@ export function HomePage({
         </CardContent>
       </Card>
 
-      {activeAccountCount > 0 && summary.totalIncomeAmount === 0 ? (
-        <Button type="button" size="lg" className="w-full" onClick={onRegisterIncome}>
-          <Plus aria-hidden="true" /> Registrar ingreso
-        </Button>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Así va tu mes</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <section aria-label="Gastado este mes" className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium">Gastado este mes</p>
+              {dashboard.expenseToIncomePercent !== null ? (
+                <span className="text-sm font-semibold tabular-nums">
+                  {dashboard.expenseToIncomePercent}%
+                </span>
+              ) : null}
+            </div>
+            <p className="text-sm text-muted-foreground tabular-nums">
+              {formatClp(dashboard.periodExpenseAmount)} de {formatClp(summary.totalIncomeAmount)}
+            </p>
+            {dashboard.expenseToIncomePercent !== null ? (
+              <div
+                role="progressbar"
+                aria-label="Gasto respecto de ingresos"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.min(dashboard.expenseToIncomePercent, 100)}
+                className="h-2 overflow-hidden rounded-full bg-muted"
+              >
+                <div
+                  className="h-full rounded-full bg-destructive"
+                  style={{ width: `${Math.min(dashboard.expenseToIncomePercent, 100)}%` }}
+                />
+              </div>
+            ) : null}
+          </section>
+
+          <section
+            aria-label={summary.netSavingsAmount >= 0 ? "Ahorro del período" : "Retirado de metas"}
+            className="flex items-end justify-between gap-3 border-t pt-4"
+          >
+            <div>
+              <p className="text-sm font-medium">
+                {summary.netSavingsAmount >= 0 ? "Ahorro del período" : "Retirado de metas"}
+              </p>
+              <p className="money-figure mt-1 text-lg font-semibold">
+                {formatClp(Math.abs(summary.netSavingsAmount))}
+              </p>
+            </div>
+            {dashboard.savingsToIncomePercent !== null ? (
+              <span className="text-right text-sm font-semibold tabular-nums">
+                {dashboard.savingsToIncomePercent}% de los ingresos
+              </span>
+            ) : null}
+          </section>
+        </CardContent>
+      </Card>
+
+      {dashboard.relevantGoals.length > 0 ? (
+        <Card>
+          <CardHeader><div className="flex items-center gap-2"><PiggyBank aria-hidden="true" className="size-5 text-muted-foreground" /><CardTitle className="text-base">Metas de ahorro</CardTitle></div></CardHeader>
+          <CardContent className="space-y-4">
+            {dashboard.relevantGoals.map(({ goal, progressPercent }) => (
+              <div key={goal.id} className="space-y-2">
+                <div className="flex items-center justify-between gap-3 text-sm"><span className="truncate font-medium">{goal.name}</span><span className="money-figure shrink-0">{formatClp(goal.currentBalance)}</span></div>
+                <div className="flex items-center justify-between text-xs text-muted-foreground">
+                  <span>Progreso</span>
+                  <span className="font-medium tabular-nums">{progressPercent}%</span>
+                </div>
+                <div role="progressbar" aria-label={`Progreso de ${goal.name}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent} className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-brand" style={{ width: `${progressPercent}%` }} /></div>
+              </div>
+            ))}
+            <div className="border-t pt-4">
+              <p className="text-sm font-medium text-muted-foreground">Total ahorrado</p>
+              <p className="money-figure mt-1 text-2xl font-semibold">{formatClp(dashboard.totalSavingsBalance)}</p>
+              {summary.netSavingsAmount > 0 ? (
+                <div className="mt-3 flex items-center justify-between gap-3 text-sm">
+                  <span className="text-muted-foreground">Ahorrado este período</span>
+                  <span className="money-figure font-semibold text-primary">{formatClp(summary.netSavingsAmount)}</span>
+                </div>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
       ) : null}
 
       <Card>
@@ -225,21 +298,6 @@ export function HomePage({
           <div className="flex justify-between border-t pt-3 text-sm"><span className="text-muted-foreground">Total en cuentas</span><span className="money-figure font-semibold">{formatClp(dashboard.totalAccountBalance)}</span></div>
         </CardContent>
       </Card>
-
-      {dashboard.relevantGoals.length > 0 ? (
-        <Card>
-          <CardHeader><div className="flex items-center gap-2"><PiggyBank aria-hidden="true" className="size-5 text-muted-foreground" /><CardTitle className="text-base">Metas relevantes</CardTitle></div></CardHeader>
-          <CardContent className="space-y-4">
-            {dashboard.relevantGoals.map(({ goal, progressPercent }) => (
-              <div key={goal.id} className="space-y-2">
-                <div className="flex items-center justify-between gap-3 text-sm"><span className="truncate font-medium">{goal.name}</span><span className="money-figure shrink-0">{formatClp(goal.currentBalance)}</span></div>
-                <div role="progressbar" aria-label={`Progreso de ${goal.name}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={progressPercent} className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-brand" style={{ width: `${progressPercent}%` }} /></div>
-              </div>
-            ))}
-            <div className="flex justify-between border-t pt-3 text-sm"><span className="text-muted-foreground">Total ahorrado</span><span className="money-figure font-semibold">{formatClp(dashboard.totalSavingsBalance)}</span></div>
-          </CardContent>
-        </Card>
-      ) : null}
 
       {dashboard.relevantDebts.length > 0 ? (
         <Card>
@@ -270,11 +328,6 @@ export function HomePage({
         </Card>
       ) : null}
 
-      {dashboard.relevantGoals.length === 0 && dashboard.relevantDebts.length === 0 ? (
-        <Button type="button" variant="outline" className="w-full" onClick={() => onNavigate("planning")}>
-          <Target aria-hidden="true" /> Crear una meta o deuda
-        </Button>
-      ) : null}
     </section>
   )
 }
