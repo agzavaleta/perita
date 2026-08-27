@@ -1,13 +1,12 @@
 import { useRef, useState, type FormEvent } from "react"
-import { AlertTriangle, Landmark, Plus, Sparkles, Trash2 } from "lucide-react"
+import { AlertTriangle } from "lucide-react"
 
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
 import { FinancialInstitutionField } from "@/components/finance/FinancialInstitutionField"
-import { EmptyState } from "@/components/states/EmptyState"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import type {
@@ -29,8 +28,7 @@ interface EditableAccount {
 interface EditableSetupDraft {
   readonly periodKey: string
   readonly salaryReferenceAmount: number | null
-  readonly variableExpenseBudgetAmount: number | null
-  readonly accounts: readonly EditableAccount[]
+  readonly account: EditableAccount
 }
 
 function message(error: unknown) {
@@ -54,17 +52,13 @@ function initialDraft(state: SetupState): EditableSetupDraft {
     return {
       periodKey: state.draft.periodKey,
       salaryReferenceAmount: state.draft.salaryReferenceAmount,
-      variableExpenseBudgetAmount: state.draft.variableExpenseBudgetAmount,
-      accounts: state.draft.accounts.length > 0
-        ? state.draft.accounts.map((account) => ({ ...account }))
-        : [newAccount()],
+      account: { ...state.draft.account },
     }
   }
   return {
     periodKey: state.allowedPeriodKeys[0] ?? "",
     salaryReferenceAmount: 0,
-    variableExpenseBudgetAmount: 0,
-    accounts: [newAccount()],
+    account: newAccount(),
   }
 }
 
@@ -72,11 +66,10 @@ function persistedDraft(draft: EditableSetupDraft): SaveSetupDraftInput {
   return {
     periodKey: draft.periodKey,
     salaryReferenceAmount: draft.salaryReferenceAmount ?? 0,
-    variableExpenseBudgetAmount: draft.variableExpenseBudgetAmount ?? 0,
-    accounts: draft.accounts.map((account) => ({
-      ...account,
-      openingBalance: account.openingBalance ?? 0,
-    })),
+    account: {
+      ...draft.account,
+      openingBalance: draft.account.openingBalance ?? 0,
+    },
   }
 }
 
@@ -84,13 +77,12 @@ function confirmationInput(draft: EditableSetupDraft): CompleteSetupInput {
   return {
     periodKey: draft.periodKey,
     salaryReferenceAmount: draft.salaryReferenceAmount ?? 0,
-    variableExpenseBudgetAmount: draft.variableExpenseBudgetAmount ?? 0,
-    accounts: draft.accounts.map((account) => ({
-      name: account.name,
-      bank: account.bank,
-      openingBalance: account.openingBalance ?? 0,
-      emoji: account.emoji,
-    })),
+    account: {
+      name: draft.account.name,
+      bank: draft.account.bank,
+      openingBalance: draft.account.openingBalance ?? 0,
+      emoji: draft.account.emoji,
+    },
   }
 }
 
@@ -108,10 +100,8 @@ export function SetupPage({
   const [error, setError] = useState<string | null>(null)
   const saveQueue = useRef<Promise<void>>(Promise.resolve())
   const confirmingRef = useRef(false)
-  const validAccounts = draft.accounts.length > 0 && draft.accounts.every(
-    ({ name }) => name.trim().length > 0,
-  )
-  const canSubmit = draft.periodKey.length > 0 && validAccounts
+  const canSubmit =
+    draft.periodKey.length > 0 && draft.account.name.trim().length > 0
 
   function queueDraftSave(nextDraft: EditableSetupDraft) {
     const save = saveQueue.current.then(async () => {
@@ -136,15 +126,10 @@ export function SetupPage({
     void queueDraftSave(nextDraft)
   }
 
-  function updateAccount(
-    accountId: string,
-    changes: Partial<EditableAccount>,
-  ) {
+  function updateAccount(changes: Partial<EditableAccount>) {
     updateDraft({
       ...draft,
-      accounts: draft.accounts.map((account) =>
-        account.id === accountId ? { ...account, ...changes } : account,
-      ),
+      account: { ...draft.account, ...changes },
     })
   }
 
@@ -182,28 +167,17 @@ export function SetupPage({
   return (
     <section className="space-y-6 py-section" aria-labelledby="setup-title">
       <div>
-        <h1 id="setup-title" className="type-page-title">Inicio</h1>
+        <h1 id="setup-title" className="type-page-title">Comienza en Perita</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Prepara la base financiera de Perita.
+          Cuéntanos con cuánto partes y Perita preparará tu primer período.
         </p>
       </div>
 
-      <EmptyState
-        title={state.status === "resumable" ? "Continúa tu configuración" : "Comencemos con lo esencial"}
-        description="Define el período y tus cuentas. Los saldos iniciales quedarán como apertura, no como movimientos."
-      />
-
       <Card>
-        <CardHeader>
-          <div className="flex items-center gap-2">
-            <Sparkles aria-hidden="true" className="size-5 text-brand" />
-            <CardTitle>Configuración inicial</CardTitle>
-          </div>
-        </CardHeader>
-        <CardContent>
+        <CardContent className="pt-6">
           <form className="space-y-5" onSubmit={submit}>
             <div className="space-y-2">
-              <Label htmlFor="setup-period">Período inicial</Label>
+              <Label htmlFor="setup-period">Mes inicial</Label>
               <Input
                 id="setup-period"
                 type="month"
@@ -218,7 +192,7 @@ export function SetupPage({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="setup-salary">Sueldo de referencia</Label>
+              <Label htmlFor="setup-salary">Sueldo previsto</Label>
               <ClpAmountInput
                 id="setup-salary"
                 value={draft.salaryReferenceAmount}
@@ -230,115 +204,51 @@ export function SetupPage({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="setup-budget">
-                Presupuesto para gastos variables (opcional)
+              <Label htmlFor={`setup-account-name-${draft.account.id}`}>
+                Nombre de la cuenta
               </Label>
-              <ClpAmountInput
-                id="setup-budget"
-                value={draft.variableExpenseBudgetAmount}
-                onValueChange={(value) => updateDraft({
-                  ...draft,
-                  variableExpenseBudgetAmount: value,
+              <Input
+                id={`setup-account-name-${draft.account.id}`}
+                value={draft.account.name}
+                onChange={(event) => updateAccount({
+                  name: event.currentTarget.value,
                 })}
+                placeholder="Ej. Cuenta principal"
               />
             </div>
 
-            <div className="space-y-4 border-t pt-5">
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <Landmark aria-hidden="true" className="size-4 text-muted-foreground" />
-                  <h2 className="text-sm font-semibold">Cuentas</h2>
-                </div>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => updateDraft({
-                    ...draft,
-                    accounts: [...draft.accounts, newAccount()],
-                  })}
-                >
-                  <Plus aria-hidden="true" />
-                  Agregar cuenta
-                </Button>
-              </div>
-
-              {draft.accounts.map((account, index) => {
-                const accountNumber = index + 1
-                return (
-                  <Card key={account.id} data-testid={`setup-account-${account.id}`}>
-                    <CardHeader>
-                      <div className="flex items-center justify-between gap-3">
-                        <CardTitle>Cuenta {accountNumber}</CardTitle>
-                        {index > 0 ? (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            aria-label={`Eliminar cuenta ${accountNumber}`}
-                            onClick={() => updateDraft({
-                              ...draft,
-                              accounts: draft.accounts.filter(({ id }) => id !== account.id),
-                            })}
-                          >
-                            <Trash2 aria-hidden="true" />
-                          </Button>
-                        ) : null}
-                      </div>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div className="space-y-2">
-                        <Label htmlFor={`setup-account-name-${account.id}`}>Nombre</Label>
-                        <Input
-                          id={`setup-account-name-${account.id}`}
-                          value={account.name}
-                          onChange={(event) => updateAccount(account.id, {
-                            name: event.currentTarget.value,
-                          })}
-                          placeholder="Ej. Cuenta principal"
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor={`setup-account-bank-${account.id}`}>
-                          Banco o institución (opcional)
-                        </Label>
-                        <FinancialInstitutionField
-                          id={`setup-account-bank-${account.id}`}
-                          value={account.bank}
-                          onValueChange={(value) => updateAccount(account.id, {
-                            bank: value,
-                          })}
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor={`setup-account-balance-${account.id}`}>
-                          Saldo inicial (opcional)
-                        </Label>
-                        <ClpAmountInput
-                          id={`setup-account-balance-${account.id}`}
-                          allowNegative
-                          value={account.openingBalance}
-                          onValueChange={(value) => updateAccount(account.id, {
-                            openingBalance: value,
-                          })}
-                        />
-                      </div>
-
-                      {account.openingBalance !== null && account.openingBalance < 0 ? (
-                        <Alert>
-                          <AlertTriangle aria-hidden="true" />
-                          <AlertTitle>Saldo inicial negativo</AlertTitle>
-                          <AlertDescription>
-                            Es una apertura excepcional permitida durante setup.
-                          </AlertDescription>
-                        </Alert>
-                      ) : null}
-                    </CardContent>
-                  </Card>
-                )
-              })}
+            <div className="space-y-2">
+              <Label htmlFor={`setup-account-bank-${draft.account.id}`}>
+                Banco o institución (opcional)
+              </Label>
+              <FinancialInstitutionField
+                id={`setup-account-bank-${draft.account.id}`}
+                value={draft.account.bank}
+                onValueChange={(value) => updateAccount({ bank: value })}
+              />
             </div>
+
+            <div className="space-y-2">
+              <Label htmlFor={`setup-account-balance-${draft.account.id}`}>
+                Saldo actual
+              </Label>
+              <ClpAmountInput
+                id={`setup-account-balance-${draft.account.id}`}
+                allowNegative
+                value={draft.account.openingBalance}
+                onValueChange={(value) => updateAccount({ openingBalance: value })}
+              />
+            </div>
+
+            {draft.account.openingBalance !== null && draft.account.openingBalance < 0 ? (
+              <Alert>
+                <AlertTriangle aria-hidden="true" />
+                <AlertTitle>Saldo inicial negativo</AlertTitle>
+                <AlertDescription>
+                  Es una apertura excepcional permitida durante setup.
+                </AlertDescription>
+              </Alert>
+            ) : null}
 
             {error ? (
               <ErrorMessage title="No se pudo completar la configuración" description={error} />
@@ -349,7 +259,7 @@ export function SetupPage({
               className="w-full"
               disabled={!canSubmit || confirming}
             >
-              {confirming ? "Completando…" : "Comenzar a usar Perita"}
+              {confirming ? "Comenzando…" : "Comenzar"}
             </Button>
           </form>
         </CardContent>

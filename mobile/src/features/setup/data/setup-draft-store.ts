@@ -15,13 +15,12 @@ export interface SetupDraftAccount {
 export interface SetupDraft {
   readonly periodKey: string
   readonly salaryReferenceAmount: number
-  readonly variableExpenseBudgetAmount: number
-  readonly accounts: readonly SetupDraftAccount[]
+  readonly account: SetupDraftAccount
 }
 
 interface StoredSetupDraft {
   readonly key: typeof DRAFT_KEY
-  readonly value: SetupDraft
+  readonly value: unknown
 }
 
 export interface SetupDraftStore {
@@ -51,6 +50,35 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
   })
 }
 
+function normalizeDraft(value: unknown): SetupDraft | null {
+  if (!value || typeof value !== "object") return null
+  const record = value as Record<string, unknown>
+  const legacyAccounts = Array.isArray(record.accounts) ? record.accounts : []
+  const account = record.account ?? legacyAccounts[0]
+  if (!account || typeof account !== "object") return null
+  const accountRecord = account as Record<string, unknown>
+  if (
+    typeof record.periodKey !== "string" ||
+    typeof record.salaryReferenceAmount !== "number" ||
+    typeof accountRecord.id !== "string" ||
+    typeof accountRecord.name !== "string" ||
+    typeof accountRecord.openingBalance !== "number"
+  ) {
+    return null
+  }
+  return {
+    periodKey: record.periodKey,
+    salaryReferenceAmount: record.salaryReferenceAmount,
+    account: {
+      id: accountRecord.id,
+      name: accountRecord.name,
+      bank: typeof accountRecord.bank === "string" ? accountRecord.bank : null,
+      openingBalance: accountRecord.openingBalance,
+      emoji: typeof accountRecord.emoji === "string" ? accountRecord.emoji : "💳",
+    },
+  }
+}
+
 export function openSetupDraftStore(
   options: OpenSetupDraftStoreOptions = {},
 ): Promise<SetupDraftStore> {
@@ -78,7 +106,7 @@ export function openSetupDraftStore(
             transaction.objectStore(STORE_NAME).get(DRAFT_KEY),
           )
           await transactionDone(transaction)
-          return stored?.value ?? null
+          return normalizeDraft(stored?.value)
         },
         async save(draft) {
           const transaction = database.transaction(STORE_NAME, "readwrite")

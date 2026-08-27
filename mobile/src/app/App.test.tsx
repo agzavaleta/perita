@@ -72,10 +72,9 @@ describe("App", () => {
   it("opens a new installation on guided Inicio and blocks normal navigation", async () => {
     render(<App setupUseCases={setupService("not_started")} />)
 
-    expect(await screen.findByText("Comencemos con lo esencial")).toBeInTheDocument()
-    expect(screen.getByRole("heading", { name: "Inicio" })).toBeInTheDocument()
+    expect(await screen.findByRole("heading", { name: "Comienza en Perita" })).toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Movimientos" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Agregar movimiento" })).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Comenzar a usar Perita" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Comenzar" })).toBeDisabled()
   })
 })

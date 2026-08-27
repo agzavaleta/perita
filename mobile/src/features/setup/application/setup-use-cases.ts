@@ -39,21 +39,19 @@ export interface SetupAccountDraft {
 export interface CompleteSetupInput {
   readonly periodKey: string
   readonly salaryReferenceAmount: number
-  readonly variableExpenseBudgetAmount: number
-  readonly accounts: readonly SetupAccountDraft[]
+  readonly account: SetupAccountDraft
 }
 
 export interface SaveSetupDraftInput {
   readonly periodKey: string
   readonly salaryReferenceAmount: number
-  readonly variableExpenseBudgetAmount: number
-  readonly accounts: readonly {
+  readonly account: {
     readonly id: string
     readonly name: string
     readonly bank?: string | null
     readonly openingBalance: number
     readonly emoji?: string
-  }[]
+  }
 }
 
 export interface SetupWarning {
@@ -243,34 +241,7 @@ export class SetupUseCases implements SetupUseCasesPort {
         input.salaryReferenceAmount,
         "El sueldo de referencia",
       ),
-      variableExpenseBudgetAmount: nonnegativeAmount(
-        input.variableExpenseBudgetAmount,
-        "El presupuesto variable del período",
-      ),
-      accounts: input.accounts.map((account): SetupDraftAccount => {
-        const draftId = account.id
-        let openingBalance
-        try {
-          openingBalance = asClpAmount(account.openingBalance, {
-            allowNegative: true,
-          })
-        } catch {
-          throw new SetupUseCaseError(
-            "invalid_amount",
-            "El saldo inicial debe ser un entero CLP.",
-          )
-        }
-        if (!draftId.trim()) {
-          throw new SetupUseCaseError("invalid_account", "La cuenta del borrador requiere un identificador.")
-        }
-        return {
-          id: draftId,
-          name: account.name,
-          bank: account.bank ?? null,
-          openingBalance,
-          emoji: account.emoji?.trim() || "💳",
-        }
-      }),
+      account: this.setupDraftAccount(input.account),
     }
     await this.draftStore.save(draft)
     return draft
@@ -292,9 +263,6 @@ export class SetupUseCases implements SetupUseCasesPort {
       )
     }
     const periodKey = this.validateInitialPeriod(input.periodKey)
-    if (input.accounts.length === 0) {
-      throw new SetupUseCaseError("invalid_account", "Debes crear al menos una cuenta.")
-    }
 
     const occurredAt = this.now()
     const periodId = this.createId()
@@ -314,64 +282,49 @@ export class SetupUseCases implements SetupUseCasesPort {
       id: periodId,
       periodKey,
       plannedSalaryAmount: financialSettings.salaryReferenceAmount,
-      variableExpenseBudgetAmount: nonnegativeAmount(
-        input.variableExpenseBudgetAmount,
-        "El presupuesto variable del período",
-      ),
+      variableExpenseBudgetAmount: asClpAmount(0),
       openedAt: occurredAt,
       status: "open",
       closedAt: null,
       snapshotId: null,
       revision: asRevision(1),
     }
-    const accounts = input.accounts.map((draft) => {
-      let openingBalance
-      try {
-        openingBalance = asClpAmount(draft.openingBalance, { allowNegative: true })
-      } catch {
-        throw new SetupUseCaseError(
-          "invalid_amount",
-          "El saldo inicial debe ser un entero CLP.",
-        )
-      }
-      const account = assertAccountInvariant({
-        id: this.createId(),
-        emoji: draft.emoji?.trim() || "💳",
-        name: requiredName(draft.name),
-        bank: draft.bank?.trim() || null,
-        openingBalance,
-        currentBalance: openingBalance,
-        status: "active",
-        deletedAt: null,
-        balanceAtDeletion: null,
-        revision: asRevision(1),
-        createdAt: occurredAt,
-        updatedAt: occurredAt,
-      })
-      assertInitialBalancePolicy({
-        targetType: "account",
-        duringSetup: true,
-        openingBalance,
-        currentBalance: openingBalance,
-      })
-      return account
+    const openingBalance = this.openingBalance(input.account.openingBalance)
+    const account = assertAccountInvariant({
+      id: this.createId(),
+      emoji: input.account.emoji?.trim() || "💳",
+      name: requiredName(input.account.name),
+      bank: input.account.bank?.trim() || null,
+      openingBalance,
+      currentBalance: openingBalance,
+      status: "active",
+      deletedAt: null,
+      balanceAtDeletion: null,
+      revision: asRevision(1),
+      createdAt: occurredAt,
+      updatedAt: occurredAt,
     })
-    const periodOpenings = accounts.map((account): PeriodOpening => ({
+    assertInitialBalancePolicy({
+      targetType: "account",
+      duringSetup: true,
+      openingBalance,
+      currentBalance: openingBalance,
+    })
+    const accounts = [account]
+    const periodOpenings: PeriodOpening[] = [{
       id: this.createId(),
       periodId,
       targetType: "account",
       targetId: account.id,
       openingAmount: account.openingBalance,
-    }))
-    const warnings = accounts.flatMap((account): SetupWarning[] =>
-      account.openingBalance < 0
-        ? [{
-            code: "negative_opening_balance",
-            accountId: account.id,
-            openingBalance: account.openingBalance,
-          }]
-        : [],
-    )
+    }]
+    const warnings: SetupWarning[] = account.openingBalance < 0
+      ? [{
+          code: "negative_opening_balance",
+          accountId: account.id,
+          openingBalance: account.openingBalance,
+        }]
+      : []
     const auditEvents: AuditEvent[] = [
       this.createdAudit("financial_settings", "current", null, financialSettings, occurredAt),
       this.createdAudit("period", period.id, period.id, period, occurredAt),
@@ -401,6 +354,33 @@ export class SetupUseCases implements SetupUseCasesPort {
   private suggestedPeriodKeys(): readonly [PeriodKey, PeriodKey] {
     const current = asPeriodKey(this.today().slice(0, 7))
     return [current, previousPeriodKey(current)]
+  }
+
+  private setupDraftAccount(account: SaveSetupDraftInput["account"]): SetupDraftAccount {
+    if (!account.id.trim()) {
+      throw new SetupUseCaseError(
+        "invalid_account",
+        "La cuenta del borrador requiere un identificador.",
+      )
+    }
+    return {
+      id: account.id,
+      name: account.name,
+      bank: account.bank ?? null,
+      openingBalance: this.openingBalance(account.openingBalance),
+      emoji: account.emoji?.trim() || "💳",
+    }
+  }
+
+  private openingBalance(value: number) {
+    try {
+      return asClpAmount(value, { allowNegative: true })
+    } catch {
+      throw new SetupUseCaseError(
+        "invalid_amount",
+        "El saldo inicial debe ser un entero CLP.",
+      )
+    }
   }
 
   private validateInitialPeriod(value: string) {

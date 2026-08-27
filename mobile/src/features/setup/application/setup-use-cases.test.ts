@@ -5,7 +5,6 @@ import {
   asCivilDate,
   asEntityId,
   asUtcTimestamp,
-  type EntityId,
 } from "@/domain/primitives"
 import { openPeritaDatabase, type PeritaDatabase } from "@/data/database"
 import { createRepositories, type PeritaRepositories } from "@/data/repositories"
@@ -55,7 +54,7 @@ describe("SetupUseCases", () => {
     draftStore.close()
   })
 
-  it("creates settings, period, account and opening atomically without financial operations", async () => {
+  it("creates settings, one account and its opening atomically", async () => {
     expect(await setup.getState()).toMatchObject({
       status: "not_started",
       allowedPeriodKeys: ["2026-08", "2026-07"],
@@ -65,13 +64,11 @@ describe("SetupUseCases", () => {
     await setup.saveDraft({
       periodKey: "2026-08",
       salaryReferenceAmount: 900_000,
-      variableExpenseBudgetAmount: 250_000,
-      accounts: [{
+      account: {
         id: "draft-account-1",
         name: "Principal",
-        bank: "Banco",
         openingBalance: 100_000,
-      }],
+      },
     })
     const reopenedSetup = new SetupUseCases(repositories, {
       now: () => NOW,
@@ -82,7 +79,11 @@ describe("SetupUseCases", () => {
     expect(await reopenedSetup.getState()).toMatchObject({
       status: "resumable",
       draft: {
-        accounts: [{ id: "draft-account-1", emoji: "💳" }],
+        account: {
+          id: "draft-account-1",
+          bank: null,
+          emoji: "💳",
+        },
       },
     })
     expect(await repositories.accounts.count()).toBe(0)
@@ -90,26 +91,34 @@ describe("SetupUseCases", () => {
     const result = await setup.completeSetup({
       periodKey: "2026-08",
       salaryReferenceAmount: 900_000,
-      variableExpenseBudgetAmount: 250_000,
-      accounts: [{ name: "Principal", bank: "Banco", openingBalance: 100_000 }],
+      account: {
+        name: "Principal",
+        bank: undefined,
+        openingBalance: 100_000,
+      },
     })
 
-    expect(result.accounts[0]).toMatchObject({
-      emoji: "💳",
-      openingBalance: 100_000,
-      currentBalance: 100_000,
-      status: "active",
-      deletedAt: null,
-      balanceAtDeletion: null,
-    })
-    expect(result.periodOpenings[0]).toMatchObject({
-      targetId: result.accounts[0]?.id,
-      openingAmount: 100_000,
-    })
+    expect(result.financialSettings.salaryReferenceAmount).toBe(900_000)
     expect(result.period).toMatchObject({
       plannedSalaryAmount: 900_000,
-      variableExpenseBudgetAmount: 250_000,
+      variableExpenseBudgetAmount: 0,
+      status: "open",
     })
+    expect(result.accounts).toEqual([
+      expect.objectContaining({
+        name: "Principal",
+        bank: null,
+        openingBalance: 100_000,
+        currentBalance: 100_000,
+        status: "active",
+      }),
+    ])
+    expect(result.periodOpenings).toEqual([
+      expect.objectContaining({
+        targetId: result.accounts[0]?.id,
+        openingAmount: 100_000,
+      }),
+    ])
     expect(await repositories.operations.count()).toBe(0)
     expect(await repositories.movements.count()).toBe(0)
     expect(await repositories.auditEvents.count()).toBe(3)
@@ -125,18 +134,18 @@ describe("SetupUseCases", () => {
     })
   })
 
-  it("accepts zero planning and a negative opening only during setup with a warning", async () => {
+  it("keeps a negative current balance as an opening with a warning", async () => {
     const result = await setup.completeSetup({
       periodKey: "2026-07",
       salaryReferenceAmount: 0,
-      variableExpenseBudgetAmount: 0,
-      accounts: [{ name: "Cuenta utilizada", openingBalance: -25_000 }],
+      account: { name: "Cuenta utilizada", openingBalance: -25_000 },
     })
 
     expect(result.accounts[0]).toMatchObject({
       openingBalance: -25_000,
       currentBalance: -25_000,
     })
+    expect(result.periodOpenings[0]).toMatchObject({ openingAmount: -25_000 })
     expect(result.warnings).toEqual([{
       code: "negative_opening_balance",
       accountId: result.accounts[0]?.id,
@@ -149,42 +158,18 @@ describe("SetupUseCases", () => {
     const result = await setup.completeSetup({
       periodKey: "2024-01",
       salaryReferenceAmount: 0,
-      variableExpenseBudgetAmount: 0,
-      accounts: [{ name: "Histórica", openingBalance: 0 }],
+      account: { name: "Histórica", openingBalance: 0 },
     })
 
     expect(result.period.periodKey).toBe("2024-01")
+    expect(result.period.variableExpenseBudgetAmount).toBe(0)
   })
 
-  it("confirms multiple accounts in the same atomic setup transaction", async () => {
-    const result = await setup.completeSetup({
-      periodKey: "2026-08",
-      salaryReferenceAmount: 1_000_000,
-      variableExpenseBudgetAmount: 300_000,
-      accounts: [
-        { name: "Principal", bank: "BancoEstado", openingBalance: 200_000 },
-        { name: "Efectivo", bank: "Efectivo", openingBalance: 25_000, emoji: "💵" },
-      ],
-    })
-
-    expect(result.accounts).toHaveLength(2)
-    expect(result.accounts.map(({ emoji }) => emoji)).toEqual(["💳", "💵"])
-    expect(result.periodOpenings).toHaveLength(2)
-    expect(await repositories.auditEvents.count()).toBe(4)
-  })
-
-  it("rejects confirmation without accounts and creates no financial records", async () => {
-    await setup.saveDraft({
-      periodKey: "2026-08",
-      salaryReferenceAmount: 0,
-      variableExpenseBudgetAmount: 0,
-      accounts: [],
-    })
+  it("rejects an invalid account without creating financial records", async () => {
     await expect(setup.completeSetup({
       periodKey: "2026-08",
       salaryReferenceAmount: 0,
-      variableExpenseBudgetAmount: 0,
-      accounts: [],
+      account: { name: "  ", openingBalance: 0 },
     })).rejects.toMatchObject({ code: "invalid_account" })
 
     expect(await repositories.administration.readSnapshot()).toMatchObject({
@@ -193,15 +178,13 @@ describe("SetupUseCases", () => {
       accounts: [],
       periodOpenings: [],
     })
-    expect(await draftStore.read()).toMatchObject({ accounts: [] })
   })
 
   it("rejects a future period without writes", async () => {
     await expect(setup.completeSetup({
       periodKey: "2026-09",
       salaryReferenceAmount: 0,
-      variableExpenseBudgetAmount: 0,
-      accounts: [{ name: "Principal", openingBalance: 0 }],
+      account: { name: "Principal", openingBalance: 0 },
     })).rejects.toMatchObject({ code: "invalid_period" })
     expect(await repositories.administration.readSnapshot()).toMatchObject({
       financialSettings: [],
@@ -211,37 +194,26 @@ describe("SetupUseCases", () => {
     })
   })
 
-  it("rolls back every setup record when one account write violates uniqueness", async () => {
-    const periodId = asEntityId("52000000-0000-4000-8000-000000000001")
-    const duplicateAccountId = asEntityId("52000000-0000-4000-8000-000000000002")
+  it("rolls back the single-account setup when an atomic write fails", async () => {
+    const ids = [
+      "52000000-0000-4000-8000-000000000001",
+      "52000000-0000-4000-8000-000000000002",
+      "52000000-0000-4000-8000-000000000003",
+      "52000000-0000-4000-8000-000000000004",
+      "52000000-0000-4000-8000-000000000004",
+    ].map(asEntityId)
     const remainingIds = idSequence("53000000")
-    const queuedIds: EntityId[] = [periodId, duplicateAccountId, duplicateAccountId]
     const failingSetup = new SetupUseCases(repositories, {
       now: () => NOW,
       today: () => TODAY,
-      createId: () => queuedIds.shift() ?? remainingIds(),
+      createId: () => ids.shift() ?? remainingIds(),
       draftStore,
-    })
-
-    await failingSetup.saveDraft({
-      periodKey: "2026-08",
-      salaryReferenceAmount: 0,
-      variableExpenseBudgetAmount: 0,
-      accounts: [{
-        id: "draft-duplicate",
-        name: "Duplicada",
-        openingBalance: 0,
-      }],
     })
 
     await expect(failingSetup.completeSetup({
       periodKey: "2026-08",
       salaryReferenceAmount: 0,
-      variableExpenseBudgetAmount: 0,
-      accounts: [
-        { name: "Principal", openingBalance: 0 },
-        { name: "Duplicada", openingBalance: 0 },
-      ],
+      account: { name: "Principal", openingBalance: 0 },
     })).rejects.toMatchObject({ code: "persistence_conflict" })
     const snapshot = await repositories.administration.readSnapshot()
     expect(snapshot.financialSettings).toEqual([])
@@ -249,8 +221,5 @@ describe("SetupUseCases", () => {
     expect(snapshot.accounts).toEqual([])
     expect(snapshot.periodOpenings).toEqual([])
     expect(snapshot.auditEvents).toEqual([])
-    expect(await draftStore.read()).toMatchObject({
-      accounts: [{ id: "draft-duplicate" }],
-    })
   })
 })
