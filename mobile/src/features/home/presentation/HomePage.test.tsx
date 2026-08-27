@@ -85,7 +85,7 @@ const dashboard: HomeDashboard = {
     },
     progressPercent: 10,
   }],
-  relevantDebts: [{
+  activeDebts: [{
     debt: {
       id: DEBT_ID,
       name: "Crédito",
@@ -162,11 +162,39 @@ describe("HomePage", () => {
       .getByText("Cuentas")
       .closest<HTMLElement>('[data-slot="card"]')
     const debtsCard = screen
-      .getByText("Deudas relevantes")
+      .getByText("Deudas")
       .closest<HTMLElement>('[data-slot="card"]')
     if (!monthCard || !goalsCard || !accountsCard || !debtsCard) {
       throw new Error("Missing Home cards")
     }
+    const titleClasses = [
+      "text-money-label",
+      "font-medium",
+      "uppercase",
+      "tracking-wide",
+      "text-muted-foreground",
+    ]
+    for (const title of [
+      "Patrimonio neto",
+      "Total en metas",
+      "Saldo disponible",
+      "Así va tu mes",
+      "Metas de ahorro",
+      "Cuentas",
+      "Deudas",
+    ]) {
+      expect(screen.getByText(title)).toHaveClass(...titleClasses)
+      expect(screen.getByText(title)).not.toHaveClass("type-section-title", "text-base")
+    }
+    const netWorthAmount = within(netWorthCard).getByText("$80.000")
+    const savingsAmount = within(savingsSummaryCard).getByText("$10.000")
+    const availableAmount = within(availableCard).getByText("$40.000")
+    expect(savingsAmount.className).toBe(netWorthAmount.className)
+    expect(availableAmount.className).toBe(netWorthAmount.className)
+    expect(netWorthCard.querySelector(".lucide-badge-dollar-sign")).toBeInTheDocument()
+    const monthTitle = within(monthCard).getByText("Así va tu mes")
+    expect(monthTitle.parentElement?.querySelector(".lucide-chart-no-axes-combined"))
+      .toBeInTheDocument()
     expect(within(monthCard).getByText("$50.000 de $100.000")).toBeInTheDocument()
     expect(within(monthCard).getByText("50%")).toBeInTheDocument()
     expect(within(monthCard).getByText("Ahorro del período")).toBeInTheDocument()
@@ -186,6 +214,7 @@ describe("HomePage", () => {
     expect(screen.queryByRole("button", { name: "Registrar ingreso" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Crear una meta o deuda" })).toBeNull()
     expect(screen.queryByText("Tu dinero")).toBeNull()
+    expect(screen.queryByText("Deudas relevantes")).toBeNull()
   })
 
   it("renders every active goal supplied for Home", async () => {
@@ -208,6 +237,47 @@ describe("HomePage", () => {
     expect(screen.getByText("Emergencias")).toBeInTheDocument()
     expect(screen.getByText("Vivienda")).toBeInTheDocument()
     expect(screen.getByText("Metas de ahorro")).toBeInTheDocument()
+  })
+
+  it("renders every active pending debt in the supplied order", async () => {
+    const first = dashboard.activeDebts[0]
+    if (!first) throw new Error("Missing debt fixture")
+    const activeDebts = [
+      {
+        ...first,
+        debt: {
+          ...first.debt,
+          name: "Atrasada menor",
+          outstandingAmount: asClpAmount(25_000),
+          paymentStatus: "overdue" as const,
+        },
+      },
+      {
+        ...first,
+        debt: {
+          ...first.debt,
+          id: asEntityId("b0000000-0000-4000-8000-000000000007"),
+          name: "Mayor saldo",
+          outstandingAmount: asClpAmount(90_000),
+        },
+      },
+      {
+        ...first,
+        debt: {
+          ...first.debt,
+          id: asEntityId("b0000000-0000-4000-8000-000000000008"),
+          name: "Menor saldo",
+          outstandingAmount: asClpAmount(40_000),
+        },
+      },
+    ]
+    render(<HomePage useCases={service({ ...dashboard, activeDebts })} />)
+
+    const overdue = await screen.findByText("Atrasada menor")
+    const larger = screen.getByText("Mayor saldo")
+    const smaller = screen.getByText("Menor saldo")
+    expect(overdue.compareDocumentPosition(larger) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(larger.compareDocumentPosition(smaller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it("shows the real expense percentage while limiting the visual bar to 100%", async () => {
@@ -235,7 +305,7 @@ describe("HomePage", () => {
       expenseToIncomePercent: null,
       savingsToIncomePercent: null,
       relevantGoals: [],
-      relevantDebts: [],
+      activeDebts: [],
     })} />)
 
     const monthCard = (await screen.findByText("Así va tu mes"))
@@ -288,11 +358,11 @@ describe("HomePage", () => {
   })
 
   it("keeps debt status and outstanding amount alongside derived progress", async () => {
-    const debtItem = dashboard.relevantDebts[0]
+    const debtItem = dashboard.activeDebts[0]
     if (!debtItem) throw new Error("Missing debt fixture")
     render(<HomePage useCases={service({
       ...dashboard,
-      relevantDebts: [{
+      activeDebts: [{
         ...debtItem,
         debt: {
           ...debtItem.debt,
@@ -332,7 +402,7 @@ describe("HomePage", () => {
           savingsToIncomePercent: null,
           accounts: [],
           relevantGoals: [],
-          relevantDebts: [],
+          activeDebts: [],
           isEmpty: true,
         })}
         onNavigate={onNavigate}

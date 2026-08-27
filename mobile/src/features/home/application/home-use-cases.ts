@@ -32,7 +32,7 @@ export interface HomeDashboard {
   readonly savingsToIncomePercent: number | null
   readonly accounts: readonly Account[]
   readonly relevantGoals: readonly HomeGoalItem[]
-  readonly relevantDebts: readonly HomeDebtItem[]
+  readonly activeDebts: readonly HomeDebtItem[]
   readonly isEmpty: boolean
 }
 
@@ -171,7 +171,7 @@ export class HomeUseCases implements HomeUseCasesPort {
           right.progressPercent - left.progressPercent ||
           left.goal.name.localeCompare(right.goal.name, "es"),
       )
-    const relevantDebts = debts
+    const activeDebts = debts
       .filter(
         ({ lifecycleStatus, outstandingAmount }) =>
           lifecycleStatus === "active" && outstandingAmount > 0,
@@ -188,7 +188,6 @@ export class HomeUseCases implements HomeUseCasesPort {
         }
         return right.debt.outstandingAmount - left.debt.outstandingAmount
       })
-      .slice(0, 2)
     const activeAccounts = accounts
       .filter(({ status }) => status === "active")
       .toSorted(
@@ -217,7 +216,7 @@ export class HomeUseCases implements HomeUseCasesPort {
           : null,
       accounts: activeAccounts,
       relevantGoals,
-      relevantDebts,
+      activeDebts,
       isEmpty:
         usableAccounts.length === 0 &&
         goals.length === 0 &&

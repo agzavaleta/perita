@@ -22,6 +22,13 @@ describe("App", () => {
     render(<App setupUseCases={setupService("completed")} />)
 
     const movementsButton = await screen.findByRole("button", { name: "Movimientos" })
+    const logo = document.querySelector<HTMLImageElement>(
+      'header img[src="/icons/perita-192.png"]',
+    )
+    expect(logo).toBeInTheDocument()
+    expect(logo).toHaveAttribute("alt", "")
+    expect(logo).toHaveClass("size-8")
+    expect(logo?.parentElement).toHaveTextContent("Perita")
     expect(movementsButton.querySelector("span")).toHaveClass("whitespace-nowrap")
     expect(movementsButton.querySelector("span")).not.toHaveClass("truncate")
     expect(screen.getByRole("heading", { name: "Inicio" })).toBeInTheDocument()

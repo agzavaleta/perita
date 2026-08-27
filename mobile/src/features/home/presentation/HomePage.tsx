@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react"
 import {
+  BadgeDollarSign,
   CalendarDays,
+  ChartNoAxesCombined,
   CircleDollarSign,
   HandCoins,
   PiggyBank,
@@ -16,7 +18,7 @@ import { LoadingState } from "@/components/states/LoadingState"
 import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader } from "@/components/ui/card"
 import { Separator } from "@/components/ui/separator"
 import {
   createHomeModule,
@@ -33,6 +35,13 @@ interface HomePageProps {
 }
 
 const noop = () => undefined
+const HOME_CARD_TITLE_CLASS =
+  "text-money-label font-medium uppercase tracking-wide text-muted-foreground"
+const HOME_SUMMARY_AMOUNT_CLASS =
+  "money-figure mt-1 text-money-primary font-semibold text-foreground"
+const HOME_SUMMARY_ICON_CLASS =
+  "grid size-11 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand"
+const HOME_SECTION_ICON_CLASS = "size-5 text-muted-foreground"
 
 function formatClp(value: number) {
   return new Intl.NumberFormat("es-CL", {
@@ -156,27 +165,24 @@ export function HomePage({
       <HomeHeading periodKey={dashboard.period.periodKey} />
 
       <Card className="rounded-surface ring-border">
-        <CardHeader>
-          <CardTitle className="type-section-title">Patrimonio neto</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="money-figure text-money-primary font-semibold text-foreground">
-            {formatClp(dashboard.netWorth)}
-          </p>
+        <CardContent className="flex items-start justify-between gap-4 pt-1">
+          <div className="min-w-0 flex-1">
+            <h2 className={HOME_CARD_TITLE_CLASS}>Patrimonio neto</h2>
+            <p className={HOME_SUMMARY_AMOUNT_CLASS}>{formatClp(dashboard.netWorth)}</p>
+          </div>
+          <div className={HOME_SUMMARY_ICON_CLASS}>
+            <BadgeDollarSign aria-hidden="true" className="size-5" />
+          </div>
         </CardContent>
       </Card>
 
       <Card>
         <CardContent className="flex items-start justify-between gap-4 pt-1">
-          <div>
-            <p className="text-money-label font-medium uppercase tracking-wide text-muted-foreground">
-              Total en metas
-            </p>
-            <p className="money-figure mt-1 text-2xl font-semibold">
-              {formatClp(dashboard.totalSavingsBalance)}
-            </p>
+          <div className="min-w-0 flex-1">
+            <h2 className={HOME_CARD_TITLE_CLASS}>Total en metas</h2>
+            <p className={HOME_SUMMARY_AMOUNT_CLASS}>{formatClp(dashboard.totalSavingsBalance)}</p>
           </div>
-          <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
+          <div className={HOME_SUMMARY_ICON_CLASS}>
             <PiggyBank aria-hidden="true" className="size-5" />
           </div>
         </CardContent>
@@ -185,8 +191,8 @@ export function HomePage({
       <Card className="border-brand/25">
         <CardContent className="flex items-start justify-between gap-4 pt-1">
           <div className="min-w-0 flex-1">
-            <p className="text-money-label font-medium uppercase tracking-wide text-muted-foreground">Saldo disponible</p>
-            <p className="money-figure mt-1 text-2xl font-semibold">{formatClp(summary.availableAmount)}</p>
+            <h2 className={HOME_CARD_TITLE_CLASS}>Saldo disponible</h2>
+            <p className={HOME_SUMMARY_AMOUNT_CLASS}>{formatClp(summary.availableAmount)}</p>
             <p className="mt-1 text-xs text-muted-foreground">Después de gastos, deuda y ahorro del período.</p>
             <dl className="mt-4 grid grid-cols-2 gap-4 border-t pt-3">
               <div className="space-y-1">
@@ -199,7 +205,7 @@ export function HomePage({
               </div>
             </dl>
           </div>
-          <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
+          <div className={HOME_SUMMARY_ICON_CLASS}>
             <CircleDollarSign aria-hidden="true" className="size-5" />
           </div>
         </CardContent>
@@ -217,7 +223,10 @@ export function HomePage({
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Así va tu mes</CardTitle>
+          <div className="flex items-center gap-2">
+            <ChartNoAxesCombined aria-hidden="true" className={HOME_SECTION_ICON_CLASS} />
+            <h2 className={HOME_CARD_TITLE_CLASS}>Así va tu mes</h2>
+          </div>
         </CardHeader>
         <CardContent className="space-y-4">
           <section aria-label="Gastado este mes" className="space-y-2">
@@ -272,7 +281,7 @@ export function HomePage({
 
       {dashboard.relevantGoals.length > 0 ? (
         <Card>
-          <CardHeader><div className="flex items-center gap-2"><PiggyBank aria-hidden="true" className="size-5 text-muted-foreground" /><CardTitle className="text-base">Metas de ahorro</CardTitle></div></CardHeader>
+          <CardHeader><div className="flex items-center gap-2"><PiggyBank aria-hidden="true" className={HOME_SECTION_ICON_CLASS} /><h2 className={HOME_CARD_TITLE_CLASS}>Metas de ahorro</h2></div></CardHeader>
           <CardContent className="space-y-4">
             {dashboard.relevantGoals.map(({ goal, progressPercent }) => (
               <div key={goal.id} className="space-y-2">
@@ -300,7 +309,7 @@ export function HomePage({
 
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-2"><WalletCards aria-hidden="true" className="size-5 text-muted-foreground" /><CardTitle className="text-base">Cuentas</CardTitle></div>
+          <div className="flex items-center gap-2"><WalletCards aria-hidden="true" className={HOME_SECTION_ICON_CLASS} /><h2 className={HOME_CARD_TITLE_CLASS}>Cuentas</h2></div>
         </CardHeader>
         <CardContent className="space-y-3">
           {dashboard.accounts.length === 0 ? (
@@ -318,11 +327,11 @@ export function HomePage({
         </CardContent>
       </Card>
 
-      {dashboard.relevantDebts.length > 0 ? (
+      {dashboard.activeDebts.length > 0 ? (
         <Card>
-          <CardHeader><div className="flex items-center gap-2"><HandCoins aria-hidden="true" className="size-5 text-muted-foreground" /><CardTitle className="text-base">Deudas relevantes</CardTitle></div></CardHeader>
+          <CardHeader><div className="flex items-center gap-2"><HandCoins aria-hidden="true" className={HOME_SECTION_ICON_CLASS} /><h2 className={HOME_CARD_TITLE_CLASS}>Deudas</h2></div></CardHeader>
           <CardContent className="space-y-3">
-            {dashboard.relevantDebts.map(
+            {dashboard.activeDebts.map(
               ({ debt, schedule, progressPercent }, index) => (
                 <div key={debt.id} className="space-y-2">
                   {index > 0 ? <Separator className="mb-3" /> : null}

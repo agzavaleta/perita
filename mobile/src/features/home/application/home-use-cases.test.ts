@@ -144,7 +144,7 @@ describe("HomeUseCases", () => {
       isEmpty: true,
       accounts: [],
       relevantGoals: [],
-      relevantDebts: [],
+      activeDebts: [],
       summary: {
         totalIncomeAmount: 0,
         availableAmount: 0,
@@ -203,11 +203,12 @@ describe("HomeUseCases", () => {
     expect(dashboard.netWorth).toBe(110_000)
   })
 
-  it("uses every active pending debt even though only two are visually relevant", async () => {
+  it("returns every active pending debt with overdue items first, then highest balance", async () => {
     await repositories.accounts.add(account())
     await repositories.debts.add(debt({
       outstandingAmount: asClpAmount(50_000),
       name: "Deuda uno",
+      paymentStatus: "overdue",
     }))
     await repositories.debts.add(debt({
       id: asEntityId("a0000000-0000-4000-8000-000000000010"),
@@ -225,7 +226,12 @@ describe("HomeUseCases", () => {
     }).getDashboard()
 
     expect(dashboard.netWorth).toBe(-80_000)
-    expect(dashboard.relevantDebts).toHaveLength(2)
+    expect(dashboard.activeDebts).toHaveLength(3)
+    expect(dashboard.activeDebts.map(({ debt: item }) => item.name)).toEqual([
+      "Deuda uno",
+      "Deuda tres",
+      "Deuda dos",
+    ])
   })
 
   it("does not subtract inactive or fully paid debts", async () => {
@@ -245,7 +251,7 @@ describe("HomeUseCases", () => {
     }).getDashboard()
 
     expect(dashboard.netWorth).toBe(100_000)
-    expect(dashboard.relevantDebts).toEqual([])
+    expect(dashboard.activeDebts).toEqual([])
   })
 
   it("aggregates balances and reuses the canonical monthly summary", async () => {
@@ -317,7 +323,7 @@ describe("HomeUseCases", () => {
       goal: { name: "Viaje", currentBalance: 10_000 },
       progressPercent: 10,
     })
-    expect(dashboard.relevantDebts[0]).toMatchObject({
+    expect(dashboard.activeDebts[0]).toMatchObject({
       debt: { name: "Crédito", outstandingAmount: 70_000 },
       schedule: { remainingInstallments: 3 },
       progressPercent: 30,
