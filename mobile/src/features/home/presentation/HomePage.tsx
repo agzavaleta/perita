@@ -10,7 +10,6 @@ import {
 } from "lucide-react"
 
 import type { AppSection } from "@/app/navigation"
-import { FinancialSummary } from "@/components/finance/FinancialSummary"
 import { EmptyState } from "@/components/states/EmptyState"
 import { ErrorMessage } from "@/components/states/ErrorMessage"
 import { LoadingState } from "@/components/states/LoadingState"
@@ -156,22 +155,32 @@ export function HomePage({
     <section className="space-y-6 py-section" aria-labelledby="home-title">
       <HomeHeading periodKey={dashboard.period.periodKey} />
 
-      <FinancialSummary
-        title="Tu dinero"
-        amountLabel="Saldo total"
-        amount={formatClp(dashboard.totalBalance)}
-        items={[]}
-      />
+      <Card className="rounded-surface ring-border">
+        <CardHeader>
+          <CardTitle className="type-section-title">Patrimonio neto</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="money-figure text-money-primary font-semibold text-foreground">
+            {formatClp(dashboard.netWorth)}
+          </p>
+        </CardContent>
+      </Card>
 
-      {summary.plannedSalaryAmount > 0 && summary.receivedSalaryAmount === 0 ? (
-        <Alert>
-          <Clock3 aria-hidden="true" />
-          <AlertTitle>Sueldo pendiente de recepción</AlertTitle>
-          <AlertDescription>
-            El período contempla {formatClp(summary.plannedSalaryAmount)}, pero todavía no existe un sueldo recibido vigente.
-          </AlertDescription>
-        </Alert>
-      ) : null}
+      <Card>
+        <CardContent className="flex items-start justify-between gap-4 pt-1">
+          <div>
+            <p className="text-money-label font-medium uppercase tracking-wide text-muted-foreground">
+              Total en metas
+            </p>
+            <p className="money-figure mt-1 text-2xl font-semibold">
+              {formatClp(dashboard.totalSavingsBalance)}
+            </p>
+          </div>
+          <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
+            <PiggyBank aria-hidden="true" className="size-5" />
+          </div>
+        </CardContent>
+      </Card>
 
       <Card className="border-brand/25">
         <CardContent className="flex items-start justify-between gap-4 pt-1">
@@ -195,6 +204,16 @@ export function HomePage({
           </div>
         </CardContent>
       </Card>
+
+      {summary.plannedSalaryAmount > 0 && summary.receivedSalaryAmount === 0 ? (
+        <Alert>
+          <Clock3 aria-hidden="true" />
+          <AlertTitle>Sueldo pendiente de recepción</AlertTitle>
+          <AlertDescription>
+            El período contempla {formatClp(summary.plannedSalaryAmount)}, pero todavía no existe un sueldo recibido vigente.
+          </AlertDescription>
+        </Alert>
+      ) : null}
 
       <Card>
         <CardHeader>

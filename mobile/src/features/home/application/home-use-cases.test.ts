@@ -78,7 +78,7 @@ function goal(overrides: Partial<SavingsGoal> = {}): SavingsGoal {
   }
 }
 
-function debt(): Debt {
+function debt(overrides: Partial<Debt> = {}): Debt {
   return {
     id: DEBT_ID,
     name: "Crédito",
@@ -93,6 +93,7 @@ function debt(): Debt {
     revision: asRevision(1),
     createdAt: NOW,
     updatedAt: NOW,
+    ...overrides,
   }
 }
 
@@ -134,7 +135,7 @@ describe("HomeUseCases", () => {
       today: () => TODAY,
     }).getDashboard()
     expect(dashboard).toMatchObject({
-      totalBalance: 0,
+      netWorth: 0,
       totalAccountBalance: 0,
       totalSavingsBalance: 0,
       periodExpenseAmount: 0,
@@ -166,11 +167,85 @@ describe("HomeUseCases", () => {
 
     expect(dashboard).toMatchObject({
       totalAccountBalance: 0,
-      totalBalance: 0,
+      netWorth: 0,
       accounts: [],
       isEmpty: true,
       summary: { availableAmount: -100_000 },
     })
+  })
+
+  it("adds accounts and savings when there are no pending debts", async () => {
+    await repositories.accounts.add(account())
+    await repositories.savingsGoals.add(goal({
+      openingBalance: asClpAmount(50_000),
+      currentBalance: asClpAmount(50_000),
+    }))
+
+    const dashboard = await new HomeUseCases(repositories, {
+      today: () => TODAY,
+    }).getDashboard()
+
+    expect(dashboard.netWorth).toBe(150_000)
+  })
+
+  it("subtracts one active pending debt from net worth", async () => {
+    await repositories.accounts.add(account())
+    await repositories.savingsGoals.add(goal({
+      openingBalance: asClpAmount(50_000),
+      currentBalance: asClpAmount(50_000),
+    }))
+    await repositories.debts.add(debt({ outstandingAmount: asClpAmount(40_000) }))
+
+    const dashboard = await new HomeUseCases(repositories, {
+      today: () => TODAY,
+    }).getDashboard()
+
+    expect(dashboard.netWorth).toBe(110_000)
+  })
+
+  it("uses every active pending debt even though only two are visually relevant", async () => {
+    await repositories.accounts.add(account())
+    await repositories.debts.add(debt({
+      outstandingAmount: asClpAmount(50_000),
+      name: "Deuda uno",
+    }))
+    await repositories.debts.add(debt({
+      id: asEntityId("a0000000-0000-4000-8000-000000000010"),
+      outstandingAmount: asClpAmount(60_000),
+      name: "Deuda dos",
+    }))
+    await repositories.debts.add(debt({
+      id: asEntityId("a0000000-0000-4000-8000-000000000011"),
+      outstandingAmount: asClpAmount(70_000),
+      name: "Deuda tres",
+    }))
+
+    const dashboard = await new HomeUseCases(repositories, {
+      today: () => TODAY,
+    }).getDashboard()
+
+    expect(dashboard.netWorth).toBe(-80_000)
+    expect(dashboard.relevantDebts).toHaveLength(2)
+  })
+
+  it("does not subtract inactive or fully paid debts", async () => {
+    await repositories.accounts.add(account())
+    await repositories.debts.add(debt({
+      lifecycleStatus: "inactive",
+      outstandingAmount: asClpAmount(70_000),
+    }))
+    await repositories.debts.add(debt({
+      id: asEntityId("a0000000-0000-4000-8000-000000000012"),
+      outstandingAmount: asClpAmount(0),
+      paymentStatus: "paid",
+    }))
+
+    const dashboard = await new HomeUseCases(repositories, {
+      today: () => TODAY,
+    }).getDashboard()
+
+    expect(dashboard.netWorth).toBe(100_000)
+    expect(dashboard.relevantDebts).toEqual([])
   })
 
   it("aggregates balances and reuses the canonical monthly summary", async () => {
@@ -224,7 +299,7 @@ describe("HomeUseCases", () => {
     expect(dashboard).toMatchObject({
       totalAccountBalance: 140_000,
       totalSavingsBalance: 10_000,
-      totalBalance: 150_000,
+      netWorth: 80_000,
       periodExpenseAmount: 50_000,
       expenseToIncomePercent: 50,
       savingsToIncomePercent: 10,

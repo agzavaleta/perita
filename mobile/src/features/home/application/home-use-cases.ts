@@ -24,7 +24,7 @@ export interface HomeDebtItem {
 export interface HomeDashboard {
   readonly period: Period
   readonly summary: MonthlySummary
-  readonly totalBalance: ClpAmount
+  readonly netWorth: ClpAmount
   readonly totalAccountBalance: ClpAmount
   readonly totalSavingsBalance: ClpAmount
   readonly periodExpenseAmount: ClpAmount
@@ -132,8 +132,16 @@ export class HomeUseCases implements HomeUseCasesPort {
     const totalSavingsBalance = checkedSum(
       goals.map(({ currentBalance }) => currentBalance),
     )
-    const totalBalance = checkedSum(
-      [totalAccountBalance, totalSavingsBalance],
+    const totalOutstandingDebt = checkedSum(
+      debts
+        .filter(
+          ({ lifecycleStatus, outstandingAmount }) =>
+            lifecycleStatus === "active" && outstandingAmount > 0,
+        )
+        .map(({ outstandingAmount }) => outstandingAmount),
+    )
+    const netWorth = checkedSum(
+      [totalAccountBalance, totalSavingsBalance, -totalOutstandingDebt],
       true,
     )
     const currentSummary: MonthlySummary = {
@@ -193,7 +201,7 @@ export class HomeUseCases implements HomeUseCasesPort {
     return {
       period,
       summary: currentSummary,
-      totalBalance,
+      netWorth,
       totalAccountBalance,
       totalSavingsBalance,
       periodExpenseAmount,

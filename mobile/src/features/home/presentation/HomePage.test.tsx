@@ -46,7 +46,7 @@ const dashboard: HomeDashboard = {
     netSavingsAmount: asClpAmount(10_000),
     availableAmount: asClpAmount(40_000),
   },
-  totalBalance: asClpAmount(150_000),
+  netWorth: asClpAmount(80_000, { allowNegative: true }),
   totalAccountBalance: asClpAmount(140_000),
   totalSavingsBalance: asClpAmount(10_000),
   periodExpenseAmount: asClpAmount(50_000),
@@ -119,8 +119,7 @@ describe("HomePage", () => {
   it("renders the canonical totals and only the relevant financial context", async () => {
     render(<HomePage useCases={service(dashboard)} />)
 
-    expect(await screen.findByText("Saldo total")).toBeInTheDocument()
-    expect(screen.getByText("$150.000")).toBeInTheDocument()
+    expect(await screen.findByText("Patrimonio neto")).toBeInTheDocument()
     expect(screen.getByText("$100.000")).toBeInTheDocument()
     expect(screen.getByText("$50.000")).toBeInTheDocument()
     expect(screen.getByText("$40.000")).toBeInTheDocument()
@@ -134,15 +133,20 @@ describe("HomePage", () => {
     expect(screen.getByText("Agosto de 2026")).toBeInTheDocument()
     expect(screen.getByText("Tu panorama financiero de un vistazo.")).toHaveClass("whitespace-nowrap")
 
-    const moneyCard = screen
-      .getByText("Tu dinero")
+    const netWorthCard = screen
+      .getByText("Patrimonio neto")
+      .closest<HTMLElement>('[data-slot="card"]')
+    const savingsSummaryCard = screen
+      .getByText("Total en metas")
       .closest<HTMLElement>('[data-slot="card"]')
     const availableCard = screen
       .getByText("Saldo disponible")
       .closest<HTMLElement>('[data-slot="card"]')
-    if (!moneyCard || !availableCard) throw new Error("Missing financial cards")
-    expect(within(moneyCard).queryByText("Ingresos del período")).toBeNull()
-    expect(within(moneyCard).queryByText("Gastos del período")).toBeNull()
+    if (!netWorthCard || !savingsSummaryCard || !availableCard) {
+      throw new Error("Missing financial cards")
+    }
+    expect(within(netWorthCard).getByText("$80.000")).toBeInTheDocument()
+    expect(within(savingsSummaryCard).getByText("$10.000")).toBeInTheDocument()
     expect(within(availableCard).getByText("Ingresos del período")).toBeInTheDocument()
     expect(within(availableCard).getByText("$100.000")).toBeInTheDocument()
     expect(within(availableCard).getByText("Gastos del período")).toBeInTheDocument()
@@ -170,6 +174,9 @@ describe("HomePage", () => {
     expect(within(goalsCard).getByText("10%")).toBeInTheDocument()
     expect(within(goalsCard).getByText("Ahorrado este período")).toBeInTheDocument()
     expect(within(goalsCard).getByText("Total ahorrado").nextElementSibling).toHaveClass("text-2xl")
+    expect(netWorthCard.compareDocumentPosition(savingsSummaryCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(savingsSummaryCard.compareDocumentPosition(availableCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(availableCard.compareDocumentPosition(monthCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(monthCard.compareDocumentPosition(goalsCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(goalsCard.compareDocumentPosition(accountsCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(accountsCard.compareDocumentPosition(debtsCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
@@ -178,6 +185,7 @@ describe("HomePage", () => {
     expect(screen.queryByRole("button", { name: "Ver todas" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Registrar ingreso" })).toBeNull()
     expect(screen.queryByRole("button", { name: "Crear una meta o deuda" })).toBeNull()
+    expect(screen.queryByText("Tu dinero")).toBeNull()
   })
 
   it("renders every active goal supplied for Home", async () => {
@@ -265,8 +273,18 @@ describe("HomePage", () => {
       },
     })} />)
 
-    expect(await screen.findByText("Sueldo pendiente de recepción")).toBeInTheDocument()
+    const alertTitle = await screen.findByText("Sueldo pendiente de recepción")
     expect(screen.getByText(/todavía no existe un sueldo recibido vigente/i)).toBeInTheDocument()
+    const alert = alertTitle.closest<HTMLElement>('[role="alert"]')
+    const availableCard = screen
+      .getByText("Saldo disponible")
+      .closest<HTMLElement>('[data-slot="card"]')
+    const monthCard = screen
+      .getByText("Así va tu mes")
+      .closest<HTMLElement>('[data-slot="card"]')
+    if (!alert || !availableCard || !monthCard) throw new Error("Missing ordered content")
+    expect(availableCard.compareDocumentPosition(alert) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(alert.compareDocumentPosition(monthCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
   it("keeps debt status and outstanding amount alongside derived progress", async () => {
@@ -306,7 +324,7 @@ describe("HomePage", () => {
             netSavingsAmount: asClpAmount(0),
             availableAmount: asClpAmount(0),
           },
-          totalBalance: asClpAmount(0),
+          netWorth: asClpAmount(0),
           totalAccountBalance: asClpAmount(0),
           totalSavingsBalance: asClpAmount(0),
           periodExpenseAmount: asClpAmount(0),
