@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import type {
@@ -27,7 +27,10 @@ import type {
   SavingsGoalDetail,
 } from "@/features/planning/application/planning-use-cases"
 import type { MovementUseCasesPort } from "@/features/movements/application/movement-use-cases"
-import { PlanningPage } from "@/features/planning/presentation/PlanningPage"
+import {
+  buildFixedExpenseDistribution,
+  PlanningPage,
+} from "@/features/planning/presentation/PlanningPage"
 import { toast } from "sonner"
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn() } }))
@@ -83,6 +86,46 @@ const instance: FixedExpenseInstance = {
 const fixedItem: FixedExpenseListItem = {
   template,
   currentInstance: instance,
+}
+
+function distributionItem({
+  index,
+  name,
+  plannedAmount,
+  referenceAmount,
+  hasCurrentInstance = true,
+}: {
+  readonly index: number
+  readonly name: string
+  readonly plannedAmount: number
+  readonly referenceAmount: number
+  readonly hasCurrentInstance?: boolean
+}): FixedExpenseListItem {
+  const templateId = asEntityId(
+    `60000000-0000-4000-8000-${String(300 + index).padStart(12, "0")}`,
+  )
+  return {
+    template: {
+      ...template,
+      id: templateId,
+      name,
+      referenceAmount: asPositiveClpAmount(referenceAmount),
+    },
+    currentInstance: hasCurrentInstance
+      ? {
+          ...instance,
+          id: asEntityId(
+            `60000000-0000-4000-8000-${String(400 + index).padStart(12, "0")}`,
+          ),
+          templateId,
+          nameSnapshot: name,
+          plannedAmount:
+            plannedAmount > 0
+              ? asPositiveClpAmount(plannedAmount)
+              : (0 as unknown as FixedExpenseInstance["plannedAmount"]),
+        }
+      : null,
+  }
 }
 const detail: SavingsGoalDetail = { goal, relatedMovements: [], canDelete: false }
 
@@ -268,6 +311,59 @@ function movementService(
     ...overrides,
   }
 }
+
+describe("buildFixedExpenseDistribution", () => {
+  it("uses current planned amounts and excludes zero or missing instances", () => {
+    const distribution = buildFixedExpenseDistribution([
+      distributionItem({
+        index: 1,
+        name: "Arriendo",
+        plannedAmount: 350_000,
+        referenceAmount: 999_000,
+      }),
+      distributionItem({
+        index: 2,
+        name: "Internet",
+        plannedAmount: 280_000,
+        referenceAmount: 30_000,
+      }),
+      distributionItem({
+        index: 3,
+        name: "Monto cero",
+        plannedAmount: 0,
+        referenceAmount: 20_000,
+      }),
+      distributionItem({
+        index: 4,
+        name: "Sin instancia",
+        plannedAmount: 100_000,
+        referenceAmount: 100_000,
+        hasCurrentInstance: false,
+      }),
+    ])
+
+    expect(distribution.total).toBe(630_000)
+    expect(distribution.items.map(({ name, amount }) => ({ name, amount }))).toEqual([
+      { name: "Arriendo", amount: 350_000 },
+      { name: "Internet", amount: 280_000 },
+    ])
+    expect(distribution.items[0]?.percentage).toBeCloseTo(55.56, 2)
+    expect(distribution.items[1]?.percentage).toBeCloseTo(44.44, 2)
+  })
+
+  it("returns an empty distribution when the total is zero", () => {
+    const distribution = buildFixedExpenseDistribution([
+      distributionItem({
+        index: 1,
+        name: "Monto cero",
+        plannedAmount: 0,
+        referenceAmount: 20_000,
+      }),
+    ])
+
+    expect(distribution).toEqual({ total: 0, items: [] })
+  })
+})
 
 describe("PlanningPage", () => {
   it("shows goal progress and preserves the Mover dinero action", async () => {
@@ -556,7 +652,7 @@ describe("PlanningPage", () => {
 
     const fixedTab = screen.getByRole("tab", { name: "Fijos" })
     fireEvent.mouseDown(fixedTab, { button: 0, ctrlKey: false })
-    expect(await screen.findByText("Internet")).toBeInTheDocument()
+    expect(await screen.findAllByText("Internet")).toHaveLength(2)
     fireEvent.click(screen.getByRole("button", { name: "Nuevo" }))
     fireEvent.change(screen.getByRole("textbox", { name: "Nombre" }), {
       target: { value: "Arriendo" },
@@ -573,6 +669,92 @@ describe("PlanningPage", () => {
         referenceAmount: 450_000,
       }),
     )
+  })
+
+  it("renders the fixed-expense distribution and keeps the existing list", async () => {
+    const fixedExpenses = [
+      distributionItem({
+        index: 1,
+        name: "Arriendo",
+        plannedAmount: 350_000,
+        referenceAmount: 999_000,
+      }),
+      distributionItem({
+        index: 2,
+        name: "Internet",
+        plannedAmount: 280_000,
+        referenceAmount: 30_000,
+      }),
+      distributionItem({
+        index: 3,
+        name: "Monto cero",
+        plannedAmount: 0,
+        referenceAmount: 20_000,
+      }),
+    ]
+    render(
+      <PlanningPage
+        useCases={service({
+          listFixedExpenses: vi.fn().mockResolvedValue(fixedExpenses),
+        })}
+      />,
+    )
+    await screen.findByText("Viaje")
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Fijos" }), {
+      button: 0,
+      ctrlKey: false,
+    })
+    const distributionCard = (await screen.findByText("Distribución de gastos fijos"))
+      .closest<HTMLElement>('[data-slot="card"]')
+    if (!distributionCard) throw new Error("Missing distribution card")
+    expect(within(distributionCard).getByText("$630.000")).toBeInTheDocument()
+    expect(within(distributionCard).getByText("Total mensual")).toBeInTheDocument()
+    expect(within(distributionCard).getAllByTestId("fixed-expense-segment")).toHaveLength(2)
+
+    const legend = within(distributionCard).getByRole("list", {
+      name: "Detalle de distribución de gastos fijos",
+    })
+    const rentRow = within(legend).getByText("Arriendo").closest("li")
+    const internetRow = within(legend).getByText("Internet").closest("li")
+    if (!rentRow || !internetRow) throw new Error("Missing distribution rows")
+    expect(within(rentRow).getByText("$350.000")).toBeInTheDocument()
+    expect(within(rentRow).getByText("56%")).toBeInTheDocument()
+    expect(within(internetRow).getByText("$280.000")).toBeInTheDocument()
+    expect(within(internetRow).getByText("44%")).toBeInTheDocument()
+    expect(within(distributionCard).queryByText("Monto cero")).toBeNull()
+    expect(within(distributionCard).queryByText("$999.000")).toBeNull()
+
+    expect(screen.getByRole("button", { name: "Ver detalle de Arriendo" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Ver detalle de Internet" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Ver detalle de Monto cero" })).toBeInTheDocument()
+  })
+
+  it("does not render an empty chart when all current planned amounts are zero", async () => {
+    const zeroItem = distributionItem({
+      index: 1,
+      name: "Monto cero",
+      plannedAmount: 0,
+      referenceAmount: 20_000,
+    })
+    render(
+      <PlanningPage
+        useCases={service({
+          listFixedExpenses: vi.fn().mockResolvedValue([zeroItem]),
+        })}
+      />,
+    )
+    await screen.findByText("Viaje")
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Fijos" }), {
+      button: 0,
+      ctrlKey: false,
+    })
+    expect(
+      await screen.findByRole("button", { name: "Ver detalle de Monto cero" }),
+    ).toBeInTheDocument()
+    expect(screen.queryByText("Distribución de gastos fijos")).toBeNull()
+    expect(screen.queryByText("NaN%")).toBeNull()
   })
 
   it("registers a pending fixed-expense payment through the movement use case", async () => {

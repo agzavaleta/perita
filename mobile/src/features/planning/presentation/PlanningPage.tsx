@@ -110,6 +110,149 @@ function formatClp(value: number, signed = false) {
   }).format(value)
 }
 
+export interface FixedExpenseDistributionItem {
+  readonly id: EntityId
+  readonly name: string
+  readonly amount: number
+  readonly percentage: number
+  readonly startPercentage: number
+}
+
+export interface FixedExpenseDistribution {
+  readonly total: number
+  readonly items: readonly FixedExpenseDistributionItem[]
+}
+
+export function buildFixedExpenseDistribution(
+  fixedExpenses: readonly FixedExpenseListItem[],
+): FixedExpenseDistribution {
+  const included = fixedExpenses.flatMap(({ template, currentInstance }) =>
+    currentInstance && currentInstance.plannedAmount > 0
+      ? [{
+          id: template.id,
+          name: template.name,
+          amount: currentInstance.plannedAmount,
+        }]
+      : [],
+  )
+  const total = included.reduce((sum, { amount }) => sum + amount, 0)
+  if (total === 0) return { total, items: [] }
+
+  let accumulatedPercentage = 0
+  const items = included.map((item) => {
+    const percentage = (item.amount / total) * 100
+    const distributionItem = {
+      ...item,
+      percentage,
+      startPercentage: accumulatedPercentage,
+    }
+    accumulatedPercentage += percentage
+    return distributionItem
+  })
+  return { total, items }
+}
+
+const FIXED_EXPENSE_SEGMENT_CLASSES = [
+  "text-brand",
+  "text-primary",
+  "text-destructive",
+  "text-muted-foreground",
+  "text-accent-foreground",
+  "text-border-strong",
+] as const
+
+function FixedExpenseDistributionCard({
+  fixedExpenses,
+}: {
+  readonly fixedExpenses: readonly FixedExpenseListItem[]
+}) {
+  const distribution = buildFixedExpenseDistribution(fixedExpenses)
+  if (distribution.items.length === 0) return null
+
+  const radius = 38
+  const circumference = 2 * Math.PI * radius
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Distribución de gastos fijos</CardTitle>
+        <CardDescription>Proporción del plan mensual vigente.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="relative mx-auto size-44 min-[360px]:size-48">
+          <svg
+            aria-hidden="true"
+            className="size-full -rotate-90"
+            viewBox="0 0 100 100"
+          >
+            <circle
+              className="text-muted"
+              cx="50"
+              cy="50"
+              fill="none"
+              r={radius}
+              stroke="currentColor"
+              strokeWidth="16"
+            />
+            {distribution.items.map((item, index) => {
+              const colorClass =
+                FIXED_EXPENSE_SEGMENT_CLASSES[
+                  index % FIXED_EXPENSE_SEGMENT_CLASSES.length
+                ]
+              return (
+                <circle
+                  key={item.id}
+                  className={colorClass}
+                  cx="50"
+                  cy="50"
+                  data-testid="fixed-expense-segment"
+                  fill="none"
+                  r={radius}
+                  stroke="currentColor"
+                  strokeDasharray={`${(item.percentage / 100) * circumference} ${circumference}`}
+                  strokeDashoffset={-(item.startPercentage / 100) * circumference}
+                  strokeWidth="16"
+                />
+              )
+            })}
+          </svg>
+          <div className="pointer-events-none absolute inset-0 grid place-content-center px-5 text-center">
+            <p className="money-figure text-lg font-semibold">
+              {formatClp(distribution.total)}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">Total mensual</p>
+          </div>
+        </div>
+
+        <ul aria-label="Detalle de distribución de gastos fijos" className="space-y-3">
+          {distribution.items.map((item, index) => {
+            const colorClass =
+              FIXED_EXPENSE_SEGMENT_CLASSES[
+                index % FIXED_EXPENSE_SEGMENT_CLASSES.length
+              ]
+            return (
+              <li className="flex min-w-0 items-center gap-3 text-sm" key={item.id}>
+                <span
+                  aria-hidden="true"
+                  className={`size-3 shrink-0 rounded-full ${colorClass}`}
+                  style={{ backgroundColor: "currentColor" }}
+                />
+                <span className="min-w-0 flex-1 truncate font-medium">{item.name}</span>
+                <span className="flex shrink-0 items-baseline gap-2 tabular-nums">
+                  <span className="money-figure">{formatClp(item.amount)}</span>
+                  <span className="w-9 text-right text-muted-foreground">
+                    {Math.round(item.percentage)}%
+                  </span>
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      </CardContent>
+    </Card>
+  )
+}
+
 function formatDate(value: string) {
   const [year, month, day] = value.split("-")
   return `${day}-${month}-${year}`
@@ -844,6 +987,9 @@ export function PlanningPage({
               <Plus aria-hidden="true" /> Nuevo
             </Button>
           </div>
+          {!loading ? (
+            <FixedExpenseDistributionCard fixedExpenses={fixedExpenses} />
+          ) : null}
           {loading ? (
             <LoadingState label="Cargando gastos fijos" />
           ) : fixedExpenses.length === 0 ? (
