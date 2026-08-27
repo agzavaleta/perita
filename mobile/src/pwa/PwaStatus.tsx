@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Download, RefreshCw, Wifi, WifiOff, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -15,6 +15,8 @@ const INITIAL_STATE: PwaState = {
 export function PwaStatus() {
   const [controller] = useState(() => new PwaController())
   const [state, setState] = useState(INITIAL_STATE)
+  const [showOffline, setShowOffline] = useState(false)
+  const wasOffline = useRef(false)
 
   useEffect(() => {
     const unsubscribe = controller.subscribe(setState)
@@ -24,6 +26,18 @@ export function PwaStatus() {
       controller.dispose()
     }
   }, [controller])
+
+  useEffect(() => {
+    const transitionedOffline = state.offline && !wasOffline.current
+    wasOffline.current = state.offline
+    if (!transitionedOffline) {
+      if (!state.offline) setShowOffline(false)
+      return
+    }
+    setShowOffline(true)
+    const timeout = window.setTimeout(() => setShowOffline(false), 4_000)
+    return () => window.clearTimeout(timeout)
+  }, [state.offline])
 
   if (state.updateAvailable) {
     return (
@@ -38,7 +52,7 @@ export function PwaStatus() {
     )
   }
 
-  if (state.offline) {
+  if (state.offline && showOffline) {
     return (
       <aside className="flex items-center gap-2 border-b bg-muted px-4 py-2 text-sm" role="status">
         <WifiOff className="size-4" aria-hidden="true" />

@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react"
 import {
-  ArrowRight,
   CalendarDays,
   CircleDollarSign,
   HandCoins,
@@ -68,10 +67,10 @@ function message(error: unknown) {
 
 function HomeHeading({ periodKey }: { readonly periodKey: string }) {
   return (
-    <div className="flex flex-col items-start gap-2 min-[360px]:flex-row min-[360px]:justify-between min-[360px]:gap-3">
+    <div className="flex flex-col items-start gap-2 min-[430px]:flex-row min-[430px]:justify-between min-[430px]:gap-3">
       <div>
         <h1 id="home-title" className="type-page-title">Inicio</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Tu panorama financiero de un vistazo.</p>
+        <p className="mt-1 whitespace-nowrap text-sm text-muted-foreground">Tu panorama financiero de un vistazo.</p>
       </div>
       <Badge variant="secondary" className="shrink-0">
         <CalendarDays aria-hidden="true" /> Abierto ·{" "}
@@ -165,10 +164,7 @@ export function HomePage({
         title="Tu dinero"
         amountLabel="Saldo total"
         amount={formatClp(dashboard.totalBalance)}
-        items={[
-          { label: "Ingresos del período", value: formatClp(summary.totalIncomeAmount) },
-          { label: "Gastos del período", value: formatClp(dashboard.periodExpenseAmount) },
-        ]}
+        items={[]}
       />
 
       {summary.plannedSalaryAmount > 0 && summary.receivedSalaryAmount === 0 ? (
@@ -182,11 +178,21 @@ export function HomePage({
       ) : null}
 
       <Card className="border-brand/25">
-        <CardContent className="flex items-center justify-between gap-4 pt-1">
-          <div>
+        <CardContent className="flex items-start justify-between gap-4 pt-1">
+          <div className="min-w-0 flex-1">
             <p className="text-money-label font-medium uppercase tracking-wide text-muted-foreground">Saldo disponible</p>
             <p className="money-figure mt-1 text-2xl font-semibold">{formatClp(summary.availableAmount)}</p>
             <p className="mt-1 text-xs text-muted-foreground">Después de gastos, deuda y ahorro del período.</p>
+            <dl className="mt-4 grid grid-cols-2 gap-4 border-t pt-3">
+              <div className="space-y-1">
+                <dt className="text-money-label text-muted-foreground">Ingresos del período</dt>
+                <dd className="money-figure text-money-secondary font-medium">{formatClp(summary.totalIncomeAmount)}</dd>
+              </div>
+              <div className="space-y-1">
+                <dt className="text-money-label text-muted-foreground">Gastos del período</dt>
+                <dd className="money-figure text-money-secondary font-medium">{formatClp(dashboard.periodExpenseAmount)}</dd>
+              </div>
+            </dl>
           </div>
           <div className="grid size-11 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
             <CircleDollarSign aria-hidden="true" className="size-5" />
@@ -194,25 +200,15 @@ export function HomePage({
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-2 gap-2">
-        {activeAccountCount > 0 && summary.totalIncomeAmount === 0 ? (
-          <Button type="button" size="lg" onClick={onRegisterIncome}>
-            <Plus aria-hidden="true" /> Registrar ingreso
-          </Button>
-        ) : (
-          <Button type="button" size="lg" variant="outline" onClick={() => onNavigate("movements")}>
-            Ver movimientos <ArrowRight aria-hidden="true" />
-          </Button>
-        )}
-        <Button type="button" size="lg" variant="outline" onClick={() => onNavigate("planning")}>
-          Planificar <ArrowRight aria-hidden="true" />
+      {activeAccountCount > 0 && summary.totalIncomeAmount === 0 ? (
+        <Button type="button" size="lg" className="w-full" onClick={onRegisterIncome}>
+          <Plus aria-hidden="true" /> Registrar ingreso
         </Button>
-      </div>
+      ) : null}
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between gap-3">
+        <CardHeader>
           <div className="flex items-center gap-2"><WalletCards aria-hidden="true" className="size-5 text-muted-foreground" /><CardTitle className="text-base">Cuentas</CardTitle></div>
-          <Button type="button" variant="ghost" size="sm" onClick={() => onNavigate("accounts")}>Ver todas</Button>
         </CardHeader>
         <CardContent className="space-y-3">
           {dashboard.accounts.length === 0 ? (

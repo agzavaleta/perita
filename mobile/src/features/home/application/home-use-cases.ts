@@ -147,7 +147,6 @@ export class HomeUseCases implements HomeUseCasesPort {
           right.progressPercent - left.progressPercent ||
           left.goal.name.localeCompare(right.goal.name, "es"),
       )
-      .slice(0, 2)
     const relevantDebts = debts
       .filter(
         ({ lifecycleStatus, outstandingAmount }) =>

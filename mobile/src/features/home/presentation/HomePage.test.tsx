@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import type { HomeDashboard, HomeUseCasesPort } from "@/features/home/application/home-use-cases"
@@ -128,6 +128,42 @@ describe("HomePage", () => {
       screen.getByRole("progressbar", { name: "Progreso de deuda Crédito" }),
     ).toHaveAttribute("aria-valuenow", "30")
     expect(screen.getByText("Agosto de 2026")).toBeInTheDocument()
+    expect(screen.getByText("Tu panorama financiero de un vistazo.")).toHaveClass("whitespace-nowrap")
+
+    const moneyCard = screen.getByText("Tu dinero").closest('[data-slot="card"]')
+    const availableCard = screen.getByText("Saldo disponible").closest('[data-slot="card"]')
+    if (!moneyCard || !availableCard) throw new Error("Missing financial cards")
+    expect(within(moneyCard).queryByText("Ingresos del período")).toBeNull()
+    expect(within(moneyCard).queryByText("Gastos del período")).toBeNull()
+    expect(within(availableCard).getByText("Ingresos del período")).toBeInTheDocument()
+    expect(within(availableCard).getByText("$100.000")).toBeInTheDocument()
+    expect(within(availableCard).getByText("Gastos del período")).toBeInTheDocument()
+    expect(within(availableCard).getByText("$50.000")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Ver movimientos" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Planificar" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Ver todas" })).toBeNull()
+  })
+
+  it("renders every active goal supplied for Home", async () => {
+    const first = dashboard.relevantGoals[0]
+    if (!first) throw new Error("Missing goal fixture")
+    const goals = [
+      first,
+      {
+        goal: { ...first.goal, id: asEntityId("b0000000-0000-4000-8000-000000000005"), name: "Emergencias" },
+        progressPercent: 20,
+      },
+      {
+        goal: { ...first.goal, id: asEntityId("b0000000-0000-4000-8000-000000000006"), name: "Vivienda" },
+        progressPercent: 30,
+      },
+    ]
+    render(<HomePage useCases={service({ ...dashboard, relevantGoals: goals })} />)
+
+    expect(await screen.findByText("Viaje")).toBeInTheDocument()
+    expect(screen.getByText("Emergencias")).toBeInTheDocument()
+    expect(screen.getByText("Vivienda")).toBeInTheDocument()
+    expect(screen.getByText("Metas relevantes")).toBeInTheDocument()
   })
 
   it("shows the planned salary as pending until a salary receipt exists", async () => {

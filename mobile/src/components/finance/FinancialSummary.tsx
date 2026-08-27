@@ -26,16 +26,18 @@ export function FinancialSummary({
       </CardHeader>
       <CardContent className="space-y-section">
         <MoneyAmount label={amountLabel} value={amount} />
-        <dl className="grid grid-cols-2 gap-card border-t pt-card">
-          {items.map(({ label, value }) => (
-            <div key={label} className="space-y-1">
-              <dt className="text-money-label text-muted-foreground">{label}</dt>
-              <dd className="money-figure text-money-secondary font-medium">
-                {value}
-              </dd>
-            </div>
-          ))}
-        </dl>
+        {items.length > 0 ? (
+          <dl className="grid grid-cols-2 gap-card border-t pt-card">
+            {items.map(({ label, value }) => (
+              <div key={label} className="space-y-1">
+                <dt className="text-money-label text-muted-foreground">{label}</dt>
+                <dd className="money-figure text-money-secondary font-medium">
+                  {value}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
       </CardContent>
     </Card>
   )

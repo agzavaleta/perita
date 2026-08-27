@@ -56,7 +56,7 @@ function account(): Account {
   }
 }
 
-function goal(): SavingsGoal {
+function goal(overrides: Partial<SavingsGoal> = {}): SavingsGoal {
   return {
     id: GOAL_ID,
     emoji: "💰",
@@ -72,6 +72,7 @@ function goal(): SavingsGoal {
     revision: asRevision(1),
     createdAt: NOW,
     updatedAt: NOW,
+    ...overrides,
   }
 }
 
@@ -218,6 +219,36 @@ describe("HomeUseCases", () => {
       schedule: { remainingInstallments: 3 },
       progressPercent: 30,
     })
+  })
+
+  it("returns every active savings goal without truncating the Home list", async () => {
+    await repositories.savingsGoals.add(goal())
+    await repositories.savingsGoals.add(goal({
+      id: asEntityId("a0000000-0000-4000-8000-000000000006"),
+      name: "Emergencias",
+      currentBalance: asClpAmount(50_000),
+    }))
+    await repositories.savingsGoals.add(goal({
+      id: asEntityId("a0000000-0000-4000-8000-000000000007"),
+      name: "Vivienda",
+      currentBalance: asClpAmount(25_000),
+    }))
+    await repositories.savingsGoals.add(goal({
+      id: asEntityId("a0000000-0000-4000-8000-000000000008"),
+      name: "Cerrada",
+      lifecycleStatus: "closed",
+      closedAt: NOW,
+    }))
+
+    const dashboard = await new HomeUseCases(repositories, {
+      today: () => TODAY,
+    }).getDashboard()
+
+    expect(dashboard.relevantGoals.map(({ goal }) => goal.name)).toEqual([
+      "Emergencias",
+      "Vivienda",
+      "Viaje",
+    ])
   })
 })
 
