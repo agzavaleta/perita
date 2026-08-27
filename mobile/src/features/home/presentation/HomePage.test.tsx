@@ -132,6 +132,7 @@ describe("HomePage", () => {
     ).toHaveAttribute("aria-valuenow", "30")
     expect(screen.getByText("Agosto de 2026")).toBeInTheDocument()
     expect(screen.getByText("Tu panorama financiero de un vistazo.")).toHaveClass("whitespace-nowrap")
+    expect(screen.queryByRole("heading", { name: "Inicio" })).toBeNull()
 
     const netWorthCard = screen
       .getByText("Patrimonio neto")

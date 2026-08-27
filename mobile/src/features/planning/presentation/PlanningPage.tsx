@@ -913,14 +913,7 @@ export function PlanningPage({
   }
 
   return (
-    <section className="space-y-section py-section" aria-labelledby="planning-title">
-      <div>
-        <h1 id="planning-title" className="type-page-title">Planificar</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Metas, gastos fijos, deudas y cierre del período.
-        </p>
-      </div>
-
+    <section className="space-y-section py-section">
       {error ? (
         <ErrorMessage title="No se pudo completar la acción" description={error} />
       ) : null}

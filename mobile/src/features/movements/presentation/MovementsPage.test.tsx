@@ -266,6 +266,10 @@ describe("MovementsPage", () => {
       />,
     )
 
+    expect(screen.getByText(
+      "Ingresos, gastos, ahorro, ajustes y movimientos internos del período abierto.",
+    )).toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Movimientos" })).toBeNull()
     const incomeAmount = await screen.findByText("+ $25.000")
     const expenseAmount = screen.getByText("- $12.000")
     expect(incomeAmount).toHaveClass("text-green-600")

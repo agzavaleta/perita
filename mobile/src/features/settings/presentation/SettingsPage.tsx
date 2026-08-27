@@ -275,15 +275,12 @@ export function SettingsPage({
   }
 
   if (!loaded && !notice) {
-    return <section className="space-y-section py-section"><h1 className="type-page-title">Configuración</h1><LoadingState label="Cargando configuración" /></section>
+    return <section className="space-y-section py-section"><LoadingState label="Cargando configuración" /></section>
   }
 
   return (
-    <section className="space-y-6 py-section" aria-labelledby="settings-title">
-      <div>
-        <h1 id="settings-title" className="type-page-title">Configuración</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Preferencias, respaldo y administración de tus datos.</p>
-      </div>
+    <section className="space-y-6 py-section">
+      <p className="text-sm text-muted-foreground">Preferencias, respaldo y administración de tus datos.</p>
 
       {notice?.kind === "error" ? <ErrorMessage title="No se pudo completar la acción" description={notice.text} /> : null}
 

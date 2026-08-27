@@ -376,6 +376,8 @@ describe("PlanningPage", () => {
       />,
     )
 
+    expect(screen.queryByRole("heading", { name: "Planificar" })).toBeNull()
+    expect(screen.queryByText("Metas, gastos fijos, deudas y cierre del período.")).toBeNull()
     expect(await screen.findByText("Viaje")).toBeInTheDocument()
     expect(screen.getByRole("img", { name: "Emoji de Viaje" })).toHaveTextContent(
       "💰",

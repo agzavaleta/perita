@@ -108,6 +108,10 @@ describe("SettingsPage", () => {
     expect(screen.getByText("Anterior")).toBeInTheDocument()
     expect(screen.getByText("Activa")).toBeInTheDocument()
     expect(screen.getByText("Inactiva")).toBeInTheDocument()
+    expect(screen.getByText(
+      "Preferencias, respaldo y administración de tus datos.",
+    )).toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Configuración" })).toBeNull()
     expect(categories.listCategories).toHaveBeenCalledOnce()
     const destructive = screen.getByRole("button", { name: "Eliminar definitivamente" })
     expect(destructive).toBeDisabled()

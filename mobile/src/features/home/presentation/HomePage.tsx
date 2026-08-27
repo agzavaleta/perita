@@ -74,10 +74,7 @@ function message(error: unknown) {
 function HomeHeading({ periodKey }: { readonly periodKey: string }) {
   return (
     <div className="flex flex-col items-start gap-2 min-[430px]:flex-row min-[430px]:justify-between min-[430px]:gap-3">
-      <div>
-        <h1 id="home-title" className="type-page-title">Inicio</h1>
-        <p className="mt-1 whitespace-nowrap text-sm text-muted-foreground">Tu panorama financiero de un vistazo.</p>
-      </div>
+      <p className="whitespace-nowrap text-sm text-muted-foreground">Tu panorama financiero de un vistazo.</p>
       <Badge variant="secondary" className="shrink-0">
         <CalendarDays aria-hidden="true" /> Abierto ·{" "}
         <span>{formatMonth(periodKey)}</span>
@@ -130,16 +127,14 @@ export function HomePage({
 
   if (error) {
     return (
-      <section className="space-y-section py-section" aria-labelledby="home-title">
-        <h1 id="home-title" className="type-page-title">Inicio</h1>
+      <section className="space-y-section py-section">
         <ErrorMessage title="No se pudo cargar Inicio" description={error} />
       </section>
     )
   }
   if (!dashboard) {
     return (
-      <section className="space-y-section py-section" aria-labelledby="home-title">
-        <h1 id="home-title" className="type-page-title">Inicio</h1>
+      <section className="space-y-section py-section">
         <LoadingState label="Cargando Inicio" />
       </section>
     )
@@ -148,7 +143,7 @@ export function HomePage({
   const { summary } = dashboard
   if (dashboard.isEmpty) {
     return (
-      <section className="space-y-6 py-section" aria-labelledby="home-title">
+      <section className="space-y-6 py-section">
         <HomeHeading periodKey={dashboard.period.periodKey} />
         <EmptyState
           title="Tu Inicio está listo"
@@ -161,7 +156,7 @@ export function HomePage({
     )
   }
   return (
-    <section className="space-y-6 py-section" aria-labelledby="home-title">
+    <section className="space-y-6 py-section">
       <HomeHeading periodKey={dashboard.period.periodKey} />
 
       <Card className="rounded-surface ring-border">

@@ -26,7 +26,7 @@ export function AppShell({
 
   return (
     <div className="app-shell mx-auto flex min-h-0 w-full max-w-[430px] flex-col overflow-hidden border-x bg-background shadow-sm">
-      <AppHeader onOpenSettings={onOpenSettings} />
+      <AppHeader activeSection={activeSection} onOpenSettings={onOpenSettings} />
       <PwaStatus />
       <main
         id="main-content"

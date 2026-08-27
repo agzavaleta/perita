@@ -103,6 +103,8 @@ describe("AccountsPage", () => {
     expect(
       await screen.findByText("Aún no has agregado ninguna cuenta"),
     ).toBeInTheDocument()
+    expect(screen.getByText("Consulta saldos y administra tus cuentas.")).toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Cuentas" })).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Nueva" }))
 
     expect(screen.getByText("La cuenta se creará activa y con saldo $0.")).toBeInTheDocument()

@@ -496,17 +496,10 @@ export function MovementsPage({
   }
 
   return (
-    <section className="space-y-section py-section" aria-labelledby="movements-title">
-      <div className="flex flex-col items-stretch gap-3 min-[360px]:flex-row min-[360px]:items-center min-[360px]:justify-between">
-        <div>
-          <h1 id="movements-title" className="type-page-title">
-            Movimientos
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Ingresos, gastos, ahorro, ajustes y movimientos internos del período abierto.
-          </p>
-        </div>
-      </div>
+    <section className="space-y-section py-section">
+      <p className="text-sm text-muted-foreground">
+        Ingresos, gastos, ahorro, ajustes y movimientos internos del período abierto.
+      </p>
 
       <Card size="sm">
         <CardContent className="space-y-3">

@@ -18,37 +18,42 @@ function setupService(status: "not_started" | "incomplete" | "completed"): Setup
 }
 
 describe("App", () => {
-  it("navega entre las vistas placeholder", async () => {
+  it("shows one dynamic page heading in the header while navigating", async () => {
     render(<App setupUseCases={setupService("completed")} />)
 
     const movementsButton = await screen.findByRole("button", { name: "Movimientos" })
     const logo = document.querySelector<HTMLImageElement>(
-      'header img[src="/icons/perita-192.png"]',
+      'header img[src="/apple-touch-icon-v2.png"]',
     )
     expect(logo).toBeInTheDocument()
     expect(logo).toHaveAttribute("alt", "")
     expect(logo).toHaveClass("size-8")
-    expect(logo?.parentElement).toHaveTextContent("Perita")
+    expect(logo?.parentElement).toHaveTextContent("Inicio")
     expect(movementsButton.querySelector("span")).toHaveClass("whitespace-nowrap")
     expect(movementsButton.querySelector("span")).not.toHaveClass("truncate")
-    expect(screen.getByRole("heading", { name: "Inicio" })).toBeInTheDocument()
+    expect(screen.getAllByRole("heading", { name: "Inicio" })).toHaveLength(1)
+    expect(document.querySelector("main h1")).toBeNull()
+
     fireEvent.click(screen.getByRole("button", { name: "Movimientos" }))
-    expect(
-      await screen.findByRole("heading", { name: "Movimientos" }),
-    ).toBeInTheDocument()
+    await screen.findByRole("heading", { name: "Movimientos" })
+    expect(screen.getAllByRole("heading", { name: "Movimientos" })).toHaveLength(1)
+    expect(document.querySelector("main h1")).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Cuentas" }))
-    expect(await screen.findByRole("heading", { name: "Cuentas" })).toBeInTheDocument()
+    await screen.findByRole("heading", { name: "Cuentas" })
+    expect(screen.getAllByRole("heading", { name: "Cuentas" })).toHaveLength(1)
+    expect(document.querySelector("main h1")).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Planificar" }))
-    expect(
-      await screen.findByRole("heading", { name: "Planificar" }),
-    ).toBeInTheDocument()
+    await screen.findByRole("heading", { name: "Planificar" })
+    expect(screen.getAllByRole("heading", { name: "Planificar" })).toHaveLength(1)
+    expect(document.querySelector("main h1")).toBeNull()
+    expect(screen.queryByText("Metas, gastos fijos, deudas y cierre del período.")).toBeNull()
 
     fireEvent.click(screen.getByRole("button", { name: "Configuración" }))
-    expect(
-      await screen.findByRole("heading", { name: "Configuración" }),
-    ).toBeInTheDocument()
+    await screen.findByRole("heading", { name: "Configuración" })
+    expect(screen.getAllByRole("heading", { name: "Configuración" })).toHaveLength(1)
+    expect(document.querySelector("main h1")).toBeNull()
   })
 
   it("conecta ingreso, gasto y Mover dinero", async () => {

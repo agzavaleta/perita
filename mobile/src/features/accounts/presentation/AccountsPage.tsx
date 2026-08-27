@@ -539,13 +539,10 @@ export function AccountsPage({
   }
 
   return (
-    <section className="space-y-section py-section" aria-labelledby="accounts-title">
+    <section className="space-y-section py-section">
       <div className="flex flex-col items-stretch gap-3 min-[360px]:flex-row min-[360px]:items-center min-[360px]:justify-between">
         <div>
-          <h1 id="accounts-title" className="type-page-title">
-            Cuentas
-          </h1>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             Consulta saldos y administra tus cuentas.
           </p>
         </div>
