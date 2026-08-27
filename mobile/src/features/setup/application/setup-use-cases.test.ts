@@ -99,6 +99,8 @@ describe("SetupUseCases", () => {
       openingBalance: 100_000,
       currentBalance: 100_000,
       status: "active",
+      deletedAt: null,
+      balanceAtDeletion: null,
     })
     expect(result.periodOpenings[0]).toMatchObject({
       targetId: result.accounts[0]?.id,

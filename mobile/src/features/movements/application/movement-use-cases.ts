@@ -2102,6 +2102,12 @@ export class MovementUseCases implements MovementUseCasesPort {
         "La cuenta solicitada no existe.",
       )
     }
+    if (account.status === "deleted") {
+      throw new MovementUseCaseError(
+        "inactive_account",
+        "La cuenta eliminada no admite movimientos.",
+      )
+    }
     if (!allowInactive && account.status !== "active") {
       throw new MovementUseCaseError(
         "inactive_account",

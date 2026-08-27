@@ -17,7 +17,6 @@ import {
   type UtcTimestamp,
 } from "@/domain/primitives"
 import type { PeritaRepositories } from "@/data/repositories"
-import { PersistenceError } from "@/data/errors"
 
 export type AccountUseCaseErrorCode =
   | "account_not_found"
@@ -28,7 +27,6 @@ export type AccountUseCaseErrorCode =
   | "revision_conflict"
   | "invalid_account_state"
   | "nonzero_balance"
-  | "cannot_delete"
 
 export class AccountUseCaseError extends Error {
   readonly code: AccountUseCaseErrorCode
@@ -71,7 +69,6 @@ export interface AccountUseCasesPort {
   createAccount(input: AccountDraft): Promise<Account>
   editAccount(input: EditAccountInput): Promise<Account>
   deactivateAccount(input: ChangeAccountStatusInput): Promise<Account>
-  canDeleteAccount(accountId: EntityId): Promise<boolean>
   deleteAccount(input: ChangeAccountStatusInput): Promise<void>
 }
 
@@ -164,7 +161,7 @@ export class AccountUseCases implements AccountUseCasesPort {
 
   async listAccounts() {
     const accounts = await this.repositories.accounts.getAll()
-    return accounts.toSorted((left, right) => {
+    return accounts.filter(({ status }) => status !== "deleted").toSorted((left, right) => {
       if (left.status !== right.status) return left.status === "active" ? -1 : 1
       return left.name.localeCompare(right.name, "es")
     })
@@ -218,6 +215,8 @@ export class AccountUseCases implements AccountUseCasesPort {
       openingBalance: asClpAmount(0),
       currentBalance: asClpAmount(0),
       status: "active",
+      deletedAt: null,
+      balanceAtDeletion: null,
       revision: asRevision(1),
       createdAt: occurredAt,
       updatedAt: occurredAt,
@@ -251,6 +250,7 @@ export class AccountUseCases implements AccountUseCasesPort {
     const previous = await this.requireAccount(input.accountId)
     const draft = normalizeDraft(input, previous.emoji)
     this.assertRevision(previous, input.expectedRevision)
+    this.assertNotDeleted(previous)
     if (
       previous.name === draft.name &&
       previous.bank === draft.bank &&
@@ -287,6 +287,7 @@ export class AccountUseCases implements AccountUseCasesPort {
     const period = await this.requireOpenPeriod()
     const previous = await this.requireAccount(input.accountId)
     this.assertRevision(previous, input.expectedRevision)
+    this.assertNotDeleted(previous)
     if (previous.status !== "active") {
       throw new AccountUseCaseError(
         "invalid_account_state",
@@ -319,45 +320,24 @@ export class AccountUseCases implements AccountUseCasesPort {
     return account
   }
 
-  async canDeleteAccount(accountId: EntityId) {
-    const [period, account] = await Promise.all([
-      this.requireOpenPeriod(),
-      this.requireAccount(accountId),
-    ])
-    const eligibility = await this.repositories.accounts.getDeletionEligibility({
-      period: this.expected(period),
-      entity: this.expected(account),
-    })
-    return eligibility.canDelete
-  }
-
   async deleteAccount(input: ChangeAccountStatusInput) {
-    const [period, account] = await Promise.all([
+    const [period, previous] = await Promise.all([
       this.requireOpenPeriod(),
       this.requireAccount(input.accountId),
     ])
-    this.assertRevision(account, input.expectedRevision)
-    const deletion = {
-      period: this.expected(period),
-      entity: this.expected(account),
-    }
-    if (!(await this.repositories.accounts.getDeletionEligibility(deletion)).canDelete) {
-      throw new AccountUseCaseError(
-        "cannot_delete",
-        "La cuenta ya tiene actividad o historial y no puede eliminarse.",
-      )
-    }
-    try {
-      await this.repositories.accounts.deleteUnused(deletion)
-    } catch (error) {
-      if (error instanceof PersistenceError && error.code === "conflict") {
-        throw new AccountUseCaseError(
-          "revision_conflict",
-          "La información cambió; vuelve a cargar.",
-        )
-      }
-      throw error
-    }
+    this.assertRevision(previous, input.expectedRevision)
+    this.assertNotDeleted(previous)
+    const occurredAt = this.now()
+    const account = assertAccountInvariant({
+      ...previous,
+      status: "deleted",
+      deletedAt: occurredAt,
+      balanceAtDeletion: previous.currentBalance,
+      revision: this.nextRevision(previous.revision),
+      updatedAt: occurredAt,
+    })
+    const auditEvent = this.deletedAudit(previous, account, period.id, occurredAt)
+    await this.repositories.accounts.putWithAudit(account, auditEvent)
   }
 
   private async requireOpenPeriod() {
@@ -391,12 +371,17 @@ export class AccountUseCases implements AccountUseCasesPort {
     }
   }
 
-  private nextRevision(revision: Revision) {
-    return asRevision(Number(revision) + 1)
+  private assertNotDeleted(account: Account) {
+    if (account.status === "deleted") {
+      throw new AccountUseCaseError(
+        "invalid_account_state",
+        "La cuenta eliminada no admite cambios.",
+      )
+    }
   }
 
-  private expected(record: { readonly id: EntityId; readonly revision: Revision }) {
-    return { id: record.id, revision: record.revision }
+  private nextRevision(revision: Revision) {
+    return asRevision(Number(revision) + 1)
   }
 
   private createdAudit(
@@ -414,6 +399,28 @@ export class AccountUseCases implements AccountUseCasesPort {
       previousRevision: null,
       nextRevision: account.revision,
       previousValue: null,
+      nextValue: account,
+      reason: null,
+      occurredAt,
+    })
+  }
+
+  private deletedAudit(
+    previous: Account,
+    account: Account,
+    periodId: EntityId,
+    occurredAt: UtcTimestamp,
+  ): AuditEvent {
+    return assertAuditEventInvariant({
+      id: this.createId(),
+      periodId,
+      subjectType: "account",
+      subjectId: account.id,
+      action: "deleted",
+      commandType: "account.delete",
+      previousRevision: previous.revision,
+      nextRevision: account.revision,
+      previousValue: previous,
       nextValue: account,
       reason: null,
       occurredAt,

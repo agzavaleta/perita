@@ -48,6 +48,17 @@ export function assertAccountInvariant(account: Account): Account {
   if (account.status === "inactive" && account.currentBalance !== 0) {
     fail("An inactive Account must have zero current balance")
   }
+  if (account.status === "deleted") {
+    if (account.deletedAt === null || account.balanceAtDeletion === null) {
+      fail("A deleted Account requires deletion metadata")
+    }
+    asClpAmount(account.balanceAtDeletion, { allowNegative: true })
+    if (account.currentBalance !== account.balanceAtDeletion) {
+      fail("A deleted Account must preserve its balance at deletion")
+    }
+  } else if (account.deletedAt !== null || account.balanceAtDeletion !== null) {
+    fail("A non-deleted Account cannot have deletion metadata")
+  }
   return account
 }
 
@@ -254,7 +265,7 @@ export function assertAuditEventInvariant(event: AuditEvent): AuditEvent {
   }
   if (
     event.action !== "created" &&
-    event.action !== "deleted" &&
+    event.nextRevision !== null &&
     event.nextRevision !== event.previousRevision + 1
   ) {
     fail("State-change AuditEvent revisions must be consecutive")

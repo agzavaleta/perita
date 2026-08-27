@@ -58,6 +58,8 @@ const dashboard: HomeDashboard = {
     openingBalance: asClpAmount(100_000),
     currentBalance: asClpAmount(140_000),
     status: "active",
+    deletedAt: null,
+    balanceAtDeletion: null,
     revision: asRevision(5),
     createdAt: NOW,
     updatedAt: NOW,

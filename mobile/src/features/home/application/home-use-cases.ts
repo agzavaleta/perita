@@ -116,8 +116,15 @@ export class HomeUseCases implements HomeUseCasesPort {
       movements,
       fixedExpenseInstances: instances,
     })
+    const usableAccounts = accounts.filter(({ status }) => status !== "deleted")
+    const deletedAccountBalance = checkedSum(
+      accounts
+        .filter(({ status }) => status === "deleted")
+        .map(({ currentBalance }) => currentBalance),
+      true,
+    )
     const totalAccountBalance = checkedSum(
-      accounts.map(({ currentBalance }) => currentBalance),
+      usableAccounts.map(({ currentBalance }) => currentBalance),
       true,
     )
     const totalSavingsBalance = checkedSum(
@@ -127,6 +134,13 @@ export class HomeUseCases implements HomeUseCasesPort {
       [totalAccountBalance, totalSavingsBalance],
       true,
     )
+    const currentSummary: MonthlySummary = {
+      ...summary,
+      availableAmount: checkedSum(
+        [summary.availableAmount, -deletedAccountBalance],
+        true,
+      ),
+    }
     const periodExpenseAmount = checkedSum([
       summary.fixedExpensePaidAmount,
       summary.variableExpenseAmount,
@@ -176,7 +190,7 @@ export class HomeUseCases implements HomeUseCasesPort {
 
     return {
       period,
-      summary,
+      summary: currentSummary,
       totalBalance,
       totalAccountBalance,
       totalSavingsBalance,
@@ -185,7 +199,7 @@ export class HomeUseCases implements HomeUseCasesPort {
       relevantGoals,
       relevantDebts,
       isEmpty:
-        accounts.length === 0 &&
+        usableAccounts.length === 0 &&
         goals.length === 0 &&
         debts.length === 0 &&
         operations.length === 0 &&

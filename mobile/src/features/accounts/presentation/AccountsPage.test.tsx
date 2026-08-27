@@ -34,6 +34,8 @@ const account: Account = {
   openingBalance: asClpAmount(0),
   currentBalance: asClpAmount(0),
   status: "active",
+  deletedAt: null,
+  balanceAtDeletion: null,
   revision: asRevision(1),
   createdAt: asUtcTimestamp("2026-08-21T12:00:00.000Z"),
   updatedAt: asUtcTimestamp("2026-08-21T12:00:00.000Z"),
@@ -83,7 +85,6 @@ function service(overrides: Partial<AccountUseCasesPort> = {}): AccountUseCasesP
     createAccount: vi.fn().mockResolvedValue(account),
     editAccount: vi.fn().mockResolvedValue(account),
     deactivateAccount: vi.fn().mockResolvedValue({ ...account, status: "inactive" }),
-    canDeleteAccount: vi.fn().mockResolvedValue(false),
     deleteAccount: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
@@ -217,17 +218,25 @@ describe("AccountsPage", () => {
     expect(await screen.findByText("Aún no hay movimientos relacionados")).toBeInTheDocument()
     expect(screen.queryByText(/Fase 6/i)).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Editar" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Eliminar cuenta" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Desactivar" })).toBeInTheDocument()
   })
 
-  it("offers deletion only when eligible, cancels without writing, and confirms once", async () => {
+  it("always offers logical deletion and explains that history is preserved", async () => {
     let resolveDelete!: () => void
+    const accountWithBalance = {
+      ...account,
+      currentBalance: asClpAmount(25_000),
+    }
+    const listAccounts = vi
+      .fn()
+      .mockResolvedValueOnce([accountWithBalance])
+      .mockResolvedValue([])
     const deleteAccount = vi.fn().mockImplementation(
       () => new Promise<void>((resolve) => { resolveDelete = resolve }),
     )
     const useCases = service({
-      listAccounts: vi.fn().mockResolvedValue([account]),
-      canDeleteAccount: vi.fn().mockResolvedValue(true),
+      listAccounts,
       deleteAccount,
     })
     render(<AccountsPage useCases={useCases} />)
@@ -236,15 +245,23 @@ describe("AccountsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Cuenta principal" }))
     fireEvent.click(await screen.findByRole("button", { name: "Eliminar cuenta" }))
     expect(screen.getByRole("heading", { name: "¿Eliminar cuenta?" })).toBeInTheDocument()
+    expect(screen.getByText(
+      "La cuenta dejará de formar parte de tus saldos actuales, pero sus movimientos se conservarán en el historial.",
+    )).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Cancelar" }))
     expect(deleteAccount).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole("button", { name: "Eliminar cuenta" }))
     fireEvent.click(screen.getByRole("button", { name: "Eliminar" }))
     expect(deleteAccount).toHaveBeenCalledOnce()
+    expect(deleteAccount).toHaveBeenCalledWith({
+      accountId: accountWithBalance.id,
+      expectedRevision: accountWithBalance.revision,
+    })
     expect(toast.success).not.toHaveBeenCalledWith("Cuenta eliminada")
     resolveDelete()
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Cuenta eliminada"))
+    await waitFor(() => expect(screen.queryByText("Cuenta principal")).not.toBeInTheDocument())
   })
 
   it("shows the real related adjustment history instead of only a counter", async () => {

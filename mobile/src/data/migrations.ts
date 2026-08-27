@@ -116,6 +116,25 @@ function backfillMissingField(
   }
 }
 
+function normalizeAccountDeletionFields(transaction: IDBTransaction) {
+  const request = transaction.objectStore(STORE_NAMES.accounts).openCursor()
+  request.onsuccess = () => {
+    const cursor = request.result
+    if (!cursor) return
+
+    const record = cursor.value as Record<string, unknown>
+    cursor.update({
+      emoji: "💳",
+      ...record,
+      deletedAt: Object.hasOwn(record, "deletedAt") ? record.deletedAt : null,
+      balanceAtDeletion: Object.hasOwn(record, "balanceAtDeletion")
+        ? record.balanceAtDeletion
+        : null,
+    })
+    cursor.continue()
+  }
+}
+
 export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
   {
     version: 1,
@@ -141,6 +160,13 @@ export const SCHEMA_MIGRATIONS: readonly SchemaMigration[] = [
         "emoji",
         "💰",
       )
+    },
+  },
+  {
+    version: 3,
+    description: "Backfill logical account deletion metadata",
+    upgrade(_database, transaction) {
+      normalizeAccountDeletionFields(transaction)
     },
   },
 ]

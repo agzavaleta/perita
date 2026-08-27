@@ -49,6 +49,8 @@ function account(id: typeof ACCOUNT_A, name: string, balance: number): Account {
     openingBalance: asClpAmount(balance),
     currentBalance: asClpAmount(balance),
     status: "active",
+    deletedAt: null,
+    balanceAtDeletion: null,
     revision: asRevision(1),
     createdAt: NOW,
     updatedAt: NOW,
@@ -368,6 +370,30 @@ describe("DebtUseCases", () => {
       }),
     ).rejects.toMatchObject({ code: "insufficient_balance" })
     expect((await repositories.debts.get(poor.id))?.outstandingAmount).toBe(100_000)
+  })
+
+  it("excludes deleted accounts from debt payments", async () => {
+    const debt = await createDebt()
+    const current = await repositories.accounts.get(ACCOUNT_A)
+    if (!current) throw new Error("Missing account fixture")
+    await repositories.accounts.put({
+      ...current,
+      status: "deleted",
+      deletedAt: NOW,
+      balanceAtDeletion: current.currentBalance,
+      revision: asRevision(2),
+    })
+
+    expect((await debts.getPaymentFormOptions()).accounts).toEqual([
+      expect.objectContaining({ id: ACCOUNT_B }),
+    ])
+    await expect(debts.registerPayment({
+      debtId: debt.id,
+      accountId: ACCOUNT_A,
+      operationDate: TODAY,
+      amount: 10_000,
+    })).rejects.toMatchObject({ code: "invalid_state" })
+    expect(await repositories.operations.count()).toBe(0)
   })
 
   it("edits and voids a payment with complete revisions and both reversals", async () => {

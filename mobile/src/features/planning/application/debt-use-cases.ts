@@ -844,7 +844,7 @@ export class DebtUseCases implements DebtUseCasesPort {
   private async requireAccount(id: EntityId, requireActive: boolean) {
     const account = await this.repositories.accounts.get(id)
     if (!account) throw new DebtUseCaseError("account_not_found", "La cuenta seleccionada no existe.")
-    if (requireActive && account.status !== "active") {
+    if (account.status === "deleted" || (requireActive && account.status !== "active")) {
       throw new DebtUseCaseError("invalid_state", "La cuenta seleccionada está inactiva.")
     }
     return account

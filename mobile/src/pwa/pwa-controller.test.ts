@@ -59,6 +59,8 @@ function account(): Account {
     openingBalance: asClpAmount(25_000),
     currentBalance: asClpAmount(25_000),
     status: "active",
+    deletedAt: null,
+    balanceAtDeletion: null,
     revision: asRevision(1),
     createdAt: timestamp,
     updatedAt: timestamp,

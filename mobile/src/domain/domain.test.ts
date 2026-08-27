@@ -60,6 +60,8 @@ describe("entity lifecycle invariants", () => {
       openingBalance: asClpAmount(0, { allowNegative: true }),
       currentBalance: asClpAmount(10_000, { allowNegative: true }),
       status: "inactive",
+      deletedAt: null,
+      balanceAtDeletion: null,
       revision: asRevision(1),
       createdAt: NOW,
       updatedAt: NOW,
@@ -89,6 +91,29 @@ describe("entity lifecycle invariants", () => {
         currentBalance: asClpAmount(-10_000, { allowNegative: true }),
       }).openingBalance,
     ).toBe(-10_000)
+  })
+
+  it("requires deleted accounts to preserve their balance and timestamp", () => {
+    const deleted: Account = {
+      id: id(2),
+      emoji: "💳",
+      name: "Cuenta eliminada",
+      bank: null,
+      openingBalance: asClpAmount(10_000),
+      currentBalance: asClpAmount(25_000),
+      status: "deleted",
+      deletedAt: NOW,
+      balanceAtDeletion: asClpAmount(25_000),
+      revision: asRevision(2),
+      createdAt: NOW,
+      updatedAt: NOW,
+    }
+
+    expect(assertAccountInvariant(deleted)).toBe(deleted)
+    expect(() => assertAccountInvariant({
+      ...deleted,
+      balanceAtDeletion: asClpAmount(20_000),
+    })).toThrow(/preserve its balance/)
   })
 
   it("requires a positive debt installment while allowing optional dates", () => {

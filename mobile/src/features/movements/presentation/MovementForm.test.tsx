@@ -41,6 +41,8 @@ const account: Account = {
   openingBalance: asClpAmount(50_000),
   currentBalance: asClpAmount(50_000),
   status: "active",
+  deletedAt: null,
+  balanceAtDeletion: null,
   revision: asRevision(1),
   createdAt: NOW,
   updatedAt: NOW,

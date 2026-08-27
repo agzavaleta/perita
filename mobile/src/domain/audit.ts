@@ -54,13 +54,17 @@ interface CreatedAuditState {
   readonly nextValue: AuditSnapshot
 }
 
-interface DeletedAuditState {
+interface DeletedAuditIdentity {
   readonly action: "deleted"
   readonly previousRevision: Revision
-  readonly nextRevision: null
   readonly previousValue: AuditSnapshot
-  readonly nextValue: null
 }
+
+type DeletedAuditState = DeletedAuditIdentity &
+  (
+    | { readonly nextRevision: null; readonly nextValue: null }
+    | { readonly nextRevision: Revision; readonly nextValue: AuditSnapshot }
+  )
 
 interface ChangedAuditState {
   readonly action: Exclude<AuditAction, "created" | "deleted">

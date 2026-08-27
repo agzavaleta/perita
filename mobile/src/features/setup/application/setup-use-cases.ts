@@ -342,6 +342,8 @@ export class SetupUseCases implements SetupUseCasesPort {
         openingBalance,
         currentBalance: openingBalance,
         status: "active",
+        deletedAt: null,
+        balanceAtDeletion: null,
         revision: asRevision(1),
         createdAt: occurredAt,
         updatedAt: occurredAt,

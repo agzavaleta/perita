@@ -47,6 +47,8 @@ function account(overrides: Partial<Account> = {}): Account {
     openingBalance: asPositiveClpAmount(100_000),
     currentBalance: asPositiveClpAmount(100_000),
     status: "active",
+    deletedAt: null,
+    balanceAtDeletion: null,
     revision: asRevision(1),
     createdAt: NOW,
     updatedAt: NOW,
@@ -142,7 +144,7 @@ describe("Perita IndexedDB persistence", () => {
     const database = await openPeritaDatabase({ name, indexedDB: factory })
 
     expect(database.version).toBe(DATABASE_VERSION)
-    expect(SCHEMA_MIGRATIONS.map(({ version }) => version)).toEqual([1, 2])
+    expect(SCHEMA_MIGRATIONS.map(({ version }) => version)).toEqual([1, 2, 3])
     expect([...database.storeNames].sort()).toEqual(
       Object.values(STORE_NAMES).sort(),
     )
@@ -177,7 +179,7 @@ describe("Perita IndexedDB persistence", () => {
     nativeDatabase.close()
   })
 
-  it("backfills V1 records during the real V1 to V2 upgrade without changing financial data", async () => {
+  it("backfills V1 records through the latest upgrade without changing financial data", async () => {
     const factory = new IDBFactory()
     const name = "perita-mobile-v1-to-v2"
     const periodV1: Omit<Period, "variableExpenseBudgetAmount"> = {
@@ -190,12 +192,20 @@ describe("Perita IndexedDB persistence", () => {
       snapshotId: null,
       revision: asRevision(3),
     }
-    const { emoji: _accountEmoji, ...accountV1Base } = account({
+    const {
+      emoji: _accountEmoji,
+      deletedAt: _deletedAt,
+      balanceAtDeletion: _balanceAtDeletion,
+      ...accountV1Base
+    } = account({
       openingBalance: asClpAmount(125_000),
       currentBalance: asClpAmount(140_000),
       revision: asRevision(4),
     })
-    const accountV1: Omit<Account, "emoji"> = accountV1Base
+    const accountV1: Omit<
+      Account,
+      "emoji" | "deletedAt" | "balanceAtDeletion"
+    > = accountV1Base
     const goalV1: Omit<SavingsGoal, "emoji"> = {
       id: GOAL_ID,
       name: "Vacaciones",
@@ -245,7 +255,7 @@ describe("Perita IndexedDB persistence", () => {
     const upgraded = await openPeritaDatabase({ name, indexedDB: factory })
     const repositories = createRepositories(upgraded)
 
-    expect(upgraded.version).toBe(2)
+    expect(upgraded.version).toBe(3)
     expect(await repositories.periods.get(PERIOD_ID)).toEqual({
       ...periodV1,
       variableExpenseBudgetAmount: 0,
@@ -253,6 +263,8 @@ describe("Perita IndexedDB persistence", () => {
     expect(await repositories.accounts.get(ACCOUNT_ID)).toEqual({
       ...accountV1,
       emoji: "💳",
+      deletedAt: null,
+      balanceAtDeletion: null,
     })
     expect(await repositories.savingsGoals.get(GOAL_ID)).toEqual({
       ...goalV1,

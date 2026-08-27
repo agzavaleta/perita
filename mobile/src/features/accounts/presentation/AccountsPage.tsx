@@ -284,7 +284,6 @@ function AccountDetail({
   const [movements, setMovements] = useState<
     AccountMovementHistoryItem[] | "error" | null
   >(null)
-  const [canDelete, setCanDelete] = useState<boolean | null>(null)
 
   useEffect(() => {
     let active = true
@@ -295,21 +294,6 @@ function AccountDetail({
       })
       .catch(() => {
         if (active) setMovements("error")
-      })
-    return () => {
-      active = false
-    }
-  }, [account.id, useCases])
-
-  useEffect(() => {
-    let active = true
-    void useCases
-      .canDeleteAccount(account.id)
-      .then((eligible) => {
-        if (active) setCanDelete(eligible)
-      })
-      .catch(() => {
-        if (active) setCanDelete(false)
       })
     return () => {
       active = false
@@ -346,16 +330,15 @@ function AccountDetail({
               <Pencil aria-hidden="true" />
               Editar
             </Button>
-            {canDelete ? (
-              <Button
-                type="button"
-                variant="destructive"
-                size="lg"
-                onClick={onRequestDelete}
-              >
-                <Trash2 aria-hidden="true" /> Eliminar cuenta
-              </Button>
-            ) : account.status === "active" && canDelete === false ? (
+            <Button
+              type="button"
+              variant="destructive"
+              size="lg"
+              onClick={onRequestDelete}
+            >
+              <Trash2 aria-hidden="true" /> Eliminar cuenta
+            </Button>
+            {account.status === "active" ? (
               <Button
                 type="button"
                 variant="destructive"
@@ -681,7 +664,8 @@ export function AccountsPage({
             </AlertDialogMedia>
             <AlertDialogTitle>¿Eliminar cuenta?</AlertDialogTitle>
             <AlertDialogDescription>
-              Se eliminará definitivamente porque todavía no tiene actividad financiera.
+              La cuenta dejará de formar parte de tus saldos actuales, pero sus
+              movimientos se conservarán en el historial.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -3,7 +3,7 @@ export const CURRENCY = "CLP" as const
 export const CHILE_TIME_ZONE = "America/Santiago" as const
 
 export const PERIOD_STATUSES = ["open", "closed"] as const
-export const ACCOUNT_STATUSES = ["active", "inactive"] as const
+export const ACCOUNT_STATUSES = ["active", "inactive", "deleted"] as const
 export const GOAL_LIFECYCLE_STATUSES = ["active", "closed"] as const
 export const GOAL_PROGRESS_STATUSES = ["in_progress", "completed"] as const
 export const DEBT_LIFECYCLE_STATUSES = ["active", "inactive"] as const

@@ -128,8 +128,6 @@ export interface AccountRepository extends Repository<Account, EntityId> {
     auditEvent: AuditEvent,
   ): Promise<void>
   putWithAudit(account: Account, auditEvent: AuditEvent): Promise<void>
-  getDeletionEligibility(input: EntityDeletionInput): Promise<EntityDeletionEligibility>
-  deleteUnused(input: EntityDeletionInput): Promise<void>
 }
 
 export interface CategoryRepository extends Repository<Category, EntityId> {
@@ -190,32 +188,6 @@ class IndexedDbAccountRepository
     )
   }
 
-  getDeletionEligibility(input: EntityDeletionInput) {
-    return this.database.transaction(
-      ENTITY_DELETION_STORE_NAMES,
-      "readonly",
-      async ({ store }) => ({
-        canDelete: await canDeleteAccount(store, input),
-      }),
-    )
-  }
-
-  deleteUnused(input: EntityDeletionInput) {
-    return this.database.transaction(
-      ENTITY_DELETION_STORE_NAMES,
-      "readwrite",
-      async ({ store }) => {
-        if (!(await canDeleteAccount(store, input))) {
-          throw new PersistenceError(
-            "conflict",
-            "Account is no longer eligible for deletion",
-          )
-        }
-        await deleteEntityRecords(store, "account", input.entity.id)
-        await store(STORE_NAMES.accounts).delete(input.entity.id)
-      },
-    )
-  }
 }
 
 class IndexedDbCategoryRepository
@@ -556,21 +528,6 @@ async function hasDeletionHistory(
     snapshots.some((snapshot) =>
       snapshotReferencesTarget(snapshot, targetType, targetId),
     )
-  )
-}
-
-async function canDeleteAccount(
-  store: TransactionContext["store"],
-  input: EntityDeletionInput,
-) {
-  await assertExpectedOpenPeriod(store, input.period)
-  const account = await store(STORE_NAMES.accounts).get(input.entity.id)
-  assertStoredRevision(account, input.entity, "Account")
-  return Boolean(
-    account &&
-      account.currentBalance === 0 &&
-      (await store(STORE_NAMES.accounts).count()) > 1 &&
-      !(await hasDeletionHistory(store, "account", account.id, input.period.id)),
   )
 }
 

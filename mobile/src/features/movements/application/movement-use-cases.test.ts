@@ -63,6 +63,8 @@ function account(id: typeof ACCOUNT_A, name: string, balance: number): Account {
     openingBalance: asClpAmount(balance),
     currentBalance: asClpAmount(balance),
     status: "active",
+    deletedAt: null,
+    balanceAtDeletion: null,
     revision: asRevision(1),
     createdAt: NOW,
     updatedAt: NOW,
@@ -192,6 +194,49 @@ describe("MovementUseCases", () => {
       110_000,
     )
     expect(await repositories.auditEvents.count()).toBe(0)
+  })
+
+  it("excludes deleted accounts from selectors and rejects new movements", async () => {
+    const current = await repositories.accounts.get(ACCOUNT_A)
+    if (!current) throw new Error("Missing account fixture")
+    await repositories.accounts.put({
+      ...current,
+      status: "deleted",
+      deletedAt: NOW,
+      balanceAtDeletion: current.currentBalance,
+      revision: asRevision(2),
+      updatedAt: NOW,
+    })
+
+    await expect(useCases.getFormOptions()).resolves.toMatchObject({
+      accounts: [expect.objectContaining({ id: ACCOUNT_B })],
+    })
+    await expect(useCases.getTransferFormOptions()).resolves.toMatchObject({
+      accounts: [expect.objectContaining({ id: ACCOUNT_B })],
+    })
+    await expect(useCases.registerIncome({
+      incomeType: "additional",
+      accountId: ACCOUNT_A,
+      operationDate: TODAY,
+      amount: 10_000,
+      concept: "No permitido",
+    })).rejects.toMatchObject({ code: "inactive_account" })
+    await expect(useCases.registerExpense({
+      accountId: ACCOUNT_A,
+      categoryId: CATEGORY_A,
+      operationDate: TODAY,
+      amount: 10_000,
+      concept: "No permitido",
+    })).rejects.toMatchObject({ code: "inactive_account" })
+    await expect(useCases.registerTransfer({
+      sourceType: "account",
+      sourceId: ACCOUNT_B,
+      destinationType: "account",
+      destinationId: ACCOUNT_A,
+      operationDate: TODAY,
+      amount: 10_000,
+    })).rejects.toMatchObject({ code: "inactive_account" })
+    expect(await repositories.operations.count()).toBe(0)
   })
 
   it("registers independent deposits and withdrawals without changing accounts", async () => {

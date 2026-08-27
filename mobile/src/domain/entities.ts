@@ -35,6 +35,8 @@ export interface Account extends MutableEntityRecord {
   readonly openingBalance: ClpAmount
   readonly currentBalance: ClpAmount
   readonly status: AccountStatus
+  readonly deletedAt: UtcTimestamp | null
+  readonly balanceAtDeletion: ClpAmount | null
 }
 
 export interface SavingsGoal extends MutableEntityRecord {

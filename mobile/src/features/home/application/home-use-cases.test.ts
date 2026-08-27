@@ -50,6 +50,8 @@ function account(): Account {
     openingBalance: asClpAmount(100_000),
     currentBalance: asClpAmount(100_000),
     status: "active",
+    deletedAt: null,
+    balanceAtDeletion: null,
     revision: asRevision(1),
     createdAt: NOW,
     updatedAt: NOW,
@@ -144,6 +146,28 @@ describe("HomeUseCases", () => {
         totalIncomeAmount: 0,
         availableAmount: 0,
       },
+    })
+  })
+
+  it("excludes deleted accounts from current balances and availability", async () => {
+    await repositories.accounts.add({
+      ...account(),
+      status: "deleted",
+      deletedAt: NOW,
+      balanceAtDeletion: asClpAmount(100_000),
+      revision: asRevision(2),
+    })
+
+    const dashboard = await new HomeUseCases(repositories, {
+      today: () => TODAY,
+    }).getDashboard()
+
+    expect(dashboard).toMatchObject({
+      totalAccountBalance: 0,
+      totalBalance: 0,
+      accounts: [],
+      isEmpty: true,
+      summary: { availableAmount: -100_000 },
     })
   })
 
