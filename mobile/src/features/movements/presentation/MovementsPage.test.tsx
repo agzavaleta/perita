@@ -115,6 +115,34 @@ const item: MovementListItem = {
   signedAmount: 25_000,
 }
 
+const expenseItem: MovementListItem = {
+  operation: {
+    ...operation,
+    id: asEntityId("40000000-0000-4000-8000-000000000007"),
+    type: "variable_expense",
+    amount: asPositiveClpAmount(12_000),
+    details: {
+      accountId: ACCOUNT_ID,
+      categoryId: CATEGORY_ID,
+      categoryName: category.name,
+      concept: "Almuerzo",
+      observation: null,
+    },
+  },
+  movement: {
+    ...movement,
+    id: asEntityId("40000000-0000-4000-8000-000000000008"),
+    operationId: asEntityId("40000000-0000-4000-8000-000000000007"),
+    delta: asNonZeroClpDelta(-12_000),
+  },
+  movements: [],
+  kind: "expense",
+  title: "Almuerzo",
+  description: null,
+  accountName: account.name,
+  signedAmount: -12_000,
+}
+
 const detail: MovementDetail = { ...item, revisions: [] }
 const adjustmentOperation: MovementListItem["operation"] = {
   id: asEntityId("40000000-0000-4000-8000-000000000010"),
@@ -227,6 +255,22 @@ function service(overrides: Partial<MovementUseCasesPort> = {}): MovementUseCase
 }
 
 describe("MovementsPage", () => {
+  it("uses sign-first amounts and semantic colors for income and expense cards", async () => {
+    render(
+      <MovementsPage
+        useCases={service({
+          listMovements: vi.fn().mockResolvedValue([item, expenseItem]),
+        })}
+      />,
+    )
+
+    const incomeAmount = await screen.findByText("+ $25.000")
+    const expenseAmount = screen.getByText("- $12.000")
+    expect(incomeAmount).toHaveClass("text-emerald-700")
+    expect(expenseAmount).toHaveClass("text-destructive")
+    expect(screen.queryByRole("button", { name: "Gasto" })).toBeNull()
+  })
+
   it("shows balance adjustments and exposes their explicit filter", async () => {
     const listMovements = vi.fn().mockResolvedValue([adjustmentItem])
     render(<MovementsPage useCases={service({ listMovements })} />)
@@ -385,12 +429,11 @@ describe("MovementsPage", () => {
     render(
       <MovementsPage
         useCases={useCases}
+        initialComposer="expense"
         onManageCategories={onManageCategories}
       />,
     )
 
-    await screen.findByText("Venta")
-    fireEvent.click(screen.getByRole("button", { name: "Gasto" }))
     fireEvent.click(
       await screen.findByRole("button", { name: "Administrar categorías" }),
     )

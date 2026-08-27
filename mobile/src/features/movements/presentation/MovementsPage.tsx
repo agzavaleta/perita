@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Pencil,
   PiggyBank,
-  Plus,
   Scale,
   Search,
   SlidersHorizontal,
@@ -103,6 +102,19 @@ function formatClp(value: number, signed = true) {
   }).format(value)
 }
 
+function formatMovementCardAmount(item: MovementListItem) {
+  if (item.kind === "income") {
+    return `+ ${formatClp(Math.abs(item.signedAmount), false)}`
+  }
+  if (item.kind === "expense") {
+    return `- ${formatClp(Math.abs(item.signedAmount), false)}`
+  }
+  return formatClp(
+    item.kind === "transfer" ? item.operation.amount : item.signedAmount,
+    item.kind !== "transfer",
+  )
+}
+
 function formatDate(value: string) {
   const [year, month, day] = value.split("-")
   return `${day}-${month}-${year}`
@@ -180,13 +192,12 @@ function MovementCard({
           <p
             className={cn(
               "money-figure text-lg font-semibold",
+              item.kind === "income" && "text-emerald-700",
+              item.kind === "expense" && "text-destructive",
               item.operation.status === "voided" && "line-through",
             )}
           >
-            {formatClp(
-              item.kind === "transfer" ? item.operation.amount : item.signedAmount,
-              item.kind !== "transfer",
-            )}
+            {formatMovementCardAmount(item)}
           </p>
           <Button
             type="button"
@@ -495,16 +506,6 @@ export function MovementsPage({
             Ingresos, gastos, ahorro, ajustes y movimientos internos del período abierto.
           </p>
         </div>
-        <Button
-          type="button"
-          size="lg"
-          onClick={() => setEditor({ kind: "expense" })}
-          disabled={!useCases || !options}
-          className="self-end"
-        >
-          <Plus aria-hidden="true" />
-          Gasto
-        </Button>
       </div>
 
       <Card size="sm">

@@ -21,9 +21,9 @@ type NavigationItem = {
 
 const navigationItems: NavigationItem[] = [
   { section: "home", label: "Inicio", icon: House },
-  { section: "movements", label: "Movimientos", icon: ReceiptText },
   { section: "accounts", label: "Cuentas", icon: WalletCards },
   { section: "planning", label: "Planificar", icon: CalendarCheck2 },
+  { section: "movements", label: "Movimientos", icon: ReceiptText },
 ]
 
 type NavigationButtonProps = NavigationItem & {
@@ -66,7 +66,7 @@ export function BottomNavigation({
   onNavigate,
   onQuickAction,
 }: BottomNavigationProps) {
-  const [home, movements, accounts, planning] = navigationItems
+  const [home, accounts, planning, movements] = navigationItems
 
   return (
     <nav
@@ -80,8 +80,8 @@ export function BottomNavigation({
           onSelect={onNavigate}
         />
         <NavigationButton
-          {...movements}
-          active={activeSection === movements.section}
+          {...accounts}
+          active={activeSection === accounts.section}
           onSelect={onNavigate}
         />
         <QuickActionsSheet onSelect={onQuickAction}>
@@ -95,13 +95,13 @@ export function BottomNavigation({
           </Button>
         </QuickActionsSheet>
         <NavigationButton
-          {...accounts}
-          active={activeSection === accounts.section}
+          {...planning}
+          active={activeSection === planning.section}
           onSelect={onNavigate}
         />
         <NavigationButton
-          {...planning}
-          active={activeSection === planning.section}
+          {...movements}
+          active={activeSection === movements.section}
           onSelect={onNavigate}
         />
       </div>
