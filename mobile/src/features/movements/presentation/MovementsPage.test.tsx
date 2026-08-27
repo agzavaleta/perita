@@ -268,7 +268,7 @@ describe("MovementsPage", () => {
 
     const incomeAmount = await screen.findByText("+ $25.000")
     const expenseAmount = screen.getByText("- $12.000")
-    expect(incomeAmount).toHaveClass("text-emerald-700")
+    expect(incomeAmount).toHaveClass("text-green-600")
     expect(expenseAmount).toHaveClass("text-destructive")
     expect(screen.queryByRole("button", { name: "Gasto" })).toBeNull()
   })

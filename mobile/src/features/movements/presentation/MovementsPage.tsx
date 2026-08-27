@@ -192,7 +192,7 @@ function MovementCard({
           <p
             className={cn(
               "money-figure text-lg font-semibold",
-              item.kind === "income" && "text-emerald-700",
+              item.kind === "income" && "text-green-600",
               item.kind === "expense" && "text-destructive",
               item.operation.status === "voided" && "line-through",
             )}
