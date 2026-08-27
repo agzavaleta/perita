@@ -155,6 +155,46 @@ describe("DebtUseCases", () => {
     })
   })
 
+  it("deletes a new debt with initial outstanding balance, opening and audits", async () => {
+    const debt = await createDebt()
+
+    expect((await debts.getDebtDetail(debt.id)).canDelete).toBe(true)
+    await debts.deleteDebt(debt.id, debt.revision)
+
+    expect(await repositories.debts.get(debt.id)).toBeUndefined()
+    expect((await repositories.periodOpenings.getAll()).some(({ targetId }) => targetId === debt.id)).toBe(false)
+    expect(await repositories.auditEvents.listBySubject("debt", debt.id)).toEqual([])
+  })
+
+  it("blocks deletion after payments, voided payments, total adjustments, or historical openings", async () => {
+    const paid = await createDebt()
+    await debts.registerPayment({ debtId: paid.id, accountId: ACCOUNT_A, operationDate: TODAY, amount: 1 })
+    const paidCurrent = await repositories.debts.get(paid.id)
+    if (!paidCurrent) throw new Error("fixture debt missing")
+    await expect(debts.deleteDebt(paid.id, paidCurrent.revision)).rejects.toMatchObject({ code: "cannot_delete" })
+
+    const voided = await createDebt()
+    const payment = await debts.registerPayment({ debtId: voided.id, accountId: ACCOUNT_A, operationDate: TODAY, amount: 1 })
+    await debts.voidPayment(payment.operation.id, payment.operation.revision)
+    const voidedCurrent = await repositories.debts.get(voided.id)
+    if (!voidedCurrent) throw new Error("fixture debt missing")
+    await expect(debts.deleteDebt(voided.id, voidedCurrent.revision)).rejects.toMatchObject({ code: "cannot_delete" })
+
+    const adjusted = await createDebt()
+    const adjustedCurrent = await debts.adjustDebtTotal(adjusted.id, adjusted.revision, TODAY, 110_000)
+    await expect(debts.deleteDebt(adjusted.id, adjustedCurrent.revision)).rejects.toMatchObject({ code: "cannot_delete" })
+
+    const historical = await createDebt()
+    await repositories.periodOpenings.add({
+      id: asEntityId("70000000-0000-4000-8000-000000009001"),
+      periodId: NEXT_PERIOD_ID,
+      targetType: "debt",
+      targetId: historical.id,
+      openingAmount: historical.outstandingAmount,
+    })
+    await expect(debts.deleteDebt(historical.id, historical.revision)).rejects.toMatchObject({ code: "cannot_delete" })
+  })
+
   it("rejects an informed opening outstanding amount outside its valid range", async () => {
     const draft = {
       name: "Inválida",

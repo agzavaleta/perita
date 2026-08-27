@@ -6,6 +6,7 @@ import {
   Plus,
   PowerOff,
   Scale,
+  Trash2,
 } from "lucide-react"
 
 import type { Account } from "@/domain/entities"
@@ -269,6 +270,7 @@ function AccountDetail({
   onClose,
   onEdit,
   onRequestStatusChange,
+  onRequestDelete,
   onAdjust,
 }: {
   readonly account: Account
@@ -276,11 +278,13 @@ function AccountDetail({
   readonly onClose: () => void
   readonly onEdit: () => void
   readonly onRequestStatusChange: () => void
+  readonly onRequestDelete: () => void
   readonly onAdjust?: () => void
 }) {
   const [movements, setMovements] = useState<
     AccountMovementHistoryItem[] | "error" | null
   >(null)
+  const [canDelete, setCanDelete] = useState<boolean | null>(null)
 
   useEffect(() => {
     let active = true
@@ -291,6 +295,21 @@ function AccountDetail({
       })
       .catch(() => {
         if (active) setMovements("error")
+      })
+    return () => {
+      active = false
+    }
+  }, [account.id, useCases])
+
+  useEffect(() => {
+    let active = true
+    void useCases
+      .canDeleteAccount(account.id)
+      .then((eligible) => {
+        if (active) setCanDelete(eligible)
+      })
+      .catch(() => {
+        if (active) setCanDelete(false)
       })
     return () => {
       active = false
@@ -327,7 +346,16 @@ function AccountDetail({
               <Pencil aria-hidden="true" />
               Editar
             </Button>
-            {account.status === "active" ? (
+            {canDelete ? (
+              <Button
+                type="button"
+                variant="destructive"
+                size="lg"
+                onClick={onRequestDelete}
+              >
+                <Trash2 aria-hidden="true" /> Eliminar cuenta
+              </Button>
+            ) : account.status === "active" && canDelete === false ? (
               <Button
                 type="button"
                 variant="destructive"
@@ -423,6 +451,7 @@ export function AccountsPage({
   const [editor, setEditor] = useState<EditorState>(null)
   const [selected, setSelected] = useState<Account | null>(null)
   const [statusTarget, setStatusTarget] = useState<Account | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Account | null>(null)
   const [adjustmentTarget, setAdjustmentTarget] = useState<Account | null>(null)
 
   useEffect(() => {
@@ -508,6 +537,24 @@ export function AccountsPage({
     }
   }
 
+  async function deleteAccount() {
+    if (!deleteTarget || !useCases) return
+    setError(null)
+    try {
+      await useCases.deleteAccount({
+        accountId: deleteTarget.id,
+        expectedRevision: deleteTarget.revision,
+      })
+      setSelected(null)
+      toast.success("Cuenta eliminada")
+      await loadAccounts()
+    } catch (cause) {
+      setError(accountErrorMessage(cause))
+    } finally {
+      setDeleteTarget(null)
+    }
+  }
+
   return (
     <section className="space-y-section py-section" aria-labelledby="accounts-title">
       <div className="flex flex-col items-stretch gap-3 min-[360px]:flex-row min-[360px]:items-center min-[360px]:justify-between">
@@ -570,6 +617,7 @@ export function AccountsPage({
             setSelected(null)
           }}
           onRequestStatusChange={() => setStatusTarget(selected)}
+          onRequestDelete={() => setDeleteTarget(selected)}
           onAdjust={
             balanceAdjustmentUseCases
               ? () => {
@@ -617,6 +665,32 @@ export function AccountsPage({
               onClick={() => void changeStatus()}
             >
               Confirmar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogMedia>
+              <Trash2 aria-hidden="true" />
+            </AlertDialogMedia>
+            <AlertDialogTitle>¿Eliminar cuenta?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se eliminará definitivamente porque todavía no tiene actividad financiera.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => void deleteAccount()}
+            >
+              Eliminar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

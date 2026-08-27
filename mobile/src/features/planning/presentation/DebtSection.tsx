@@ -8,6 +8,7 @@ import {
   Pencil,
   Plus,
   ReceiptText,
+  Trash2,
 } from "lucide-react"
 
 import { ClpAmountInput } from "@/components/finance/ClpAmountInput"
@@ -443,6 +444,7 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
   const [paymentEditor, setPaymentEditor] = useState<DebtPaymentItem | "new" | null>(null)
   const [totalEditor, setTotalEditor] = useState(false)
   const [voidTarget, setVoidTarget] = useState<DebtPaymentItem | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Debt | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
@@ -492,6 +494,19 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
       setError(message(cause))
     } finally {
       setVoidTarget(null)
+    }
+  }
+
+  async function confirmDelete() {
+    if (!useCases || !deleteTarget) return
+    try {
+      await useCases.deleteDebt(deleteTarget.id, deleteTarget.revision)
+      toast.success("Deuda eliminada")
+      saved()
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setDeleteTarget(null)
     }
   }
 
@@ -565,6 +580,7 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
                 </CardContent>
               </Card>
               {detail.debt.paymentStatus !== "paid" ? <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2"><Button type="button" onClick={() => setPaymentEditor("new")}><HandCoins aria-hidden="true" /> Registrar pago</Button><Button type="button" variant="outline" onClick={() => setEditor(detail.debt)}><Pencil aria-hidden="true" /> Editar</Button><Button type="button" variant="outline" className="min-[360px]:col-span-2" onClick={() => setTotalEditor(true)}><ReceiptText aria-hidden="true" /> Ajustar total</Button></div> : null}
+              {detail.canDelete ? <Button type="button" variant="destructive" className="w-full" onClick={() => setDeleteTarget(detail.debt)}><Trash2 aria-hidden="true" /> Eliminar deuda</Button> : null}
               <div className="space-y-2"><div className="flex items-center gap-2"><History aria-hidden="true" className="size-4" /><h3 className="font-semibold">Pagos e historial</h3></div>{detail.payments.length === 0 ? <EmptyState title="Sin pagos registrados" description="Los pagos aparecerán aquí con sus revisiones." /> : detail.payments.map((item) => <Card key={item.operation.id} className={item.operation.status === "voided" ? "opacity-60" : undefined}><CardContent className="space-y-2 pt-1"><div className="flex items-start justify-between gap-3"><div><p className="font-medium">{item.operation.details.concept ?? "Pago de deuda"}</p><p className="text-xs text-muted-foreground">{formatDate(item.operation.operationDate)} · {item.accountName}</p></div><p className="money-figure font-semibold">{formatClp(item.operation.amount)}</p></div><div className="flex items-center justify-between"><Badge variant="outline">{item.operation.status === "posted" ? "Vigente" : "Anulado"}</Badge><span className="text-xs text-muted-foreground">Rev. {item.operation.revision} · {item.revisions.length} cambio(s)</span></div>{item.operation.status === "posted" ? <div className="flex gap-2"><Button type="button" size="sm" variant="outline" onClick={() => setPaymentEditor(item)}><Pencil aria-hidden="true" /> Editar</Button><Button type="button" size="sm" variant="destructive" onClick={() => setVoidTarget(item)}><CircleOff aria-hidden="true" /> Anular</Button></div> : null}</CardContent></Card>)}</div>
               {detail.adjustments.length > 0 || detail.auditEvents.length > 0 ? <p className="flex items-center gap-2 text-xs text-muted-foreground"><CalendarDays aria-hidden="true" className="size-4" /> {detail.adjustments.length} ajuste(s) de total · {detail.auditEvents.length} revisión(es) de ficha</p> : null}
             </div>
@@ -574,6 +590,7 @@ export function DebtSection({ useCases }: { readonly useCases: DebtUseCasesPort 
       {detail && paymentEditor && options && useCases ? <PaymentEditor key={paymentEditor === "new" ? "new" : paymentEditor.operation.id} debt={detail.debt} payment={paymentEditor === "new" ? undefined : paymentEditor} options={options} useCases={useCases} onSaved={saved} onClose={() => setPaymentEditor(null)} /> : null}
       {detail && totalEditor && options && useCases ? <TotalEditor debt={detail.debt} currentDate={options.currentDate} useCases={useCases} onSaved={saved} onClose={() => setTotalEditor(false)} /> : null}
       <AlertDialog open={voidTarget !== null} onOpenChange={(openState) => !openState && setVoidTarget(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogMedia><CircleOff /></AlertDialogMedia><AlertDialogTitle>Anular pago</AlertDialogTitle><AlertDialogDescription>Se restaurarán atómicamente el saldo de la cuenta y el saldo pendiente de la deuda.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void confirmVoid()}>Anular pago</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(openState) => !openState && setDeleteTarget(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogMedia><Trash2 aria-hidden="true" /></AlertDialogMedia><AlertDialogTitle>¿Eliminar deuda?</AlertDialogTitle><AlertDialogDescription>Se eliminará definitivamente porque todavía no tiene actividad financiera.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancelar</AlertDialogCancel><AlertDialogAction variant="destructive" onClick={() => void confirmDelete()}>Eliminar</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </div>
   )
 }

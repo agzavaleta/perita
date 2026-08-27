@@ -65,6 +65,7 @@ export interface GoalMovementItem {
 export interface SavingsGoalDetail {
   readonly goal: SavingsGoal
   readonly relatedMovements: readonly GoalMovementItem[]
+  readonly canDelete: boolean
 }
 
 export interface FixedExpenseDraft {
@@ -88,6 +89,7 @@ export interface PlanningUseCasesPort {
   createSavingsGoal(input: SavingsGoalDraft): Promise<SavingsGoal>
   editSavingsGoal(input: EditSavingsGoalInput): Promise<SavingsGoal>
   closeSavingsGoal(goalId: EntityId, expectedRevision: Revision): Promise<SavingsGoal>
+  deleteSavingsGoal(goalId: EntityId, expectedRevision: Revision): Promise<void>
   listFixedExpenses(): Promise<FixedExpenseListItem[]>
   getFixedExpenseDetail(templateId: EntityId): Promise<FixedExpenseListItem>
   createFixedExpense(input: FixedExpenseDraft): Promise<FixedExpenseListItem>
@@ -116,6 +118,7 @@ export type PlanningErrorCode =
   | "nonzero_balance"
   | "no_changes"
   | "revision_conflict"
+  | "cannot_delete"
 
 export class PlanningUseCaseError extends Error {
   readonly code: PlanningErrorCode
@@ -256,11 +259,11 @@ export class PlanningUseCases implements PlanningUseCasesPort {
   }
 
   async getSavingsGoalDetail(goalId: EntityId) {
-    const goal = await this.requireGoal(goalId)
-    const movements = await this.repositories.movements.listByTarget(
-      "savings_goal",
-      goalId,
-    )
+    const [goal, period, movements] = await Promise.all([
+      this.requireGoal(goalId),
+      this.requireOpenPeriod(),
+      this.repositories.movements.listByTarget("savings_goal", goalId),
+    ])
     const related = await Promise.all(
       movements.map(async (movement) => {
         const operation = await this.repositories.operations.get(
@@ -277,7 +280,12 @@ export class PlanningUseCases implements PlanningUseCasesPort {
             left.operation.operationDate,
           ) || right.operation.createdAt.localeCompare(left.operation.createdAt),
       )
-    return { goal, relatedMovements }
+    const { canDelete } =
+      await this.repositories.planning.getSavingsGoalDeletionEligibility({
+        period: this.expected(period),
+        entity: this.expected(goal),
+      })
+    return { goal, relatedMovements, canDelete }
   }
 
   async createSavingsGoal(input: SavingsGoalDraft) {
@@ -495,6 +503,31 @@ export class PlanningUseCases implements PlanningUseCasesPort {
       }),
     )
     return goal
+  }
+
+  async deleteSavingsGoal(goalId: EntityId, expectedRevision: Revision) {
+    const [period, goal] = await Promise.all([
+      this.requireOpenPeriod(),
+      this.requireGoal(goalId),
+    ])
+    this.assertRevision(goal.revision, expectedRevision)
+    const deletion = {
+      period: this.expected(period),
+      entity: this.expected(goal),
+    }
+    if (
+      !(await this.repositories.planning.getSavingsGoalDeletionEligibility(
+        deletion,
+      )).canDelete
+    ) {
+      throw new PlanningUseCaseError(
+        "cannot_delete",
+        "La meta ya tiene actividad o historial y no puede eliminarse.",
+      )
+    }
+    await this.persist(() =>
+      this.repositories.planning.deleteUnusedSavingsGoal(deletion),
+    )
   }
 
   async listFixedExpenses() {

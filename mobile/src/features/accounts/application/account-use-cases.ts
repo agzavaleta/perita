@@ -17,6 +17,7 @@ import {
   type UtcTimestamp,
 } from "@/domain/primitives"
 import type { PeritaRepositories } from "@/data/repositories"
+import { PersistenceError } from "@/data/errors"
 
 export type AccountUseCaseErrorCode =
   | "account_not_found"
@@ -27,6 +28,7 @@ export type AccountUseCaseErrorCode =
   | "revision_conflict"
   | "invalid_account_state"
   | "nonzero_balance"
+  | "cannot_delete"
 
 export class AccountUseCaseError extends Error {
   readonly code: AccountUseCaseErrorCode
@@ -69,6 +71,8 @@ export interface AccountUseCasesPort {
   createAccount(input: AccountDraft): Promise<Account>
   editAccount(input: EditAccountInput): Promise<Account>
   deactivateAccount(input: ChangeAccountStatusInput): Promise<Account>
+  canDeleteAccount(accountId: EntityId): Promise<boolean>
+  deleteAccount(input: ChangeAccountStatusInput): Promise<void>
 }
 
 interface AccountUseCasesOptions {
@@ -315,6 +319,47 @@ export class AccountUseCases implements AccountUseCasesPort {
     return account
   }
 
+  async canDeleteAccount(accountId: EntityId) {
+    const [period, account] = await Promise.all([
+      this.requireOpenPeriod(),
+      this.requireAccount(accountId),
+    ])
+    const eligibility = await this.repositories.accounts.getDeletionEligibility({
+      period: this.expected(period),
+      entity: this.expected(account),
+    })
+    return eligibility.canDelete
+  }
+
+  async deleteAccount(input: ChangeAccountStatusInput) {
+    const [period, account] = await Promise.all([
+      this.requireOpenPeriod(),
+      this.requireAccount(input.accountId),
+    ])
+    this.assertRevision(account, input.expectedRevision)
+    const deletion = {
+      period: this.expected(period),
+      entity: this.expected(account),
+    }
+    if (!(await this.repositories.accounts.getDeletionEligibility(deletion)).canDelete) {
+      throw new AccountUseCaseError(
+        "cannot_delete",
+        "La cuenta ya tiene actividad o historial y no puede eliminarse.",
+      )
+    }
+    try {
+      await this.repositories.accounts.deleteUnused(deletion)
+    } catch (error) {
+      if (error instanceof PersistenceError && error.code === "conflict") {
+        throw new AccountUseCaseError(
+          "revision_conflict",
+          "La información cambió; vuelve a cargar.",
+        )
+      }
+      throw error
+    }
+  }
+
   private async requireOpenPeriod() {
     const periods = await this.repositories.periods.listByStatus("open")
     if (periods.length !== 1) {
@@ -348,6 +393,10 @@ export class AccountUseCases implements AccountUseCasesPort {
 
   private nextRevision(revision: Revision) {
     return asRevision(Number(revision) + 1)
+  }
+
+  private expected(record: { readonly id: EntityId; readonly revision: Revision }) {
+    return { id: record.id, revision: record.revision }
   }
 
   private createdAudit(

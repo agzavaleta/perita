@@ -2,12 +2,13 @@ import { IDBFactory } from "fake-indexeddb"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import type { Account } from "@/domain/entities"
-import type { Period } from "@/domain/periods"
+import type { Period, PeriodSnapshot } from "@/domain/periods"
 import {
   asCivilDate,
   asClpAmount,
   asEntityId,
   asPeriodKey,
+  asNonZeroClpDelta,
   asRevision,
   asUtcTimestamp,
 } from "@/domain/primitives"
@@ -42,6 +43,31 @@ function idSequence() {
     asEntityId(
       `10000000-0000-4000-8000-${String(value++).padStart(12, "0")}`,
     )
+}
+
+function accountSnapshot(account: Account): PeriodSnapshot {
+  return {
+    id: asEntityId("10000000-0000-4000-8000-000000009001"),
+    periodId: PERIOD_ID,
+    periodKey: asPeriodKey("2026-07"),
+    schemaVersion: "1.1.0",
+    snapshotKind: "canonical",
+    closedAt: NOW,
+    data: {
+      periodPlan: { plannedSalaryAmount: asClpAmount(0), variableExpenseBudgetAmount: asClpAmount(0) },
+      operations: [], movements: [], fixedExpenses: [], periodOpenings: [], auditEvents: [],
+      entitySnapshots: { accounts: [account], savingsGoals: [], debts: [], categories: [] },
+      openingBalances: {}, closingBalances: {},
+      totals: {
+        periodId: PERIOD_ID, periodKey: asPeriodKey("2026-07"), plannedSalaryAmount: asClpAmount(0),
+        receivedSalaryAmount: asClpAmount(0), additionalIncomeAmount: asClpAmount(0), totalIncomeAmount: asClpAmount(0),
+        fixedExpensePlannedAmount: asClpAmount(0), fixedExpensePaidAmount: asClpAmount(0), fixedExpenseUnpaidAmount: asClpAmount(0),
+        variableExpenseAmount: asClpAmount(0), debtPaymentAmount: asClpAmount(0), netSavingsAmount: asClpAmount(0), availableAmount: asClpAmount(0),
+      },
+      warnings: [],
+    },
+    integrity: { algorithm: "SHA-256", payloadHash: "snapshot" },
+  }
 }
 
 describe("AccountUseCases", () => {
@@ -219,5 +245,56 @@ describe("AccountUseCases", () => {
         ({ action }) => action,
       ),
     ).toEqual(["created", "deactivated"])
+  })
+
+  it("deletes a new zero-balance account with its current opening and audits", async () => {
+    const removable = await useCases.createAccount({ name: "Temporal", bank: null })
+    await useCases.createAccount({ name: "Principal", bank: null })
+
+    expect(await useCases.canDeleteAccount(removable.id)).toBe(true)
+    await useCases.deleteAccount({
+      accountId: removable.id,
+      expectedRevision: removable.revision,
+    })
+
+    expect(await repositories.accounts.get(removable.id)).toBeUndefined()
+    expect((await repositories.periodOpenings.getAll()).some(({ targetId }) => targetId === removable.id)).toBe(false)
+    expect(await repositories.auditEvents.listBySubject("account", removable.id)).toEqual([])
+  })
+
+  it("blocks account deletion after any movement, snapshot, or when it is the last account", async () => {
+    const used = await useCases.createAccount({ name: "Usada", bank: null })
+    await useCases.createAccount({ name: "Otra", bank: null })
+    await repositories.movements.add({
+      id: asEntityId("10000000-0000-4000-8000-000000009002"), operationId: asEntityId("10000000-0000-4000-8000-000000009003"),
+      periodId: PERIOD_ID, targetType: "account", targetId: used.id, effectType: "asset_balance",
+      delta: asNonZeroClpDelta(1), status: "voided", createdAt: NOW, updatedAt: NOW,
+    })
+    await expect(useCases.deleteAccount({ accountId: used.id, expectedRevision: used.revision })).rejects.toMatchObject({ code: "cannot_delete" })
+
+    const historical = await useCases.createAccount({ name: "Histórica", bank: null })
+    await repositories.periodSnapshots.add(accountSnapshot(historical))
+    await expect(useCases.deleteAccount({ accountId: historical.id, expectedRevision: historical.revision })).rejects.toMatchObject({ code: "cannot_delete" })
+
+    for (const account of await repositories.accounts.getAll()) {
+      if (account.id !== historical.id) await repositories.accounts.delete(account.id)
+    }
+    await expect(useCases.deleteAccount({ accountId: historical.id, expectedRevision: historical.revision })).rejects.toMatchObject({ code: "cannot_delete" })
+  })
+
+  it("leaves account, opening and audits intact when deletion conflicts", async () => {
+    const removable = await useCases.createAccount({ name: "Temporal", bank: null })
+    await useCases.createAccount({ name: "Otra", bank: null })
+    const originalDelete = repositories.accounts.deleteUnused.bind(repositories.accounts)
+    const repository = repositories.accounts as { deleteUnused: typeof originalDelete }
+    repository.deleteUnused = async (input) => {
+      await repositories.accounts.put({ ...removable, revision: asRevision(2) })
+      await originalDelete(input)
+    }
+
+    await expect(useCases.deleteAccount({ accountId: removable.id, expectedRevision: removable.revision })).rejects.toMatchObject({ code: "revision_conflict" })
+    expect(await repositories.accounts.get(removable.id)).toBeDefined()
+    expect((await repositories.periodOpenings.getAll()).some(({ targetId }) => targetId === removable.id)).toBe(true)
+    expect(await repositories.auditEvents.listBySubject("account", removable.id)).not.toEqual([])
   })
 })

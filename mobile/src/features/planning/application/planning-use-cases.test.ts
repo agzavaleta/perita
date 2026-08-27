@@ -374,6 +374,46 @@ describe("PlanningUseCases", () => {
     ).rejects.toMatchObject({ code: "nonzero_balance" })
   })
 
+  it("deletes a never-used zero-balance goal with its current opening and audits", async () => {
+    const goal = await planning.createSavingsGoal({
+      name: "Temporal",
+      targetAmount: 100_000,
+      plannedMonthlyAmount: 0,
+    })
+
+    expect((await planning.getSavingsGoalDetail(goal.id)).canDelete).toBe(true)
+    await planning.deleteSavingsGoal(goal.id, goal.revision)
+
+    expect(await repositories.savingsGoals.get(goal.id)).toBeUndefined()
+    expect((await repositories.periodOpenings.getAll()).some(({ targetId }) => targetId === goal.id)).toBe(false)
+    expect(await repositories.auditEvents.listBySubject("savings_goal", goal.id)).toEqual([])
+  })
+
+  it("keeps a goal that returned to zero after activity and blocks historical openings", async () => {
+    const used = await planning.createSavingsGoal({
+      name: "Usada",
+      targetAmount: 100_000,
+      plannedMonthlyAmount: 0,
+    })
+    await movements.registerSavingsDeposit({ goalId: used.id, operationDate: TODAY, amount: 10_000 })
+    const afterDeposit = await repositories.savingsGoals.get(used.id)
+    if (!afterDeposit) throw new Error("fixture goal missing")
+    await movements.registerSavingsWithdrawal({ goalId: used.id, operationDate: TODAY, amount: 10_000 })
+    const atZero = await repositories.savingsGoals.get(used.id)
+    if (!atZero) throw new Error("fixture goal missing")
+    await expect(planning.deleteSavingsGoal(atZero.id, atZero.revision)).rejects.toMatchObject({ code: "cannot_delete" })
+
+    const historical = await planning.createSavingsGoal({ name: "Histórica", targetAmount: 100_000, plannedMonthlyAmount: 0 })
+    await repositories.periodOpenings.add({
+      id: asEntityId("50000000-0000-4000-8000-000000009001"),
+      periodId: asEntityId("50000000-0000-4000-8000-000000009002"),
+      targetType: "savings_goal",
+      targetId: historical.id,
+      openingAmount: asClpAmount(0),
+    })
+    await expect(planning.deleteSavingsGoal(historical.id, historical.revision)).rejects.toMatchObject({ code: "cannot_delete" })
+  })
+
   it("creates fixed information with one pending instance and no financial operation", async () => {
     const item = await planning.createFixedExpense({
       name: "Arriendo",

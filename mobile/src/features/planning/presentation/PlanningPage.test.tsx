@@ -28,6 +28,9 @@ import type {
 } from "@/features/planning/application/planning-use-cases"
 import type { MovementUseCasesPort } from "@/features/movements/application/movement-use-cases"
 import { PlanningPage } from "@/features/planning/presentation/PlanningPage"
+import { toast } from "sonner"
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn() } }))
 
 const NOW = asUtcTimestamp("2026-08-21T12:00:00.000Z")
 const GOAL_ID = asEntityId("60000000-0000-4000-8000-000000000001")
@@ -81,7 +84,7 @@ const fixedItem: FixedExpenseListItem = {
   template,
   currentInstance: instance,
 }
-const detail: SavingsGoalDetail = { goal, relatedMovements: [] }
+const detail: SavingsGoalDetail = { goal, relatedMovements: [], canDelete: false }
 
 function relatedMovement(
   type: "savings_deposit" | "savings_withdrawal" | "transfer" | "balance_adjustment",
@@ -167,6 +170,7 @@ const debtDetail: DebtDetail = {
   payments: [],
   adjustments: [],
   auditEvents: [],
+  canDelete: false,
 }
 
 function service(
@@ -178,6 +182,7 @@ function service(
     createSavingsGoal: vi.fn().mockResolvedValue(goal),
     editSavingsGoal: vi.fn().mockResolvedValue(goal),
     closeSavingsGoal: vi.fn().mockResolvedValue(goal),
+    deleteSavingsGoal: vi.fn().mockResolvedValue(undefined),
     listFixedExpenses: vi.fn().mockResolvedValue([fixedItem]),
     getFixedExpenseDetail: vi.fn().mockResolvedValue(fixedItem),
     createFixedExpense: vi.fn().mockResolvedValue(fixedItem),
@@ -219,6 +224,7 @@ function debtService(overrides: Partial<DebtUseCasesPort> = {}): DebtUseCasesPor
     registerPayment: vi.fn(),
     editPayment: vi.fn(),
     voidPayment: vi.fn(),
+    deleteDebt: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
 }
@@ -365,6 +371,7 @@ describe("PlanningPage", () => {
   it("labels every related savings movement with its traceable concept", async () => {
     const historyDetail: SavingsGoalDetail = {
       goal,
+      canDelete: false,
       relatedMovements: [
         relatedMovement("savings_deposit", 1, 10_000),
         relatedMovement("savings_withdrawal", 2, -5_000),
@@ -391,10 +398,57 @@ describe("PlanningPage", () => {
     expect(screen.getByText("Saldo informado")).toBeInTheDocument()
   })
 
+  it("shows and confirms permanent goal deletion only for an eligible goal", async () => {
+    const deleteSavingsGoal = vi.fn().mockResolvedValue(undefined)
+    const eligible = { ...detail, canDelete: true }
+    render(
+      <PlanningPage
+        useCases={service({
+          getSavingsGoalDetail: vi.fn().mockResolvedValue(eligible),
+          deleteSavingsGoal,
+        })}
+      />,
+    )
+    await screen.findByText("Viaje")
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Viaje" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Eliminar meta" }))
+    expect(screen.getByRole("heading", { name: "¿Eliminar meta?" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }))
+    expect(deleteSavingsGoal).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole("button", { name: "Eliminar meta" }))
+    fireEvent.click(screen.getByRole("button", { name: "Eliminar" }))
+    await waitFor(() => expect(deleteSavingsGoal).toHaveBeenCalledOnce())
+    expect(deleteSavingsGoal).toHaveBeenCalledWith(goal.id, goal.revision)
+    expect(toast.success).toHaveBeenCalledWith("Meta eliminada")
+  })
+
+  it("keeps the close-goal flow for a used goal at zero", async () => {
+    const zeroGoal = { ...goal, currentBalance: asClpAmount(0) }
+    const closeSavingsGoal = vi.fn().mockResolvedValue(zeroGoal)
+    render(
+      <PlanningPage
+        useCases={service({
+          listSavingsGoals: vi.fn().mockResolvedValue([zeroGoal]),
+          getSavingsGoalDetail: vi.fn().mockResolvedValue({ goal: zeroGoal, relatedMovements: [], canDelete: false }),
+          closeSavingsGoal,
+        })}
+      />,
+    )
+    await screen.findByText("Viaje")
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Viaje" }))
+    expect(await screen.findByRole("button", { name: "Cerrar meta" })).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Eliminar meta" })).toBeNull()
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar meta" }))
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar meta" }))
+    await waitFor(() => expect(closeSavingsGoal).toHaveBeenCalledWith(zeroGoal.id, zeroGoal.revision))
+  })
+
   it("edits and voids posted savings movements from the open-period history", async () => {
     const deposit = relatedMovement("savings_deposit", 1, 100_000)
     const historyDetail: SavingsGoalDetail = {
       goal,
+      canDelete: false,
       relatedMovements: [deposit],
     }
     const getSavingsGoalDetail = vi.fn().mockResolvedValue(historyDetail)
@@ -457,6 +511,7 @@ describe("PlanningPage", () => {
     const closedWithdrawal = relatedMovement("savings_withdrawal", 2, -5_000)
     const historyDetail: SavingsGoalDetail = {
       goal,
+      canDelete: false,
       relatedMovements: [
         {
           ...voidedDeposit,

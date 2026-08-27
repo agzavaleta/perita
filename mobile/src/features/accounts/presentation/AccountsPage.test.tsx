@@ -18,6 +18,9 @@ import type {
 } from "@/features/accounts/application/account-use-cases"
 import type { BalanceAdjustmentUseCasesPort } from "@/features/accounts/application/balance-adjustment-use-cases"
 import { AccountsPage } from "@/features/accounts/presentation/AccountsPage"
+import { toast } from "sonner"
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn() } }))
 
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn()
@@ -80,6 +83,8 @@ function service(overrides: Partial<AccountUseCasesPort> = {}): AccountUseCasesP
     createAccount: vi.fn().mockResolvedValue(account),
     editAccount: vi.fn().mockResolvedValue(account),
     deactivateAccount: vi.fn().mockResolvedValue({ ...account, status: "inactive" }),
+    canDeleteAccount: vi.fn().mockResolvedValue(false),
+    deleteAccount: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
 }
@@ -213,6 +218,33 @@ describe("AccountsPage", () => {
     expect(screen.queryByText(/Fase 6/i)).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Editar" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Desactivar" })).toBeInTheDocument()
+  })
+
+  it("offers deletion only when eligible, cancels without writing, and confirms once", async () => {
+    let resolveDelete!: () => void
+    const deleteAccount = vi.fn().mockImplementation(
+      () => new Promise<void>((resolve) => { resolveDelete = resolve }),
+    )
+    const useCases = service({
+      listAccounts: vi.fn().mockResolvedValue([account]),
+      canDeleteAccount: vi.fn().mockResolvedValue(true),
+      deleteAccount,
+    })
+    render(<AccountsPage useCases={useCases} />)
+
+    await screen.findByText("Cuenta principal")
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle de Cuenta principal" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Eliminar cuenta" }))
+    expect(screen.getByRole("heading", { name: "¿Eliminar cuenta?" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }))
+    expect(deleteAccount).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole("button", { name: "Eliminar cuenta" }))
+    fireEvent.click(screen.getByRole("button", { name: "Eliminar" }))
+    expect(deleteAccount).toHaveBeenCalledOnce()
+    expect(toast.success).not.toHaveBeenCalledWith("Cuenta eliminada")
+    resolveDelete()
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith("Cuenta eliminada"))
   })
 
   it("shows the real related adjustment history instead of only a counter", async () => {

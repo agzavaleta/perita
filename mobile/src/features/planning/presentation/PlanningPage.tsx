@@ -296,6 +296,7 @@ function GoalDetailSheet({
   onWithdraw,
   onMoveMoney,
   onRequestClose,
+  onRequestDelete,
   openPeriodId,
   onEditSavingsMovement,
   onVoidSavingsMovement,
@@ -307,6 +308,7 @@ function GoalDetailSheet({
   readonly onWithdraw: () => void
   readonly onMoveMoney: () => void
   readonly onRequestClose: () => void
+  readonly onRequestDelete: () => void
   readonly openPeriodId: EntityId | null
   readonly onEditSavingsMovement: (operation: EditableSavingsOperation) => void
   readonly onVoidSavingsMovement: (operation: EditableSavingsOperation) => void
@@ -435,7 +437,16 @@ function GoalDetailSheet({
           </div>
 
           {goal.lifecycleStatus === "active" ? (
-            goal.currentBalance === 0 ? (
+            detail.canDelete ? (
+              <Button
+                type="button"
+                variant="destructive"
+                className="w-full"
+                onClick={onRequestDelete}
+              >
+                <Trash2 aria-hidden="true" /> Eliminar meta
+              </Button>
+            ) : goal.currentBalance === 0 ? (
               <Button
                 type="button"
                 variant="destructive"
@@ -589,6 +600,7 @@ export function PlanningPage({
   const [voidingSavings, setVoidingSavings] = useState(false)
   const [voidSavingsError, setVoidSavingsError] = useState<string | null>(null)
   const [closeTarget, setCloseTarget] = useState<SavingsGoal | null>(null)
+  const [deleteGoalTarget, setDeleteGoalTarget] = useState<SavingsGoal | null>(null)
   const [fixedEditor, setFixedEditor] = useState<FixedExpenseEditor | null>(null)
   const [fixedDetail, setFixedDetail] = useState<FixedExpenseListItem | null>(null)
   const [fixedPaymentTarget, setFixedPaymentTarget] =
@@ -701,6 +713,22 @@ export function PlanningPage({
       setError(message(cause))
     } finally {
       setCloseTarget(null)
+    }
+  }
+
+  async function confirmDeleteGoal() {
+    if (!useCases || !deleteGoalTarget) return
+    try {
+      await useCases.deleteSavingsGoal(
+        deleteGoalTarget.id,
+        deleteGoalTarget.revision,
+      )
+      toast.success("Meta eliminada")
+      saved()
+    } catch (cause) {
+      setError(message(cause))
+    } finally {
+      setDeleteGoalTarget(null)
     }
   }
 
@@ -882,6 +910,7 @@ export function PlanningPage({
             onMoveMoney()
           }}
           onRequestClose={() => setCloseTarget(goalDetail.goal)}
+          onRequestDelete={() => setDeleteGoalTarget(goalDetail.goal)}
           openPeriodId={openPeriodId}
           onEditSavingsMovement={(operation) => {
             setSavingsMovementTarget({
@@ -1017,6 +1046,30 @@ export function PlanningPage({
             <AlertDialogCancel>Cancelar</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={() => void confirmCloseGoal()}>
               Cerrar meta
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={deleteGoalTarget !== null}
+        onOpenChange={(open) => !open && setDeleteGoalTarget(null)}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogMedia><Trash2 aria-hidden="true" /></AlertDialogMedia>
+            <AlertDialogTitle>¿Eliminar meta?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Se eliminará definitivamente porque todavía no tiene actividad financiera.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => void confirmDeleteGoal()}
+            >
+              Eliminar
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

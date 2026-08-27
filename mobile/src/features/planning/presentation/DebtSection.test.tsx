@@ -17,6 +17,9 @@ import type {
   DebtUseCasesPort,
 } from "@/features/planning/application/debt-use-cases"
 import { DebtSection } from "@/features/planning/presentation/DebtSection"
+import { toast } from "sonner"
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn() } }))
 
 beforeAll(() => {
   vi.stubGlobal(
@@ -83,6 +86,7 @@ function detail(current = debt()): DebtDetail {
     payments: [],
     adjustments: [],
     auditEvents: [],
+    canDelete: false,
   }
 }
 
@@ -109,6 +113,7 @@ function service({
     registerPayment: vi.fn(),
     editPayment: vi.fn(),
     voidPayment: vi.fn(),
+    deleteDebt: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   }
 }
@@ -307,6 +312,27 @@ describe("DebtSection C5B", () => {
       screen.getByRole("switch", { name: "Tiene fecha de vencimiento" }),
     ).not.toBeChecked()
     expect(screen.queryByLabelText("Fecha de vencimiento")).toBeNull()
+  })
+
+  it("shows eligible debt deletion, cancels without writing, and confirms once", async () => {
+    const deleteDebt = vi.fn().mockResolvedValue(undefined)
+    const current = debt()
+    await openDebtDetail(service({
+      current,
+      debtDetail: { ...detail(current), canDelete: true },
+      deleteDebt,
+    }))
+
+    fireEvent.click(screen.getByRole("button", { name: "Eliminar deuda" }))
+    expect(screen.getByRole("heading", { name: "¿Eliminar deuda?" })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }))
+    expect(deleteDebt).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole("button", { name: "Eliminar deuda" }))
+    fireEvent.click(screen.getByRole("button", { name: "Eliminar" }))
+    await waitFor(() => expect(deleteDebt).toHaveBeenCalledOnce())
+    expect(deleteDebt).toHaveBeenCalledWith(current.id, current.revision)
+    expect(toast.success).toHaveBeenCalledWith("Deuda eliminada")
   })
 
   it("shows complete scheduled planning data in detail", async () => {

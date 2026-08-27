@@ -85,6 +85,7 @@ export interface DebtDetail extends DebtListItem {
   readonly payments: readonly DebtPaymentItem[]
   readonly adjustments: readonly DebtTotalAdjustmentOperation[]
   readonly auditEvents: readonly AuditEvent[]
+  readonly canDelete: boolean
 }
 
 export interface DebtFormOptions {
@@ -111,6 +112,7 @@ export interface DebtUseCasesPort {
     expectedRevision: Revision,
     reason?: string | null,
   ): Promise<DebtPaymentItem>
+  deleteDebt(debtId: EntityId, expectedRevision: Revision): Promise<void>
 }
 
 export type DebtErrorCode =
@@ -126,6 +128,7 @@ export type DebtErrorCode =
   | "operation_not_found"
   | "revision_conflict"
   | "no_changes"
+  | "cannot_delete"
 
 export class DebtUseCaseError extends Error {
   readonly code: DebtErrorCode
@@ -251,8 +254,9 @@ export class DebtUseCases implements DebtUseCasesPort {
   }
 
   async getDebtDetail(debtId: EntityId) {
-    const [debt, debtMovements, accounts, auditEvents] = await Promise.all([
+    const [debt, period, debtMovements, accounts, auditEvents] = await Promise.all([
       this.requireDebt(debtId),
+      this.requireOpenPeriod(),
       this.repositories.movements.listByTarget("debt", debtId),
       this.repositories.accounts.getAll(),
       this.repositories.auditEvents.listBySubject("debt", debtId),
@@ -280,6 +284,11 @@ export class DebtUseCases implements DebtUseCasesPort {
       (operation): operation is DebtTotalAdjustmentOperation =>
         operation.type === "debt_total_adjustment" && operation.details.debtId === debtId,
     )
+    const { canDelete } =
+      await this.repositories.planning.getDebtDeletionEligibility({
+        period: this.expected(period),
+        entity: this.expected(debt),
+      })
     return {
       debt,
       schedule: deriveDebtSchedule(debt, this.today()),
@@ -291,6 +300,7 @@ export class DebtUseCases implements DebtUseCasesPort {
         b.operationDate.localeCompare(a.operationDate),
       ),
       auditEvents: auditEvents.toSorted((a, b) => b.occurredAt.localeCompare(a.occurredAt)),
+      canDelete,
     }
   }
 
@@ -654,6 +664,25 @@ export class DebtUseCases implements DebtUseCasesPort {
       movements: [movement],
     })
     return nextDebt
+  }
+
+  async deleteDebt(debtId: EntityId, expectedRevision: Revision) {
+    const [period, debt] = await Promise.all([
+      this.requireOpenPeriod(),
+      this.requireDebt(debtId),
+    ])
+    this.assertRevision(debt.revision, expectedRevision)
+    const deletion = {
+      period: this.expected(period),
+      entity: this.expected(debt),
+    }
+    if (!(await this.repositories.planning.getDebtDeletionEligibility(deletion)).canDelete) {
+      throw new DebtUseCaseError(
+        "cannot_delete",
+        "La deuda ya tiene actividad o historial y no puede eliminarse.",
+      )
+    }
+    await this.persist(() => this.repositories.planning.deleteUnusedDebt(deletion))
   }
 
   private paymentOperation(

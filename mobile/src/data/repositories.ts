@@ -128,6 +128,8 @@ export interface AccountRepository extends Repository<Account, EntityId> {
     auditEvent: AuditEvent,
   ): Promise<void>
   putWithAudit(account: Account, auditEvent: AuditEvent): Promise<void>
+  getDeletionEligibility(input: EntityDeletionInput): Promise<EntityDeletionEligibility>
+  deleteUnused(input: EntityDeletionInput): Promise<void>
 }
 
 export interface CategoryRepository extends Repository<Category, EntityId> {
@@ -184,6 +186,33 @@ class IndexedDbAccountRepository
       async ({ store }) => {
         await store(STORE_NAMES.accounts).put(account)
         await store(STORE_NAMES.auditEvents).add(auditEvent)
+      },
+    )
+  }
+
+  getDeletionEligibility(input: EntityDeletionInput) {
+    return this.database.transaction(
+      ENTITY_DELETION_STORE_NAMES,
+      "readonly",
+      async ({ store }) => ({
+        canDelete: await canDeleteAccount(store, input),
+      }),
+    )
+  }
+
+  deleteUnused(input: EntityDeletionInput) {
+    return this.database.transaction(
+      ENTITY_DELETION_STORE_NAMES,
+      "readwrite",
+      async ({ store }) => {
+        if (!(await canDeleteAccount(store, input))) {
+          throw new PersistenceError(
+            "conflict",
+            "Account is no longer eligible for deletion",
+          )
+        }
+        await deleteEntityRecords(store, "account", input.entity.id)
+        await store(STORE_NAMES.accounts).delete(input.entity.id)
       },
     )
   }
@@ -278,7 +307,24 @@ export interface ExpectedRecordState {
   readonly revision: Revision
 }
 
+export interface EntityDeletionInput {
+  readonly period: ExpectedRecordState
+  readonly entity: ExpectedRecordState
+}
+
+export interface EntityDeletionEligibility {
+  readonly canDelete: boolean
+}
+
 export interface PlanningRepository {
+  getSavingsGoalDeletionEligibility(
+    input: EntityDeletionInput,
+  ): Promise<EntityDeletionEligibility>
+  deleteUnusedSavingsGoal(input: EntityDeletionInput): Promise<void>
+  getDebtDeletionEligibility(
+    input: EntityDeletionInput,
+  ): Promise<EntityDeletionEligibility>
+  deleteUnusedDebt(input: EntityDeletionInput): Promise<void>
   createDebt(input: {
     readonly period: ExpectedRecordState
     readonly debt: Debt
@@ -435,6 +481,160 @@ function assertStoredRevision(
   }
 }
 
+const ENTITY_DELETION_STORE_NAMES = [
+  STORE_NAMES.periods,
+  STORE_NAMES.periodOpenings,
+  STORE_NAMES.accounts,
+  STORE_NAMES.savingsGoals,
+  STORE_NAMES.debts,
+  STORE_NAMES.operations,
+  STORE_NAMES.movements,
+  STORE_NAMES.auditEvents,
+  STORE_NAMES.periodSnapshots,
+] as const
+
+type DeletableTargetType = "account" | "savings_goal" | "debt"
+
+async function assertExpectedOpenPeriod(
+  store: TransactionContext["store"],
+  expected: ExpectedRecordState,
+) {
+  const openPeriods = (await store(STORE_NAMES.periods).getAll()).filter(
+    ({ status }) => status === "open",
+  )
+  if (openPeriods.length !== 1) {
+    throw new PersistenceError("conflict", "The expected open Period changed")
+  }
+  assertStoredRevision(openPeriods[0], expected, "Period")
+}
+
+function snapshotReferencesTarget(
+  snapshot: PeriodSnapshot,
+  targetType: DeletableTargetType,
+  targetId: EntityId,
+) {
+  const entities =
+    targetType === "account"
+      ? snapshot.data.entitySnapshots.accounts
+      : targetType === "savings_goal"
+        ? snapshot.data.entitySnapshots.savingsGoals
+        : snapshot.data.entitySnapshots.debts
+  const balanceKey = `${targetType}:${targetId}`
+  return (
+    entities.some(({ id }) => id === targetId) ||
+    snapshot.data.periodOpenings.some(
+      (opening) =>
+        opening.targetType === targetType && opening.targetId === targetId,
+    ) ||
+    balanceKey in snapshot.data.openingBalances ||
+    balanceKey in snapshot.data.closingBalances
+  )
+}
+
+async function hasDeletionHistory(
+  store: TransactionContext["store"],
+  targetType: DeletableTargetType,
+  targetId: EntityId,
+  openPeriodId: EntityId,
+) {
+  const [openings, movements, snapshots] = await Promise.all([
+    store(STORE_NAMES.periodOpenings).getAll(),
+    store(STORE_NAMES.movements).getAllFromIndex(
+      INDEX_NAMES.byTarget,
+      [targetType, targetId],
+    ),
+    store(STORE_NAMES.periodSnapshots).getAll(),
+  ])
+  return (
+    movements.length > 0 ||
+    openings.some(
+      (opening) =>
+        opening.targetType === targetType &&
+        opening.targetId === targetId &&
+        opening.periodId !== openPeriodId,
+    ) ||
+    snapshots.some((snapshot) =>
+      snapshotReferencesTarget(snapshot, targetType, targetId),
+    )
+  )
+}
+
+async function canDeleteAccount(
+  store: TransactionContext["store"],
+  input: EntityDeletionInput,
+) {
+  await assertExpectedOpenPeriod(store, input.period)
+  const account = await store(STORE_NAMES.accounts).get(input.entity.id)
+  assertStoredRevision(account, input.entity, "Account")
+  return Boolean(
+    account &&
+      account.currentBalance === 0 &&
+      (await store(STORE_NAMES.accounts).count()) > 1 &&
+      !(await hasDeletionHistory(store, "account", account.id, input.period.id)),
+  )
+}
+
+async function canDeleteSavingsGoal(
+  store: TransactionContext["store"],
+  input: EntityDeletionInput,
+) {
+  await assertExpectedOpenPeriod(store, input.period)
+  const goal = await store(STORE_NAMES.savingsGoals).get(input.entity.id)
+  assertStoredRevision(goal, input.entity, "SavingsGoal")
+  return Boolean(
+    goal &&
+      goal.currentBalance === 0 &&
+      !(await hasDeletionHistory(
+        store,
+        "savings_goal",
+        goal.id,
+        input.period.id,
+      )),
+  )
+}
+
+async function canDeleteDebt(
+  store: TransactionContext["store"],
+  input: EntityDeletionInput,
+) {
+  await assertExpectedOpenPeriod(store, input.period)
+  const debt = await store(STORE_NAMES.debts).get(input.entity.id)
+  assertStoredRevision(debt, input.entity, "Debt")
+  const hasDebtOperation = (await store(STORE_NAMES.operations).getAll()).some(
+    (operation) =>
+      (operation.type === "debt_payment" ||
+        operation.type === "debt_total_adjustment") &&
+      operation.details.debtId === input.entity.id,
+  )
+  return Boolean(
+    debt &&
+      !hasDebtOperation &&
+      !(await hasDeletionHistory(store, "debt", debt.id, input.period.id)),
+  )
+}
+
+async function deleteEntityRecords(
+  store: TransactionContext["store"],
+  targetType: DeletableTargetType,
+  targetId: EntityId,
+) {
+  const [openings, auditEvents] = await Promise.all([
+    store(STORE_NAMES.periodOpenings).getAll(),
+    store(STORE_NAMES.auditEvents).getAllFromIndex(
+      INDEX_NAMES.bySubject,
+      [targetType, targetId],
+    ),
+  ])
+  for (const opening of openings) {
+    if (opening.targetType === targetType && opening.targetId === targetId) {
+      await store(STORE_NAMES.periodOpenings).delete(opening.id)
+    }
+  }
+  for (const auditEvent of auditEvents) {
+    await store(STORE_NAMES.auditEvents).delete(auditEvent.id)
+  }
+}
+
 class IndexedDbPlanningRepository implements PlanningRepository {
   private readonly database: PeritaDatabase
 
@@ -451,6 +651,60 @@ class IndexedDbPlanningRepository implements PlanningRepository {
     if (period?.status !== "open") {
       throw new PersistenceError("conflict", "The active Period is closed")
     }
+  }
+
+  getSavingsGoalDeletionEligibility(input: EntityDeletionInput) {
+    return this.database.transaction(
+      ENTITY_DELETION_STORE_NAMES,
+      "readonly",
+      async ({ store }) => ({
+        canDelete: await canDeleteSavingsGoal(store, input),
+      }),
+    )
+  }
+
+  deleteUnusedSavingsGoal(input: EntityDeletionInput) {
+    return this.database.transaction(
+      ENTITY_DELETION_STORE_NAMES,
+      "readwrite",
+      async ({ store }) => {
+        if (!(await canDeleteSavingsGoal(store, input))) {
+          throw new PersistenceError(
+            "conflict",
+            "SavingsGoal is no longer eligible for deletion",
+          )
+        }
+        await deleteEntityRecords(store, "savings_goal", input.entity.id)
+        await store(STORE_NAMES.savingsGoals).delete(input.entity.id)
+      },
+    )
+  }
+
+  getDebtDeletionEligibility(input: EntityDeletionInput) {
+    return this.database.transaction(
+      ENTITY_DELETION_STORE_NAMES,
+      "readonly",
+      async ({ store }) => ({
+        canDelete: await canDeleteDebt(store, input),
+      }),
+    )
+  }
+
+  deleteUnusedDebt(input: EntityDeletionInput) {
+    return this.database.transaction(
+      ENTITY_DELETION_STORE_NAMES,
+      "readwrite",
+      async ({ store }) => {
+        if (!(await canDeleteDebt(store, input))) {
+          throw new PersistenceError(
+            "conflict",
+            "Debt is no longer eligible for deletion",
+          )
+        }
+        await deleteEntityRecords(store, "debt", input.entity.id)
+        await store(STORE_NAMES.debts).delete(input.entity.id)
+      },
+    )
   }
 
   createDebt(input: Parameters<PlanningRepository["createDebt"]>[0]) {
