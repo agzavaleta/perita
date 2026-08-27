@@ -130,8 +130,12 @@ describe("HomePage", () => {
     expect(screen.getByText("Agosto de 2026")).toBeInTheDocument()
     expect(screen.getByText("Tu panorama financiero de un vistazo.")).toHaveClass("whitespace-nowrap")
 
-    const moneyCard = screen.getByText("Tu dinero").closest('[data-slot="card"]')
-    const availableCard = screen.getByText("Saldo disponible").closest('[data-slot="card"]')
+    const moneyCard = screen
+      .getByText("Tu dinero")
+      .closest<HTMLElement>('[data-slot="card"]')
+    const availableCard = screen
+      .getByText("Saldo disponible")
+      .closest<HTMLElement>('[data-slot="card"]')
     if (!moneyCard || !availableCard) throw new Error("Missing financial cards")
     expect(within(moneyCard).queryByText("Ingresos del período")).toBeNull()
     expect(within(moneyCard).queryByText("Gastos del período")).toBeNull()
