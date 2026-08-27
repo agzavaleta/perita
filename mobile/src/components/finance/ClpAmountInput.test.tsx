@@ -44,6 +44,7 @@ describe("ClpAmountInput", () => {
     expect(screen.getByText("$")).toHaveAttribute("aria-hidden", "true")
     expect(input).toHaveValue("1.500.000")
     expect(input).not.toHaveValue("$ 1.500.000")
+    expect(input).toHaveClass("!pl-9")
     expect(input).toHaveAttribute("inputmode", "numeric")
     expect(input).toBeDisabled()
     expect(input).toHaveAttribute("aria-invalid", "true")

@@ -75,7 +75,7 @@ export function ClpAmountInput({
       <Input
         {...props}
         ref={setInputRef}
-        className={`pl-7${className ? ` ${className}` : ""}`}
+        className={`!pl-9${className ? ` ${className}` : ""}`}
         type="text"
         inputMode={allowNegative ? "decimal" : "numeric"}
         pattern={allowNegative ? "-?[0-9.]*" : "[0-9.]*"}
