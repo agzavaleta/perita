@@ -38,4 +38,12 @@ describe("PwaStatus", () => {
     act(() => vi.advanceTimersByTime(4_000))
     expect(screen.queryByText(message)).toBeNull()
   })
+
+  it("does not render an offline-readiness banner", () => {
+    render(<PwaStatus />)
+
+    expect(
+      screen.queryByText("Perita está lista para usarse offline."),
+    ).toBeNull()
+  })
 })

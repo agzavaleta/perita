@@ -68,6 +68,17 @@ function account(): Account {
 }
 
 describe("PWA update controller", () => {
+  it("does not publish banner state when serviceWorker.ready resolves", async () => {
+    const f = setupController()
+    f.registration.waiting = null
+
+    await f.controller.start()
+    await f.serviceWorker.ready
+
+    expect(f.states.every((state) => !("offlineReady" in state))).toBe(true)
+    f.controller.dispose()
+  })
+
   it("registers without HTTP cache and activates a waiting worker only after consent", async () => {
     const f = setupController()
     await f.controller.start()

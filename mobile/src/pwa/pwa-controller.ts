@@ -7,13 +7,11 @@ export interface PwaState {
   readonly canInstall: boolean
   readonly iosInstallHint: boolean
   readonly offline: boolean
-  readonly offlineReady: boolean
   readonly updateAvailable: boolean
 }
 
 interface ServiceWorkerContainerPort extends EventTarget {
   readonly controller: ServiceWorker | null
-  readonly ready: Promise<ServiceWorkerRegistration>
   register(
     scriptURL: string | URL,
     options?: RegistrationOptions,
@@ -34,7 +32,6 @@ const INITIAL_STATE: PwaState = {
   canInstall: false,
   iosInstallHint: false,
   offline: false,
-  offlineReady: false,
   updateAvailable: false,
 }
 
@@ -100,7 +97,6 @@ export class PwaController {
     if (!this.started || generation !== this.generation) return
     this.watchRegistration(this.registration)
     if (this.registration.waiting) this.setState({ updateAvailable: true })
-    void this.serviceWorker.ready.then(() => this.setState({ offlineReady: true }))
     this.interval = setInterval(() => void this.checkForUpdate(), this.updateIntervalMs)
   }
 
@@ -120,10 +116,6 @@ export class PwaController {
 
   dismissUpdate() {
     this.setState({ updateAvailable: false })
-  }
-
-  dismissOfflineReady() {
-    this.setState({ offlineReady: false })
   }
 
   dismissInstall() {
