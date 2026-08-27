@@ -913,26 +913,33 @@ export function PlanningPage({
   }
 
   return (
-    <section className="space-y-section py-section">
-      {error ? (
-        <ErrorMessage title="No se pudo completar la acción" description={error} />
-      ) : null}
+    <section className="pt-0 pb-section">
+      <Tabs defaultValue="goals" className="gap-0">
+        <div
+          data-testid="planning-tabs-sticky"
+          className="sticky top-0 z-20 -mx-4 bg-background px-4 pt-2 pb-4"
+        >
+          <TabsList className="grid w-full grid-cols-4">
+            <TabsTrigger value="goals">
+              <PiggyBank aria-hidden="true" /> Metas
+            </TabsTrigger>
+            <TabsTrigger value="fixed">
+              <CalendarClock aria-hidden="true" /> Fijos
+            </TabsTrigger>
+            <TabsTrigger value="debts">
+              <ReceiptText aria-hidden="true" /> Deudas
+            </TabsTrigger>
+            <TabsTrigger value="close">
+              <CalendarCheck aria-hidden="true" /> Cierre
+            </TabsTrigger>
+          </TabsList>
+        </div>
 
-      <Tabs defaultValue="goals">
-        <TabsList className="grid w-full grid-cols-4">
-          <TabsTrigger value="goals">
-            <PiggyBank aria-hidden="true" /> Metas
-          </TabsTrigger>
-          <TabsTrigger value="fixed">
-            <CalendarClock aria-hidden="true" /> Fijos
-          </TabsTrigger>
-          <TabsTrigger value="debts">
-            <ReceiptText aria-hidden="true" /> Deudas
-          </TabsTrigger>
-          <TabsTrigger value="close">
-            <CalendarCheck aria-hidden="true" /> Cierre
-          </TabsTrigger>
-        </TabsList>
+        {error ? (
+          <div className="mb-4">
+            <ErrorMessage title="No se pudo completar la acción" description={error} />
+          </div>
+        ) : null}
 
         <TabsContent value="goals" className="space-y-4">
           <div className="flex items-center justify-between gap-3">

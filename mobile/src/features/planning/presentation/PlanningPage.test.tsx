@@ -366,6 +366,35 @@ describe("buildFixedExpenseDistribution", () => {
 })
 
 describe("PlanningPage", () => {
+  it("keeps all planning tabs sticky without adding a nested vertical scroller", async () => {
+    render(<PlanningPage useCases={service()} />)
+
+    const tabs = ["Metas", "Fijos", "Deudas", "Cierre"].map((name) =>
+      screen.getByRole("tab", { name }),
+    )
+    const sticky = screen.getByTestId("planning-tabs-sticky")
+    const page = sticky.closest("section")
+    expect(sticky).toHaveClass(
+      "sticky",
+      "top-0",
+      "z-20",
+      "bg-background",
+      "pb-4",
+      "-mx-4",
+      "px-4",
+    )
+    expect(page).toHaveClass("pt-0", "pb-section")
+    expect(page).not.toHaveClass("overflow-y-auto", "overflow-y-scroll")
+    expect(page?.querySelector(".overflow-y-auto, .overflow-y-scroll")).toBeNull()
+    expect(tabs[0]).toHaveAttribute("aria-selected", "true")
+    expect(await screen.findByText("Viaje")).toBeInTheDocument()
+
+    for (const tab of tabs.slice(1)) {
+      fireEvent.mouseDown(tab, { button: 0, ctrlKey: false })
+      expect(tab).toHaveAttribute("aria-selected", "true")
+    }
+  })
+
   it("shows goal progress and preserves the Mover dinero action", async () => {
     const onMoveMoney = vi.fn()
     render(
