@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { PwaStatus } from "@/pwa/PwaStatus"
@@ -45,5 +45,35 @@ describe("PwaStatus", () => {
     expect(
       screen.queryByText("Perita está lista para usarse offline."),
     ).toBeNull()
+  })
+
+  it("shows the deferred update action as an outlined button", async () => {
+    const registration = {
+      waiting: { postMessage: vi.fn() },
+      installing: null,
+      addEventListener: vi.fn(),
+      update: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ServiceWorkerRegistration
+    const serviceWorker = Object.assign(new EventTarget(), {
+      controller: {} as ServiceWorker,
+      register: vi.fn().mockResolvedValue(registration),
+    })
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: serviceWorker,
+    })
+
+    render(<PwaStatus />)
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const later = screen.getByRole("button", { name: "Después" })
+    expect(later).toHaveAttribute("data-variant", "outline")
+    expect(screen.getByRole("button", { name: "Actualizar ahora" }))
+      .toHaveAttribute("data-variant", "default")
+    fireEvent.click(later)
+    expect(screen.queryByText("Hay una nueva versión de Perita.")).toBeNull()
   })
 })

@@ -44,7 +44,7 @@ export function PwaStatus() {
         <RefreshCw className="size-4 shrink-0 text-brand" aria-hidden="true" />
         <p className="min-w-0 flex-1">Hay una nueva versión de Perita.</p>
         <div className="grid w-full grid-cols-2 gap-2 min-[400px]:flex min-[400px]:w-auto">
-          <Button size="sm" variant="ghost" onClick={() => controller.dismissUpdate()}>Después</Button>
+          <Button size="sm" variant="outline" onClick={() => controller.dismissUpdate()}>Después</Button>
           <Button size="sm" onClick={() => void controller.acceptUpdate()}>Actualizar ahora</Button>
         </div>
       </aside>
