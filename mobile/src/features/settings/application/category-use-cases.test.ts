@@ -28,10 +28,11 @@ function idSequence() {
 function existingCategory(
   id: EntityId,
   status: Category["status"] = "active",
+  name = "Personalizada",
 ): Category {
   return {
     id,
-    name: "Personalizada",
+    name,
     status,
     revision: asRevision(1),
     createdAt: NOW,
@@ -73,6 +74,45 @@ describe("CategoryUseCases", () => {
 
     expect(await repositories.categories.count()).toBe(6)
     expect(await repositories.auditEvents.count()).toBe(6)
+  })
+
+  it("groups categories by status while preserving canonical and alphabetical order", async () => {
+    const names = [
+      ["Hogar", "active"],
+      ["Zebra", "active"],
+      ["Alimentación", "active"],
+      ["Abeja", "active"],
+      ["Transporte", "inactive"],
+      ["Yoga", "inactive"],
+      ["Salud", "inactive"],
+      ["Bosque", "inactive"],
+    ] as const
+    let id = 200
+    for (const [name, status] of names) {
+      await repositories.categories.add(existingCategory(
+        asEntityId(`c4000000-0000-4000-8000-${String(id++).padStart(12, "0")}`),
+        status,
+        name,
+      ))
+    }
+
+    const categories = await useCases.listCategories()
+    expect(categories.map(({ name, status }) => `${status}:${name}`)).toEqual([
+      "active:Alimentación",
+      "active:Hogar",
+      "active:Abeja",
+      "active:Zebra",
+      "inactive:Transporte",
+      "inactive:Salud",
+      "inactive:Bosque",
+      "inactive:Yoga",
+    ])
+    expect((await useCases.listActiveCategories()).map(({ name }) => name)).toEqual([
+      "Alimentación",
+      "Hogar",
+      "Abeja",
+      "Zebra",
+    ])
   })
 
   it.each(["active", "inactive"] as const)(

@@ -246,9 +246,11 @@ export class DebtUseCases implements DebtUseCasesPort {
         ...deriveDebtProgress(debt),
       }))
       .toSorted((left, right) => {
-        if (left.debt.paymentStatus !== right.debt.paymentStatus) {
-          return left.debt.paymentStatus === "paid" ? 1 : -1
-        }
+        const leftIsCurrent =
+          left.debt.lifecycleStatus === "active" && left.debt.paymentStatus !== "paid"
+        const rightIsCurrent =
+          right.debt.lifecycleStatus === "active" && right.debt.paymentStatus !== "paid"
+        if (leftIsCurrent !== rightIsCurrent) return leftIsCurrent ? -1 : 1
         return left.debt.name.localeCompare(right.debt.name, "es")
       })
   }

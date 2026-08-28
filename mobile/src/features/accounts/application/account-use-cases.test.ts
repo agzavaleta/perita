@@ -223,6 +223,27 @@ describe("AccountUseCases", () => {
     ).toEqual(["created", "deactivated"])
   })
 
+  it("keeps active accounts before inactive accounts and excludes deleted accounts", async () => {
+    const inactive = await useCases.createAccount({ name: "Abeja inactiva", bank: null })
+    await useCases.createAccount({ name: "Zeta activa", bank: null })
+    await useCases.createAccount({ name: "Alfa activa", bank: null })
+    const deleted = await useCases.createAccount({ name: "Aardvark eliminada", bank: null })
+    await useCases.deactivateAccount({
+      accountId: inactive.id,
+      expectedRevision: inactive.revision,
+    })
+    await useCases.deleteAccount({
+      accountId: deleted.id,
+      expectedRevision: deleted.revision,
+    })
+
+    expect((await useCases.listAccounts()).map(({ name }) => name)).toEqual([
+      "Alfa activa",
+      "Zeta activa",
+      "Abeja inactiva",
+    ])
+  })
+
   it("logically deletes an account with positive balance and history", async () => {
     const created = await useCases.createAccount({ name: "Usada", bank: "Banco" })
     let id = 900

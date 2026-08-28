@@ -376,6 +376,44 @@ describe("PlanningUseCases", () => {
     ).rejects.toMatchObject({ code: "nonzero_balance" })
   })
 
+  it("keeps active goals and fixed expenses before their closed or inactive peers", async () => {
+    const closedGoal = await planning.createSavingsGoal({
+      name: "Abeja cerrada",
+      targetAmount: 10_000,
+      plannedMonthlyAmount: 0,
+    })
+    await planning.createSavingsGoal({
+      name: "Zeta vigente",
+      targetAmount: 10_000,
+      plannedMonthlyAmount: 0,
+    })
+    await planning.createSavingsGoal({
+      name: "Alfa vigente",
+      targetAmount: 10_000,
+      plannedMonthlyAmount: 0,
+    })
+    await planning.closeSavingsGoal(closedGoal.id, closedGoal.revision)
+
+    const inactiveFixed = await planning.createFixedExpense({
+      name: "Abeja inactiva",
+      referenceAmount: 1_000,
+    })
+    await planning.createFixedExpense({ name: "Zeta vigente", referenceAmount: 1_000 })
+    await planning.createFixedExpense({ name: "Alfa vigente", referenceAmount: 1_000 })
+    await planning.deactivateFixedExpense(
+      inactiveFixed.template.id,
+      inactiveFixed.template.revision,
+    )
+
+    expect((await planning.listSavingsGoals()).map(({ name }) => name)).toEqual([
+      "Alfa vigente",
+      "Zeta vigente",
+      "Abeja cerrada",
+    ])
+    expect((await planning.listFixedExpenses()).map(({ template }) => template.name))
+      .toEqual(["Alfa vigente", "Zeta vigente", "Abeja inactiva"])
+  })
+
   it("deletes a never-used zero-balance goal with its current opening and audits", async () => {
     const goal = await planning.createSavingsGoal({
       name: "Temporal",

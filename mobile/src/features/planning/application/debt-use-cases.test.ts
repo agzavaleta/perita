@@ -157,6 +157,46 @@ describe("DebtUseCases", () => {
     })
   })
 
+  it("lists current debts before inactive or paid debts and sorts each group by name", async () => {
+    async function createNamedDebt(name: string) {
+      return debts.createDebt({
+        name,
+        totalAmount: 10_000,
+        monthlyPaymentAmount: 1_000,
+      })
+    }
+
+    const paid = await createNamedDebt("Abeja pagada")
+    const inactive = await createNamedDebt("Beta inactiva")
+    await createNamedDebt("Zeta vigente")
+    await createNamedDebt("Alfa vigente")
+    const otherPaid = await createNamedDebt("Zeta pagada")
+    await repositories.debts.put({
+      ...paid,
+      outstandingAmount: asClpAmount(0),
+      paymentStatus: "paid",
+    })
+    await repositories.debts.put({
+      ...inactive,
+      outstandingAmount: asClpAmount(0),
+      lifecycleStatus: "inactive",
+      paymentStatus: "paid",
+    })
+    await repositories.debts.put({
+      ...otherPaid,
+      outstandingAmount: asClpAmount(0),
+      paymentStatus: "paid",
+    })
+
+    expect((await debts.listDebts()).map(({ debt }) => debt.name)).toEqual([
+      "Alfa vigente",
+      "Zeta vigente",
+      "Abeja pagada",
+      "Beta inactiva",
+      "Zeta pagada",
+    ])
+  })
+
   it("deletes a new debt with initial outstanding balance, opening and audits", async () => {
     const debt = await createDebt()
 

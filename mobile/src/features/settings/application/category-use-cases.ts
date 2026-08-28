@@ -89,6 +89,7 @@ const defaultOrder = new Map(
 
 function sortCategories(categories: readonly Category[]) {
   return categories.toSorted((left, right) => {
+    if (left.status !== right.status) return left.status === "active" ? -1 : 1
     const leftOrder = defaultOrder.get(comparableName(left.name))
     const rightOrder = defaultOrder.get(comparableName(right.name))
     if (leftOrder !== undefined || rightOrder !== undefined) {
