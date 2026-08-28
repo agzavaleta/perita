@@ -163,7 +163,7 @@ function MovementCard({
         : ArrowUpRight
   return (
     <Card
-      className={cn(item.operation.status === "voided" && "opacity-60")}
+      className={cn("gap-3", item.operation.status === "voided" && "opacity-60")}
     >
       <CardHeader>
         <div className="flex min-w-0 items-center gap-3">
@@ -184,9 +184,6 @@ function MovementCard({
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-2">
-        {item.description ? (
-          <p className="text-sm text-muted-foreground">{item.description}</p>
-        ) : null}
         <div className="flex items-center justify-between gap-3">
           <p
             className={cn(

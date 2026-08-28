@@ -313,14 +313,36 @@ describe("MovementsPage", () => {
 
   it("shows balance adjustments and exposes their explicit filter", async () => {
     const listMovements = vi.fn().mockResolvedValue([adjustmentItem])
-    render(<MovementsHeaderHarness useCases={service({ listMovements })} />)
+    const adjustmentDetail: MovementDetail = { ...adjustmentItem, revisions: [] }
+    render(<MovementsHeaderHarness useCases={service({
+      listMovements,
+      getMovementDetail: vi.fn().mockResolvedValue(adjustmentDetail),
+    })} />)
 
-    expect(await screen.findByText("Ajuste de saldo")).toBeInTheDocument()
-    expect(screen.getByText("Conciliación bancaria")).toBeInTheDocument()
-    expect(screen.getByText(/-.*12\.000/)).toBeInTheDocument()
+    const title = await screen.findByText("Ajuste de saldo")
+    const movementCard = title.closest<HTMLElement>('[data-slot="card"]')
+    if (!movementCard) throw new Error("Missing movement card")
+    expect(movementCard).toHaveClass("gap-3")
+    expect(movementCard).toHaveAttribute("data-size", "default")
+    expect(within(movementCard).queryByText("Conciliación bancaria")).toBeNull()
+    expect(within(movementCard).getByText("Cuenta principal · 20-08-2026"))
+      .toBeInTheDocument()
+    expect(within(movementCard).getByText(/-.*12\.000/)).toBeInTheDocument()
+    const detailButton = within(movementCard).getByRole("button", {
+      name: "Ver detalle de Ajuste de saldo",
+    })
+    expect(detailButton).toBeInTheDocument()
     expect(
       screen.queryByText("Aún no has registrado movimientos"),
     ).not.toBeInTheDocument()
+
+    fireEvent.click(detailButton)
+    const detailDialog = await screen.findByRole("dialog")
+    expect(within(detailDialog).getByText("Conciliación bancaria")).toBeInTheDocument()
+    const detailCard = within(detailDialog).getByText("Impacto")
+      .closest<HTMLElement>('[data-slot="card"]')
+    expect(detailCard).not.toHaveClass("gap-3")
+    fireEvent.click(within(detailDialog).getByRole("button", { name: "Cerrar" }))
 
     fireEvent.click(screen.getByRole("button", { name: "Filtros" }))
     const filters = await screen.findByRole("dialog", { name: "Filtros" })
@@ -344,6 +366,28 @@ describe("MovementsPage", () => {
         }),
       ),
     )
+  })
+
+  it("keeps the voided status badge on compact movement cards", async () => {
+    const voidedItem: MovementListItem = {
+      ...adjustmentItem,
+      operation: {
+        ...adjustmentItem.operation,
+        status: "voided",
+        voidedAt: NOW,
+        voidReason: "Duplicado",
+      },
+    }
+    render(<MovementsPage useCases={service({
+      listMovements: vi.fn().mockResolvedValue([voidedItem]),
+    })} />)
+
+    const title = await screen.findByText("Ajuste de saldo")
+    const movementCard = title.closest<HTMLElement>('[data-slot="card"]')
+    if (!movementCard) throw new Error("Missing voided movement card")
+    expect(within(movementCard).getByText("Anulado")).toBeInTheDocument()
+    expect(movementCard).toHaveClass("gap-3", "opacity-60")
+    expect(within(movementCard).getByText(/-.*12\.000/)).toHaveClass("line-through")
   })
 
   it("labels a savings-goal adjustment as Meta and keeps it read-only", async () => {
@@ -421,7 +465,7 @@ describe("MovementsPage", () => {
 
     expect(await screen.findByText("Depósito")).toBeInTheDocument()
     expect(screen.getByText("Viaje · 19-08-2026")).toBeInTheDocument()
-    expect(screen.getByText("Ahorro extra · Desde efectivo")).toBeInTheDocument()
+    expect(screen.queryByText("Ahorro extra · Desde efectivo")).toBeNull()
     fireEvent.click(screen.getByRole("button", { name: "Filtros" }))
     const filters = await screen.findByRole("dialog", { name: "Filtros" })
     fireEvent.click(within(filters).getByRole("combobox", { name: "Tipo de movimiento" }))
@@ -437,6 +481,8 @@ describe("MovementsPage", () => {
     const detailDialog = await screen.findByRole("dialog")
     expect(within(detailDialog).getByText(/Ahorro · Viaje/)).toBeInTheDocument()
     expect(within(detailDialog).getByText("Meta")).toBeInTheDocument()
+    expect(within(detailDialog).getByText("Ahorro extra · Desde efectivo"))
+      .toBeInTheDocument()
     fireEvent.click(within(detailDialog).getByRole("button", { name: "Editar" }))
     expect(
       await screen.findByRole("heading", { name: "Editar depósito" }),
