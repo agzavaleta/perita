@@ -143,6 +143,13 @@ function previousPeriodKey(current: PeriodKey) {
   return asPeriodKey(`${previousYear}-${String(previousMonth).padStart(2, "0")}`)
 }
 
+function nextPeriodKey(current: PeriodKey) {
+  const [year, month] = current.split("-").map(Number)
+  const nextMonth = month === 12 ? 1 : month + 1
+  const nextYear = month === 12 ? year + 1 : year
+  return asPeriodKey(`${nextYear}-${String(nextMonth).padStart(2, "0")}`)
+}
+
 function nonnegativeAmount(value: number, label: string) {
   try {
     return asClpAmount(value)
@@ -351,9 +358,9 @@ export class SetupUseCases implements SetupUseCasesPort {
     return { financialSettings, period, accounts, periodOpenings, warnings }
   }
 
-  private suggestedPeriodKeys(): readonly [PeriodKey, PeriodKey] {
+  private suggestedPeriodKeys(): readonly [PeriodKey, PeriodKey, PeriodKey] {
     const current = asPeriodKey(this.today().slice(0, 7))
-    return [current, previousPeriodKey(current)]
+    return [nextPeriodKey(current), current, previousPeriodKey(current)]
   }
 
   private setupDraftAccount(account: SaveSetupDraftInput["account"]): SetupDraftAccount {
@@ -391,10 +398,10 @@ export class SetupUseCases implements SetupUseCasesPort {
       throw new SetupUseCaseError("invalid_period", "El período inicial no es válido.")
     }
     const currentPeriodKey = asPeriodKey(this.today().slice(0, 7))
-    if (periodKey > currentPeriodKey) {
+    if (periodKey > nextPeriodKey(currentPeriodKey)) {
       throw new SetupUseCaseError(
         "invalid_period",
-        "El período inicial no puede estar en el futuro.",
+        "El período inicial no puede ser posterior al mes siguiente.",
       )
     }
     return periodKey

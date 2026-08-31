@@ -25,7 +25,6 @@ import type {
 } from "@/domain/operations"
 import type { Period, PeriodOpening } from "@/domain/periods"
 import {
-  daysInMonth,
   asCivilDate,
   asClpAmount,
   asEntityId,
@@ -35,7 +34,6 @@ import {
   asUtcTimestamp,
   type CivilDate,
   type EntityId,
-  type PeriodKey,
   type Revision,
   type UtcTimestamp,
 } from "@/domain/primitives"
@@ -159,14 +157,6 @@ function defaultToday() {
       .map(({ type, value }) => [type, value]),
   )
   return asCivilDate(`${values.year}-${values.month}-${values.day}`)
-}
-
-function operationDateForPeriod(periodKey: PeriodKey, today: CivilDate) {
-  if (today.startsWith(`${periodKey}-`)) return today
-  const [year, month] = periodKey.split("-").map(Number)
-  return asCivilDate(
-    `${periodKey}-${String(daysInMonth(year, month)).padStart(2, "0")}`,
-  )
 }
 
 function requiredName(value: string) {
@@ -835,7 +825,7 @@ export class PlanningUseCases implements PlanningUseCasesPort {
       id: this.createId(),
       periodId: period.id,
       type: "balance_adjustment",
-      operationDate: operationDateForPeriod(period.periodKey, today),
+      operationDate: today,
       amount: asPositiveClpAmount(Math.abs(movementDelta)),
       details: { goalId, reason },
       status: "posted",

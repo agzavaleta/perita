@@ -1,4 +1,5 @@
 import type { Account, SavingsGoal } from "@/domain/entities"
+import { CHILE_TIME_ZONE } from "@/domain/constants"
 import {
   assertAccountInvariant,
   assertSavingsGoalInvariant,
@@ -16,6 +17,20 @@ import {
   type UtcTimestamp,
 } from "@/domain/primitives"
 
+function chileCivilDate(timestamp: UtcTimestamp) {
+  const values = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: CHILE_TIME_ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .formatToParts(new Date(timestamp))
+      .map(({ type, value }) => [type, value]),
+  )
+  return asCivilDate(`${values.year}-${values.month}-${values.day}`)
+}
+
 export function assertOperationDateContext(
   operation: Operation,
   period: Period,
@@ -28,9 +43,9 @@ export function assertOperationDateContext(
       "Operation must belong to the active open Period",
     )
   }
-  if (!operation.operationDate.startsWith(`${period.periodKey}-`)) {
+  if (operation.operationDate < chileCivilDate(period.openedAt)) {
     throw new DomainContractError(
-      "Operation date must belong to the active Period",
+      "Operation date cannot be before the Period opening date",
     )
   }
   if (operation.operationDate > currentCivilDate) {

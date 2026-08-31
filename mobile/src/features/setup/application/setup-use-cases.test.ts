@@ -15,8 +15,8 @@ import {
   type SetupDraftStore,
 } from "@/features/setup/data/setup-draft-store"
 
-const NOW = asUtcTimestamp("2026-08-21T12:00:00.000Z")
-const TODAY = asCivilDate("2026-08-21")
+const NOW = asUtcTimestamp("2026-08-31T12:00:00.000Z")
+const TODAY = asCivilDate("2026-08-31")
 
 function idSequence(prefix = "51000000") {
   let value = 1
@@ -57,7 +57,7 @@ describe("SetupUseCases", () => {
   it("creates settings, one account and its opening atomically", async () => {
     expect(await setup.getState()).toMatchObject({
       status: "not_started",
-      allowedPeriodKeys: ["2026-08", "2026-07"],
+      allowedPeriodKeys: ["2026-09", "2026-08", "2026-07"],
       draft: null,
     })
 
@@ -180,9 +180,9 @@ describe("SetupUseCases", () => {
     })
   })
 
-  it("rejects a future period without writes", async () => {
+  it("accepts only the next anticipated month and rejects later future periods", async () => {
     await expect(setup.completeSetup({
-      periodKey: "2026-09",
+      periodKey: "2026-10",
       salaryReferenceAmount: 0,
       account: { name: "Principal", openingBalance: 0 },
     })).rejects.toMatchObject({ code: "invalid_period" })
@@ -192,6 +192,13 @@ describe("SetupUseCases", () => {
       accounts: [],
       periodOpenings: [],
     })
+
+    const result = await setup.completeSetup({
+      periodKey: "2026-09",
+      salaryReferenceAmount: 0,
+      account: { name: "Principal", openingBalance: 0 },
+    })
+    expect(result.period.periodKey).toBe("2026-09")
   })
 
   it("rolls back the single-account setup when an atomic write fails", async () => {

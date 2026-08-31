@@ -199,6 +199,36 @@ describe("PlanningUseCases", () => {
     expect(await repositories.accounts.get(ACCOUNT_ID)).toEqual(accountBefore)
   })
 
+  it("dates goal balance adjustments today when the period is open in advance", async () => {
+    const anticipatedNow = asUtcTimestamp("2026-09-01T02:30:00.000Z")
+    const anticipatedToday = asCivilDate("2026-08-31")
+    await repositories.periods.put({
+      ...period(),
+      periodKey: asPeriodKey("2026-09"),
+      openedAt: anticipatedNow,
+    })
+    const anticipatedPlanning = new PlanningUseCases(repositories, {
+      now: () => anticipatedNow,
+      today: () => anticipatedToday,
+      createId: idSequence(),
+    })
+
+    await anticipatedPlanning.createSavingsGoal({
+      name: "Meta anticipada",
+      targetAmount: 100_000,
+      currentBalance: 25_000,
+      plannedMonthlyAmount: 10_000,
+    })
+
+    expect(await repositories.operations.getAll()).toEqual([
+      expect.objectContaining({
+        periodId: PERIOD_ID,
+        type: "balance_adjustment",
+        operationDate: "2026-08-31",
+      }),
+    ])
+  })
+
   it("marks a newly informed balance above its target as completed", async () => {
     const goal = await planning.createSavingsGoal({
       name: "Notebook",

@@ -29,6 +29,7 @@ import { BalanceAdjustmentUseCases } from "@/features/accounts/application/balan
 import { MovementUseCases } from "@/features/movements/application/movement-use-cases"
 
 const NOW = asUtcTimestamp("2026-08-21T12:00:00.000Z")
+const PERIOD_OPENED_AT = asUtcTimestamp("2026-08-01T12:00:00.000Z")
 const TODAY = asCivilDate("2026-08-21")
 const PERIOD_ID = asEntityId("30000000-0000-4000-8000-000000000001")
 const ACCOUNT_A = asEntityId("30000000-0000-4000-8000-000000000002")
@@ -46,7 +47,7 @@ function period(): Period {
     periodKey: asPeriodKey("2026-08"),
     plannedSalaryAmount: asClpAmount(900_000),
     variableExpenseBudgetAmount: asClpAmount(0),
-    openedAt: NOW,
+    openedAt: PERIOD_OPENED_AT,
     status: "open",
     closedAt: null,
     snapshotId: null,
@@ -889,6 +890,56 @@ describe("MovementUseCases", () => {
         ({ status }) => status === "posted",
       ),
     ).toHaveLength(1)
+  })
+
+  it("accounts an August salary in an anticipated September period within its real date window", async () => {
+    const anticipatedNow = asUtcTimestamp("2026-09-01T02:30:00.000Z")
+    const anticipatedToday = asCivilDate("2026-08-31")
+    await repositories.periods.put({
+      ...period(),
+      periodKey: asPeriodKey("2026-09"),
+      openedAt: anticipatedNow,
+    })
+    const anticipatedUseCases = new MovementUseCases(repositories, {
+      now: () => anticipatedNow,
+      today: () => anticipatedToday,
+      createId: idSequence(),
+    })
+
+    await expect(anticipatedUseCases.registerIncome({
+      incomeType: "additional",
+      accountId: ACCOUNT_A,
+      operationDate: asCivilDate("2026-08-30"),
+      amount: 10_000,
+      concept: "Antes de apertura",
+    })).rejects.toThrow("Operation date cannot be before the Period opening date")
+    await expect(anticipatedUseCases.registerIncome({
+      incomeType: "additional",
+      accountId: ACCOUNT_A,
+      operationDate: asCivilDate("2026-09-01"),
+      amount: 10_000,
+      concept: "Fecha futura",
+    })).rejects.toThrow("Operation date cannot be in the future")
+
+    const salary = await anticipatedUseCases.registerIncome({
+      incomeType: "salary",
+      accountId: ACCOUNT_A,
+      operationDate: anticipatedToday,
+      amount: 900_000,
+    })
+    const summary = deriveMonthlySummary({
+      period: (await repositories.periods.get(PERIOD_ID))!,
+      operations: await repositories.operations.getAll(),
+      movements: await repositories.movements.getAll(),
+      fixedExpenseInstances: await repositories.fixedExpenseInstances.getAll(),
+    })
+
+    expect(salary.operation).toMatchObject({
+      periodId: PERIOD_ID,
+      operationDate: "2026-08-31",
+      type: "salary_receipt",
+    })
+    expect(summary.receivedSalaryAmount).toBe(900_000)
   })
 
   it("edits an income across accounts and preserves its complete prior revision", async () => {
