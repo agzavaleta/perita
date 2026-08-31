@@ -17,9 +17,9 @@ beforeAll(() => {
 const NEW_STATE: SetupState = {
   status: "not_started",
   allowedPeriodKeys: [
-    asPeriodKey("2026-09"),
     asPeriodKey("2026-08"),
     asPeriodKey("2026-07"),
+    asPeriodKey("2026-09"),
   ],
   draft: null,
 }
@@ -91,7 +91,7 @@ describe("SetupPage", () => {
     expect(screen.getByText(
       "Cuéntanos con cuánto partes y Perita preparará tu primer período.",
     )).toBeInTheDocument()
-    expect(period).toHaveValue("2026-09")
+    expect(period).toHaveValue("2026-08")
     expect(period).toHaveAttribute("max", "2026-09")
     expect(salary).toHaveValue("0")
     expect(screen.getByRole("button", { name: "Comenzar" })).toBeDisabled()
@@ -174,7 +174,7 @@ describe("SetupPage", () => {
       completeSetup.mock.invocationCallOrder[0]!,
     )
     expect(completeSetup).toHaveBeenCalledWith({
-      periodKey: "2026-09",
+      periodKey: "2026-08",
       salaryReferenceAmount: 0,
       account: {
         emoji: "💳",

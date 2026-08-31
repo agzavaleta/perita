@@ -62,6 +62,14 @@ function initialDraft(state: SetupState): EditableSetupDraft {
   }
 }
 
+function maximumAllowedPeriodKey(state: SetupState) {
+  return state.allowedPeriodKeys.reduce<string | undefined>(
+    (maximum, periodKey) =>
+      maximum === undefined || periodKey > maximum ? periodKey : maximum,
+    undefined,
+  )
+}
+
 function persistedDraft(draft: EditableSetupDraft): SaveSetupDraftInput {
   return {
     periodKey: draft.periodKey,
@@ -182,7 +190,7 @@ export function SetupPage({
                 id="setup-period"
                 type="month"
                 required
-                max={state.allowedPeriodKeys[0]}
+                max={maximumAllowedPeriodKey(state)}
                 value={draft.periodKey}
                 onChange={(event) => updateDraft({
                   ...draft,
