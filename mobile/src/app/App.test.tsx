@@ -4,6 +4,20 @@ import { describe, expect, it, vi } from "vitest"
 import { App } from "@/app/App"
 import type { SetupUseCasesPort } from "@/features/setup/application/setup-use-cases"
 
+vi.mock("@/features/movements/presentation/MovementsPage", () => ({
+  MovementsPage: ({
+    initialComposer,
+    onInitialComposerClose,
+  }: {
+    initialComposer?: string | null
+    onInitialComposerClose?: () => void
+  }) => initialComposer ? (
+    <button type="button" onClick={onInitialComposerClose}>
+      Cerrar acción rápida
+    </button>
+  ) : null,
+}))
+
 function setupService(status: "not_started" | "incomplete" | "completed"): SetupUseCasesPort {
   return {
     getState: vi.fn().mockResolvedValue({
@@ -87,6 +101,30 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Registrar ingreso" }))
     expect(await screen.findByRole("heading", { name: "Movimientos" })).toBeInTheDocument()
   })
+
+  it.each([
+    ["Inicio", "Registrar gasto"],
+    ["Cuentas", "Registrar ingreso"],
+    ["Planificar", "Mover dinero"],
+    ["Movimientos", "Registrar gasto"],
+  ])(
+    "restores %s after cancelling the %s quick action",
+    async (origin, action) => {
+      render(<App setupUseCases={setupService("completed")} />)
+
+      await screen.findByRole("button", { name: "Agregar movimiento" })
+      if (origin !== "Inicio") {
+        fireEvent.click(screen.getByRole("button", { name: origin }))
+        await screen.findByRole("heading", { name: origin })
+      }
+
+      fireEvent.click(screen.getByRole("button", { name: "Agregar movimiento" }))
+      fireEvent.click(screen.getByRole("button", { name: action }))
+      fireEvent.click(await screen.findByRole("button", { name: "Cerrar acción rápida" }))
+
+      expect(await screen.findByRole("heading", { name: origin })).toBeInTheDocument()
+    },
+  )
 
   it("opens a new installation on guided Inicio and blocks normal navigation", async () => {
     render(<App setupUseCases={setupService("not_started")} />)

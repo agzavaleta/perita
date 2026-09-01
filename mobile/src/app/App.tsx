@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react"
+import { lazy, Suspense, useEffect, useRef, useState } from "react"
 
 import { AppShell } from "@/app/AppShell"
 import type { AppSection } from "@/app/navigation"
@@ -87,6 +87,7 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
   const [quickAction, setQuickAction] = useState<
     QuickAction | null
   >(null)
+  const quickActionOrigin = useRef<AppSection | null>(null)
   const [movementQuery, setMovementQuery] = useState("")
   const [movementSearchOpen, setMovementSearchOpen] = useState(false)
   const [movementFiltersOpen, setMovementFiltersOpen] = useState(false)
@@ -131,11 +132,20 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
   }, [setupUseCases])
 
   function openQuickAction(action: QuickAction) {
+    quickActionOrigin.current = activeSection
     setQuickAction(action)
     setActiveSection("movements")
   }
 
+  function closeQuickAction() {
+    const origin = quickActionOrigin.current
+    quickActionOrigin.current = null
+    setQuickAction(null)
+    if (origin) setActiveSection(origin)
+  }
+
   function navigate(section: AppSection) {
+    quickActionOrigin.current = null
     setQuickAction(null)
     setActiveSection(section)
   }
@@ -191,7 +201,7 @@ export function App({ setupUseCases: injectedSetupUseCases }: {
       <AppContent
         section={activeSection}
         quickAction={quickAction}
-        onQuickActionClose={() => setQuickAction(null)}
+        onQuickActionClose={closeQuickAction}
         onMoveMoney={() => openQuickAction("transfer")}
         onNavigate={navigate}
         movementControls={movementControls}
