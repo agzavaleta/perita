@@ -184,7 +184,7 @@ describe("V1.1.0 functional equivalence through application and IndexedDB", () =
     expect(dashboard).toMatchObject({
       totalAccountBalance: 375_000,
       totalSavingsBalance: 50_000,
-      totalBalance: 425_000,
+      netWorth: 345_000,
     })
     expect((await repositories.debts.get(debt.id))?.outstandingAmount).toBe(80_000)
     expect((await repositories.accounts.get(reserve.id))?.currentBalance).toBe(0)

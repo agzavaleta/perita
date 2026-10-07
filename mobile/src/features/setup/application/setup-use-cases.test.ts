@@ -3,12 +3,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import {
   asCivilDate,
+  asClpAmount,
   asEntityId,
+  asPeriodKey,
+  asRevision,
   asUtcTimestamp,
 } from "@/domain/primitives"
 import { openPeritaDatabase, type PeritaDatabase } from "@/data/database"
 import { createRepositories, type PeritaRepositories } from "@/data/repositories"
 import { HomeUseCases } from "@/features/home/application/home-use-cases"
+import { MovementUseCases } from "@/features/movements/application/movement-use-cases"
+import { MonthlyCloseUseCases } from "@/features/planning/application/monthly-close-use-cases"
 import { SetupUseCases } from "@/features/setup/application/setup-use-cases"
 import {
   openSetupDraftStore,
@@ -152,6 +157,75 @@ describe("SetupUseCases", () => {
       openingBalance: -25_000,
     }])
     expect(await repositories.operations.count()).toBe(0)
+  })
+
+  it("remains completed after movements and a monthly close carry the balance forward", async () => {
+    const result = await setup.completeSetup({
+      periodKey: "2026-08",
+      salaryReferenceAmount: 0,
+      account: { name: "Principal", openingBalance: 100_000 },
+    })
+    const account = result.accounts[0]!
+    const movements = new MovementUseCases(repositories, {
+      now: () => NOW,
+      today: () => TODAY,
+    })
+    await movements.registerIncome({
+      incomeType: "additional",
+      accountId: account.id,
+      operationDate: TODAY,
+      amount: 50_000,
+      concept: "Ingreso adicional",
+    })
+
+    const closed = await new MonthlyCloseUseCases(repositories, {
+      now: () => NOW,
+    }).closeCurrentPeriod()
+    const nextOpenings = await repositories.periodOpenings.listByPeriod(
+      closed.nextPeriod.id,
+    )
+
+    expect(nextOpenings).toEqual([
+      expect.objectContaining({
+        targetId: account.id,
+        openingAmount: 150_000,
+      }),
+    ])
+    expect(nextOpenings[0]?.openingAmount).not.toBe(account.openingBalance)
+    expect(await setup.getState()).toMatchObject({ status: "completed" })
+  })
+
+  it("still reports incomplete when an active account has no opening in the open period", async () => {
+    const result = await setup.completeSetup({
+      periodKey: "2026-08",
+      salaryReferenceAmount: 0,
+      account: { name: "Principal", openingBalance: 100_000 },
+    })
+
+    await repositories.periodOpenings.delete(result.periodOpenings[0]!.id)
+
+    expect(await setup.getState()).toMatchObject({ status: "incomplete" })
+  })
+
+  it("still reports incomplete when more than one period is open", async () => {
+    await setup.completeSetup({
+      periodKey: "2026-08",
+      salaryReferenceAmount: 0,
+      account: { name: "Principal", openingBalance: 100_000 },
+    })
+    await repositories.periods.add({
+      id: asEntityId("51000000-0000-4000-8000-999999999999"),
+      periodKey: asPeriodKey("2026-09"),
+      plannedSalaryAmount: asClpAmount(0),
+      variableExpenseBudgetAmount: asClpAmount(0),
+      openedAt: NOW,
+      status: "open",
+      closedAt: null,
+      snapshotId: null,
+      revision: asRevision(1),
+    })
+
+    expect(await setup.getState()).toMatchObject({ status: "incomplete" })
   })
 
   it("accepts an initial period older than the previous month", async () => {

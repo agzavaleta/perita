@@ -203,13 +203,9 @@ export class SetupUseCases implements SetupUseCasesPort {
     const openPeriods = data.periods.filter(({ status }) => status === "open")
     const period = openPeriods[0]
     const settings = data.financialSettings[0]
-    const openings = new Map(
-      data.periodOpenings
-        .filter(
-          ({ targetType, periodId }) =>
-            targetType === "account" && periodId === period?.id,
-        )
-        .map((opening) => [opening.targetId, opening]),
+    const openings = data.periodOpenings.filter(
+      ({ targetType, periodId }) =>
+        targetType === "account" && periodId === period?.id,
     )
     const coherent =
       data.financialSettings.length === 1 &&
@@ -217,12 +213,14 @@ export class SetupUseCases implements SetupUseCasesPort {
       openPeriods.length === 1 &&
       data.accounts.length > 0 &&
       data.accounts.filter(({ status }) => status === "active").every((account) => {
-        const opening = openings.get(account.id)
-        return (
-          account.status === "active" &&
-          opening?.periodId === period?.id &&
-          opening.openingAmount === account.openingBalance
-        )
+        const accountOpenings = openings.filter(({ targetId }) => targetId === account.id)
+        if (accountOpenings.length !== 1) return false
+        try {
+          asClpAmount(accountOpenings[0]!.openingAmount, { allowNegative: true })
+          return true
+        } catch {
+          return false
+        }
       })
     return {
       status: coherent ? "completed" : "incomplete",

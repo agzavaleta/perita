@@ -152,7 +152,7 @@ describe("AccountUseCases", () => {
     let id = 800
     const adjustments = new BalanceAdjustmentUseCases(repositories, {
       now: () => NOW,
-      today: () => asCivilDate("2026-08-21"),
+      today: () => asCivilDate("2026-08-22"),
       createId: () => asEntityId(
         `10000000-0000-4000-8000-${String(id++).padStart(12, "0")}`,
       ),
@@ -160,14 +160,14 @@ describe("AccountUseCases", () => {
     const first = await adjustments.createAdjustment({
       accountId: created.id,
       expectedAccountRevision: created.revision,
-      operationDate: asCivilDate("2026-08-19"),
+      operationDate: asCivilDate("2026-08-21"),
       targetBalance: 20_000,
       reason: "Saldo inicial conciliado",
     })
     const second = await adjustments.createAdjustment({
       accountId: created.id,
       expectedAccountRevision: first.account.revision,
-      operationDate: asCivilDate("2026-08-21"),
+      operationDate: asCivilDate("2026-08-22"),
       targetBalance: 15_000,
       reason: "Comisión bancaria",
     })
